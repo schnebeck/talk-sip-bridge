@@ -14,6 +14,13 @@ User=fritzbox-talk-bridge
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
+# The one writable directory this hardened service gets: /var/lib/fritzbox-
+# talk-bridge, auto-created and owned by the service user - holds small
+# per-line state files (currently just whether registration should be on)
+# so a crash-triggered restart can resume automatically instead of
+# silently leaving the phone line deregistered. See config.py's state_dir.
+StateDirectory=fritzbox-talk-bridge
+StateDirectoryMode=0700
 
 [Install]
 WantedBy=multi-user.target

@@ -3,10 +3,13 @@
 - one by default, more if BRIDGE_LINES is set), connects to Talk's signaling
 server as a dedicated dialout-capable internal client and registers with
 that line's own gateway. Exposes a local HTTP control API (GET /status,
-POST /toggle) for the Nextcloud app to enable/disable registration.
-Registration starts off; nothing calls a gateway until toggled on. See
-docs/CONCEPT.md for the architecture and docs/CONFIG.md for the required
-environment variables.
+POST /toggle) for the Nextcloud app to enable/disable registration. A
+brand new deployment starts with registration off, nothing calls a gateway
+until toggled on; a line that was on when the process last stopped resumes
+automatically (see sip_core.SipRegistrar's state-file persistence), so a
+crash-triggered restart doesn't silently leave the phone line dead until
+someone notices. See docs/CONCEPT.md for the architecture and
+docs/CONFIG.md for the required environment variables.
 
 Each line gets its own SipTransport/SipRegistrar/CallManager and its own
 TalkClient (hence its own WebSocket connection to the signaling server) -
@@ -47,8 +50,19 @@ def main():
     for line in config.lines:
         registrar, call_manager = _start_line(line)
         lines[line.id] = (registrar, call_manager)
-        print(f"[daemon] Line {line.id} ({line.sip_user}@{line.gateway_host}) ready - "
-              f"not yet registered, toggle via the control API.")
+        if registrar.was_registered_before_restart():
+            # Resume automatically rather than leaving the line silently
+            # deregistered until someone notices and toggles it back on by
+            # hand - the common case this matters for is systemd's
+            # Restart=on-failure bringing the process back up after a
+            # crash, not a deliberate stop (an admin explicitly toggling
+            # off, or `systemctl stop`, clears the persisted state first).
+            ok = registrar.turn_on()
+            print(f"[daemon] Line {line.id} ({line.sip_user}@{line.gateway_host}) "
+                  f"was registered before restart - resumed: {ok} (last_error={registrar.last_error})")
+        else:
+            print(f"[daemon] Line {line.id} ({line.sip_user}@{line.gateway_host}) ready - "
+                  f"not yet registered, toggle via the control API.")
 
     control_api.start_in_background(config.control_bind, config.control_port, lines)
 

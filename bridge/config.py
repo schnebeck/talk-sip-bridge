@@ -147,5 +147,14 @@ class Config:
         self.control_bind = os.environ.get("BRIDGE_CONTROL_BIND", "127.0.0.1")
         self.control_port = int(os.environ.get("BRIDGE_CONTROL_PORT", "8765"))
 
+        # Directory for small per-line state files (currently just whether
+        # a line's registration should be on) - lets the daemon resume
+        # automatically after a crash/restart instead of silently staying
+        # deregistered until someone notices and toggles it back on by
+        # hand. Empty disables persistence entirely (falls back to today's
+        # behavior: registration always starts off). deploy/fritzbox-talk-
+        # bridge.service provisions this via systemd's StateDirectory=.
+        self.state_dir = os.environ.get("BRIDGE_STATE_DIR", "/var/lib/fritzbox-talk-bridge")
+
 
 config = Config()

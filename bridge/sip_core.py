@@ -11,6 +11,7 @@ Talk-facing layer (talk_client.py) can react (addsession, publish audio,
 etc.) without this module knowing anything about Talk.
 """
 import hashlib
+import os
 import queue
 import re
 import secrets
@@ -178,6 +179,29 @@ class SipRegistrar:
         self.stop_event = threading.Event()
         self.last_error = None
         self._transport_holder = transport_holder
+        # Whether registration should be on is otherwise only ever held in
+        # memory - a crash (or any process restart, e.g. systemd's
+        # Restart=on-failure) would silently leave the line deregistered
+        # until someone happens to notice and toggles it back on by hand.
+        # A marker file records the desired state across restarts; empty
+        # config.state_dir disables this (persistence is a nice-to-have,
+        # never a hard requirement to run).
+        self._state_file = os.path.join(config.state_dir, f"{line.id}.registered") if config.state_dir else None
+
+    def _persist(self, registered: bool):
+        if not self._state_file:
+            return
+        try:
+            if registered:
+                with open(self._state_file, "w") as f:
+                    f.write(str(int(time.time())))
+            else:
+                os.remove(self._state_file)
+        except OSError as e:
+            print(f"[sip:{self.line.id}] Could not persist registration state: {e!r}")
+
+    def was_registered_before_restart(self) -> bool:
+        return bool(self._state_file) and os.path.exists(self._state_file)
 
     def _build_register(self, cseq, call_id, tag, branch, auth_header=None, expires=None, wildcard_contact=False):
         line = self.line
@@ -272,6 +296,7 @@ class SipRegistrar:
             ok = self._do_register(config.register_expires)
             self.registered = ok
             if ok:
+                self._persist(True)
                 self.stop_event.clear()
                 self.keepalive_thread = threading.Thread(target=self._keepalive_loop, daemon=True)
                 self.keepalive_thread.start()
@@ -280,10 +305,12 @@ class SipRegistrar:
     def turn_off(self) -> bool:
         with self.lock:
             if not self.registered:
+                self._persist(False)
                 return True
             self.stop_event.set()
             ok = self._do_register(0)
             self.registered = False
+            self._persist(False)
             return ok
 
     def status(self) -> dict:
@@ -593,11 +620,13 @@ class CallManager:
             self.transport.send(ack.encode())
 
         cseq = 1
+        last_branch = f"z9hG4bK{secrets.token_hex(4)}"
         q = self.transport.open_waiter(call_id)
-        self.transport.send(build_invite(cseq, f"z9hG4bK{secrets.token_hex(4)}"))
+        self.transport.send(build_invite(cseq, last_branch))
         print(f"[call:{line.id}] Outbound call started to {number}")
         deadline = time.time() + config.outbound_call_timeout
         connected = False
+        final_response_received = False
         try:
             while time.time() < deadline:
                 remaining = deadline - time.time()
@@ -633,7 +662,8 @@ class CallManager:
                         f'nonce="{nonce}", uri="{uri}", response="{resp_digest}", algorithm=MD5'
                     )
                     cseq += 1
-                    self.transport.send(build_invite(cseq, f"z9hG4bK{secrets.token_hex(4)}", auth_header=auth_header))
+                    last_branch = f"z9hG4bK{secrets.token_hex(4)}"
+                    self.transport.send(build_invite(cseq, last_branch, auth_header=auth_header))
                     continue
                 if code in ("180", "183"):
                     continue
@@ -671,9 +701,27 @@ class CallManager:
                     # Here" on subsequent calls until it times out on its own.
                     to_header = resp_headers.get("to", "")
                     send_ack(to_header, cseq)
+                    final_response_received = True
                     self.on_call_failed(call_id=call_id, reason=status_line)
                     break
-            if not connected:
+            if not connected and not final_response_received:
+                # Gave up waiting (deadline reached, or no response at all
+                # within the remaining time) without ever getting a final
+                # response - RFC 3261 requires CANCELling a still-pending
+                # INVITE transaction we're abandoning, or the gateway keeps
+                # ringing/processing a call nobody is listening for anymore
+                # (observed live: an unanswered test call kept the far end
+                # busy well past our own local timeout, with nothing telling
+                # it to stop).
+                cancel = (
+                    f"CANCEL sip:{number}@{line.gateway_host} SIP/2.0\r\n"
+                    f"Via: SIP/2.0/UDP {line.local_ip}:{line.local_sip_port};rport;branch={last_branch}\r\n"
+                    f"Max-Forwards: 70\r\n"
+                    f"From: <sip:{line.sip_user}@{line.gateway_host}>;tag={from_tag}\r\n"
+                    f"To: <sip:{number}@{line.gateway_host}>\r\n"
+                    f"Call-ID: {call_id}\r\nCSeq: {cseq} CANCEL\r\nContent-Length: 0\r\n\r\n"
+                )
+                self.transport.send(cancel.encode())
                 self.on_call_failed(call_id=call_id, reason="timeout")
         finally:
             self.transport.close_waiter(call_id)
