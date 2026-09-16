@@ -43,6 +43,19 @@ class Config:
         # internal-extension-only pattern during testing). Empty means no
         # restriction beyond the fixed character allowlist in sip_core.py.
         self.dialout_number_allowlist = os.environ.get("BRIDGE_DIALOUT_NUMBER_ALLOWLIST", "")
+        # Talk formats any number a user enters into E.164 (a country-code
+        # prefix, e.g. "+49", regardless of whether it's actually a national
+        # phone number or a short internal extension). The gateway's own
+        # dial plan expects internal extensions bare, without that prefix -
+        # this strips it (once, from the start of the number) before dialing
+        # if present. Empty means no stripping.
+        self.dialout_strip_prefix = os.environ.get("BRIDGE_DIALOUT_STRIP_PREFIX", "")
+        # Prepended to a number after BRIDGE_DIALOUT_STRIP_PREFIX is removed,
+        # i.e. only for numbers recognized as internal extensions - the
+        # gateway's own notation for reaching a physical device by extension
+        # (e.g. "**" on a FritzBox). Only applied when stripping happened, so
+        # a real external number dialed without that prefix is left alone.
+        self.dialout_internal_dial_prefix = os.environ.get("BRIDGE_DIALOUT_INTERNAL_DIAL_PREFIX", "")
 
         # Optional media relay (only needed if the gateway can't reach this
         # host's own address directly for RTP - see docs/CONFIG.md).

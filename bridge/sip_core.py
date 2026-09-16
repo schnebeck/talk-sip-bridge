@@ -435,6 +435,18 @@ class CallManager:
             return {"error": f"Rejected number (disallowed characters): {number!r}"}
         if config.dialout_number_allowlist and not re.fullmatch(config.dialout_number_allowlist, number):
             return {"error": f"Number not in the configured allowlist: {number!r}"}
+        # A number that passed the allowlist is, by construction of that
+        # allowlist, an internal extension - only those get the gateway's
+        # own dial-prefix notation (e.g. "**" on a FritzBox) added, needed
+        # to actually alert the physical device rather than just being
+        # accepted at the SIP signaling level. A deployment dialing both
+        # internal extensions and real external numbers would need a more
+        # specific classification than "matches the allowlist" - out of
+        # scope while this bridge only ever reaches one FritzBox's internal
+        # extensions.
+        dial_target = number
+        if config.dialout_number_allowlist and config.dialout_internal_dial_prefix:
+            dial_target = config.dialout_internal_dial_prefix + number
         with self.lock:
             if self.call is not None:
                 return {"error": "A call is already active"}
@@ -442,7 +454,7 @@ class CallManager:
             from_tag = f"tag{secrets.token_hex(4)}"
             self.call = {"call_id": call_id, "direction": "outbound", "status": "dialing",
                          "to_tag": None, "bye_timer": None, "number": number, "from_tag": from_tag, "rtp": None}
-        threading.Thread(target=self._outbound_worker, args=(number, call_id, from_tag), daemon=True).start()
+        threading.Thread(target=self._outbound_worker, args=(dial_target, call_id, from_tag), daemon=True).start()
         return {"started": True, "call_id": call_id}
 
     def _outbound_worker(self, number, call_id, from_tag):
@@ -498,6 +510,15 @@ class CallManager:
                 parts = status_line.split(" ", 2)
                 code = parts[1] if len(parts) > 1 else ""
                 resp_headers = parse_sip_headers(resp)
+                # UDP does not guarantee ordering or delivery-once - a
+                # retransmitted or delayed response for an earlier CSeq
+                # (e.g. a duplicate 401) must not be reprocessed, or it
+                # triggers a spurious second INVITE while the real one is
+                # still in progress, which the gateway then rejects with
+                # "491 Request Pending".
+                resp_cseq = resp_headers.get("cseq", "").split(" ")[0]
+                if resp_cseq.isdigit() and int(resp_cseq) != cseq:
+                    continue
                 if code == "100":
                     continue
                 if code in ("401", "407"):

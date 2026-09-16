@@ -110,36 +110,51 @@ class TalkClient:
         async for raw in self.ws:
             msg = json.loads(raw)
             msg_type = msg.get("type")
-            if msg_type == "dialout":
-                await self._handle_dialout(msg["dialout"])
+            if msg_type == "internal" and msg.get("internal", {}).get("type") == "dialout":
+                await self._handle_dialout(msg)
             elif msg_type == "message":
                 await self._handle_webrtc_message(msg["message"])
 
-    async def _handle_dialout(self, dialout: dict):
-        """Talk's native "call a phone number" UI triggers this."""
-        number = dialout.get("number", "")
-        print(f"[talk] Dialout request for {number}")
+    async def _handle_dialout(self, msg: dict):
+        """Talk's native "call a phone number" UI triggers this. The
+        request carries the room id it's for - there is no separate
+        mechanism to learn it, and no default to fall back to."""
+        request_id = msg.get("id", "")
+        dialout = msg["internal"]["dialout"]
+        roomid = dialout.get("roomid", "")
+        number = dialout.get("request", {}).get("number", "")
+        if config.dialout_strip_prefix and number.startswith(config.dialout_strip_prefix):
+            number = number[len(config.dialout_strip_prefix):]
+        print(f"[talk] Dialout request for {number} in room {roomid}")
         result = self.call_manager.dial(number)
         if "error" in result:
-            await self._send_dialout_error(result["error"])
+            await self._send_dialout_response(request_id, roomid, error=result["error"])
             return
         call_id = result["call_id"]
         with self._call_sessions_lock:
-            self._call_sessions[call_id] = {"kind": "dialout", "number": number}
+            self._call_sessions[call_id] = {"kind": "dialout", "number": number, "roomid": roomid}
+        # The signaling server expects an "accepted" status synchronously
+        # (within a fixed timeout) - actual ring/connect progress is
+        # reported later via separate, unsolicited status updates.
+        await self._send_dialout_response(request_id, roomid, call_id=call_id, status="accepted")
 
-    async def _send_dialout_result(self, call_id_sip: str):
-        with self._call_sessions_lock:
-            session = dict(self._call_sessions.get(call_id_sip, {}))
-        await self.ws.send(json.dumps({
-            "type": "dialout",
-            "dialout": {"callid": session.get("virtual_sessionid", call_id_sip)},
-        }))
+    async def _send_dialout_response(self, request_id: str, roomid: str, *, call_id: str = None, status: str = None, error: str = None):
+        dialout_payload = {"roomid": roomid}
+        if error is not None:
+            dialout_payload["type"] = "error"
+            dialout_payload["error"] = {"code": "call_failed", "message": error}
+        else:
+            dialout_payload["type"] = "status"
+            dialout_payload["status"] = {"callid": call_id, "status": status}
+        envelope = {"type": "internal", "internal": {"type": "dialout", "dialout": dialout_payload}}
+        if request_id:
+            envelope["id"] = request_id
+        await self.ws.send(json.dumps(envelope))
 
-    async def _send_dialout_error(self, message: str):
-        await self.ws.send(json.dumps({
-            "type": "dialout",
-            "dialout": {"error": {"code": "call_failed", "message": message}},
-        }))
+    async def _send_dialout_status(self, call_id: str, roomid: str, status: str):
+        """Unsolicited status update (ringing/connected/rejected/cleared) -
+        not correlated to a request id, unlike the initial "accepted" reply."""
+        await self._send_dialout_response("", roomid, call_id=call_id, status=status)
 
     async def _handle_webrtc_message(self, message: dict):
         data = message.get("data", {})
@@ -207,7 +222,6 @@ class TalkClient:
                 },
             },
         }))
-        await self._send_dialout_result(sip_call_id)
         print(f"[talk] Publishing call audio for {sip_call_id} as virtual session {virtual_sessionid}")
 
     async def _teardown_call(self, sip_call_id: str, roomid: str):
@@ -219,25 +233,37 @@ class TalkClient:
             await entry["pc"].close()
         if "virtual_sessionid" in entry:
             await self._remove_virtual_session(entry["virtual_sessionid"], roomid)
+        if entry.get("kind") == "dialout":
+            await self._send_dialout_status(sip_call_id, roomid, "cleared")
         print(f"[talk] Call {sip_call_id} ended, virtual session removed")
+
+    def _entry_roomid(self, call_id: str) -> str:
+        # Dialout calls carry their own room id, learned from the request
+        # that started them. Inbound calls have no such association in the
+        # protocol - config.default_room_token is the only option there.
+        with self._call_sessions_lock:
+            return self._call_sessions.get(call_id, {}).get("roomid") or config.default_room_token
 
     # -- thread-safe entry points for sip_core.CallManager callbacks ------
     def on_call_connected(self, *, call_id, direction, rtp):
         with self._call_sessions_lock:
             number = self._call_sessions.get(call_id, {}).get("number", "")
-        asyncio.run_coroutine_threadsafe(
-            self._publish_call_audio(call_id, rtp, config.default_room_token, number),
-            self.loop,
-        )
+        roomid = self._entry_roomid(call_id)
+
+        async def _connected():
+            await self._publish_call_audio(call_id, rtp, roomid, number)
+            if direction == "outbound":
+                await self._send_dialout_status(call_id, roomid, "connected")
+
+        asyncio.run_coroutine_threadsafe(_connected(), self.loop)
 
     def on_call_ended(self, *, call_id, reason):
-        asyncio.run_coroutine_threadsafe(
-            self._teardown_call(call_id, config.default_room_token),
-            self.loop,
-        )
+        roomid = self._entry_roomid(call_id)
+        asyncio.run_coroutine_threadsafe(self._teardown_call(call_id, roomid), self.loop)
 
     def on_call_failed(self, *, call_id, reason):
-        asyncio.run_coroutine_threadsafe(self._send_dialout_error(reason), self.loop)
+        roomid = self._entry_roomid(call_id)
+        asyncio.run_coroutine_threadsafe(self._send_dialout_status(call_id, roomid, "rejected"), self.loop)
 
     def on_incoming_call(self, *, call_id, caller):
         # The signaling protocol has no ringing/accept-decline exchange for
