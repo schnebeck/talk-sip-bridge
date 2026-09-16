@@ -21,6 +21,30 @@ ProtectHome=true
 # silently leaving the phone line deregistered. See config.py's state_dir.
 StateDirectory=fritzbox-talk-bridge
 StateDirectoryMode=0700
+UMask=0077
+
+# Additional sandboxing - scoped entirely to this one service, no impact on
+# anything else running on the host. Deliberately not including
+# MemoryDenyWriteExecute=: aiortc pulls in a lot of native code (libavcodec,
+# OpenSSL, ...) and the risk of subtly breaking a codec/crypto path isn't
+# worth it without a supervised test.
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+RemoveIPC=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
 
 [Install]
 WantedBy=multi-user.target
