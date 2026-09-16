@@ -28,6 +28,7 @@ No IPs, ports, or secrets are hardcoded in code.
 | `BRIDGE_OUTBOUND_CALL_TIMEOUT` | 30 | How long an outbound call may ring before giving up. |
 | `BRIDGE_DEFAULT_ROOM` | (empty) | Talk room token that inbound/outbound calls are bridged into. |
 | `BRIDGE_AUTO_ANSWER` | `false` | Whether an incoming call is answered automatically. When `false` (the default), incoming calls just keep ringing - there is no native ringing/accept-decline exchange in the signaling protocol to gate this on, so answering must be opted into explicitly. |
+| `BRIDGE_DIALOUT_NUMBER_ALLOWLIST` | (empty) | Optional regex a dialout number must fully match, in addition to the fixed character allowlist in `sip_core.py` (always enforced, rejects anything that isn't digits/`+*#.-`). Empty means no additional restriction. |
 
 ## Media relay (only if the gateway can't reach this host directly)
 

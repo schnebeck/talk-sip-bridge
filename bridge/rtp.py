@@ -52,11 +52,16 @@ class RtpSession:
     def _recv_loop(self):
         while not self.stop_event.is_set():
             try:
-                data, _ = self.sock.recvfrom(2048)
+                data, addr = self.sock.recvfrom(2048)
             except socket.timeout:
                 continue
             except OSError:
                 return
+            if addr[0] != self.remote_addr[0]:
+                # Only accept media from the configured peer - otherwise any
+                # host able to reach this port could inject audio into an
+                # active call.
+                continue
             if len(data) < 12:
                 continue
             payload = data[12:]

@@ -33,6 +33,10 @@ class Config:
         # unless explicitly enabled. Must be set to "true" to answer inbound
         # calls automatically.
         self.auto_answer_calls = os.environ.get("BRIDGE_AUTO_ANSWER", "false").strip().lower() == "true"
+        # Optional regex restricting which numbers may be dialed (e.g. an
+        # internal-extension-only pattern during testing). Empty means no
+        # restriction beyond the fixed character allowlist in sip_core.py.
+        self.dialout_number_allowlist = os.environ.get("BRIDGE_DIALOUT_NUMBER_ALLOWLIST", "")
 
         # Optional media relay (only needed if the gateway can't reach this
         # host's own address directly for RTP - see docs/CONFIG.md).

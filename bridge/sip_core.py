@@ -20,6 +20,12 @@ import numpy as np
 from config import config
 from rtp import RtpSession
 
+# Characters valid in a SIP user part / phone number (RFC 3261 user-unreserved
+# plus digits). Rejecting anything else before interpolating a number into a
+# raw SIP message prevents header/request injection via a crafted dialout
+# request.
+_VALID_NUMBER = re.compile(r"[0-9A-Za-z+*#.\-]{1,32}")
+
 
 def md5hex(s: str) -> str:
     return hashlib.md5(s.encode()).hexdigest()
@@ -111,6 +117,12 @@ class SipTransport:
                 data, addr = self.sock.recvfrom(65536)
             except OSError:
                 return
+            if addr[0] != config.proxy_host:
+                # Only the configured proxy/gateway may send us SIP traffic -
+                # anything else on this network could otherwise forge an
+                # INVITE, BYE or CANCEL for an existing call.
+                print(f"[sip] Ignoring packet from unexpected source {addr[0]} (expected {config.proxy_host})")
+                continue
             text = data.decode(errors="replace")
             if not text.strip():
                 continue
@@ -419,6 +431,10 @@ class CallManager:
         self.on_call_ended(call_id=call["call_id"], reason="local_hangup")
 
     def dial(self, number: str) -> dict:
+        if not _VALID_NUMBER.fullmatch(number):
+            return {"error": f"Rejected number (disallowed characters): {number!r}"}
+        if config.dialout_number_allowlist and not re.fullmatch(config.dialout_number_allowlist, number):
+            return {"error": f"Number not in the configured allowlist: {number!r}"}
         with self.lock:
             if self.call is not None:
                 return {"error": "A call is already active"}
