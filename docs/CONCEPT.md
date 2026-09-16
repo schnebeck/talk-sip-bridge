@@ -1,0 +1,68 @@
+# Concept
+
+## Goal
+
+Replace the PoC's custom chat-bot UI (`/accept`, `/decline`, `/dial` commands
+in a Talk room) with Nextcloud Talk's native, documented SIP bridge protocol:
+incoming phone calls appear as real, named "phone" participants in a room,
+and outgoing calls are triggered from Talk's own call UI, not a chat command.
+
+## Reference
+
+Protocol: https://nextcloud-spreed-signaling.readthedocs.io/en/latest/standalone-signaling-api-v1/
+("Internal clients", "Dialout session", "Start dialout from a room",
+"Add/update/remove virtual session" sections).
+
+No reference implementation exists publicly (neither in the
+`nextcloud-spreed-signaling` repository itself, which contains only a Go
+benchmarking client, nor anywhere else found on GitHub) - Nextcloud's own
+SIP bridge product is closed-source. This is built directly against the
+protocol documentation, the same way the PoC's internal-client mechanism was
+built against Go source and trial and error before any docs were found for
+it.
+
+## What carries over from `sip-fritzbox-experiment` (proven, reusable)
+
+- FritzBox connectivity: Kamailio SIP relay, `rtp_relay.py` media relay,
+  OpenVPN routing via the backup server (all of `NETZWERK.md`).
+- SIP client core: REGISTER/INVITE/digest auth/RTP session handling
+  (`rtp.py`, `g711.py`, SIP header parsing).
+- Internal-client WebSocket handshake and WebRTC publish/subscribe
+  (`aiortc`-based), including the previously undocumented `backend` hello
+  param and the ICE trickle-candidate handling.
+- FFT-based audio verification methodology for testing.
+
+## What's new here
+
+1. **Config, not hardcoded constants.** All IPs/ports/secrets come from a
+   config file, not Python module-level constants. The relay path (via the
+   backup server) becomes one connectivity mode among others, not a fixed
+   assumption - a deployment where the phone gateway is directly reachable
+   needs no relay at all.
+2. **Native dialout integration.**
+   - Declare `"features": ["start-dialout"]` (and `"internal-incall"`) in
+     the hello message.
+   - Handle incoming `{"type": "dialout", "dialout": {...}}` messages on the
+     internal-client WebSocket connection; place the call via the existing
+     FritzBox SIP core; reply with `{"type": "dialout", "dialout":
+     {"callid": ...}}` on success or an `error` object on failure.
+   - This replaces the PoC's `/dial` chat command with Talk's own "call a
+     phone number" UI.
+3. **Virtual sessions for calls.** Represent each phone call as its own
+   session via `addsession`/`updatesession`/`removesession`, with
+   `user.type = "phone"`, `callid`, and `number` - so a caller shows up as a
+   real, named participant instead of anonymous published audio. Replaces
+   the PoC's chat messages for call state.
+4. **Multi-call daemon.** The PoC's standalone audio-bridge script handles
+   exactly one call and then exits; the production daemon needs to keep
+   registering and accepting new calls indefinitely (the always-on
+   `sipbridge.service` already does this for signaling-only calls - this
+   extends that, not the one-shot `audio-bridge/` scripts).
+5. **Real audio in the persistent daemon.** The PoC's signaling-only daemon
+   (`AUTO_BYE_SECONDS` safety net, no real audio) and its separate
+   audio-bridge proof of concept get merged into one daemon that both
+   registers continuously and carries real audio.
+6. **Packaging.** Nextcloud app follows the same pattern as the PoC app
+   (`custom_apps`, admin settings, `occ app:*`), adjusted for the removed
+   chat-bot UI - status/config only, no accept/decline commands needed once
+   calls are native Talk participants.
