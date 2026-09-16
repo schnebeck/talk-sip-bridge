@@ -159,3 +159,24 @@ production `spreed` app config only, not written down here). The native
     first line, so a single-line deployment is unaffected). Lines are
     independent of the registrar/gateway they point at, so a deployment
     could mix e.g. a FritzBox line and an Asterisk line.
+12. **Ring notification, for a line where a human should get a chance to
+    answer in Talk.** The signaling protocol has no ringing/accept-decline
+    exchange for inbound calls, so there's no native way to ask before
+    picking up - `LineConfig.notify_user` builds one: `on_incoming_call`
+    (when `BRIDGE_AUTO_ANSWER` is off) POSTs to the `fritzboxbridge`
+    Nextcloud app's own `/call/ring` endpoint (shared-secret authenticated,
+    `config.notify_secret`; see `nextcloud-app/fritzboxbridge/lib/Controller/CallSignalController.php`),
+    which creates a real Nextcloud notification linking into the call's
+    Talk room. The bridge then joins that room itself (same mechanism as
+    `_publish_call_audio`'s room-join) purely to watch its
+    `participants`/`update` events for a human joining the call -
+    `_handle_participants_update` handles this symmetrically to its
+    existing call-end detection, just checking for the opposite inCall
+    transition. On accept, it calls `CallManager.answer()`. If a different
+    device answers instead (e.g. a physical phone in the same FritzBox
+    parallel-ring group), the gateway cancels this INVITE as usual
+    (`CallManager.handle_cancel`), and `/call/clear` retracts the
+    notification. `_handle_incoming_ring`'s room-join has the same
+    dial-out-eligibility cost as a real call's publish (point 3) and is
+    cleaned up the same way (a forced reconnect once the call ends, whether
+    accepted or cancelled).

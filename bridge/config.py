@@ -58,14 +58,21 @@ class LineConfig:
         self.default_room_token = env("DEFAULT_ROOM", "")
         # Optional regex restricting which numbers may be dialed out through
         # this line, and how a dialed number is mapped to this gateway's own
-        # dial plan - see docs/CONFIG.md. With more than one line, a
-        # dial-out number is routed to whichever line's allowlist matches it
-        # (see talk_client.py's line selection) - a line with an empty
-        # allowlist is only used as a catch-all after every line with a
-        # specific allowlist has been tried.
+        # dial plan - see docs/CONFIG.md. With more than one line, which
+        # line actually places a given dial-out call is not determined by
+        # this allowlist - see docs/CONFIG.md "Single line vs. multiple
+        # lines" for the current limitation there.
         self.dialout_number_allowlist = env("DIALOUT_NUMBER_ALLOWLIST", "")
         self.dialout_strip_prefix = env("DIALOUT_STRIP_PREFIX", "")
         self.dialout_internal_dial_prefix = env("DIALOUT_INTERNAL_DIAL_PREFIX", "")
+        # Nextcloud user id to notify (real notification + optional push)
+        # when a call rings in on this line without being auto-answered -
+        # lets a human "win" against a FritzBox-side parallel ring group by
+        # joining the call in Talk before another device answers it. Empty
+        # (the default) disables this entirely for the line - it then just
+        # rings unnoticed by Talk, as before this existed. Requires
+        # Config.notify_secret to also be set (shared, not per-line).
+        self.notify_user = env("NOTIFY_USER", "")
 
         # Optional media relay for this line (only needed if its gateway
         # can't reach this host's own address directly for RTP).
@@ -130,6 +137,14 @@ class Config:
         self.ws_url = _require("BRIDGE_WS_URL")  # standalone signaling server, e.g. ws://127.0.0.1:8080/spreed
         self.internal_secret = _require("BRIDGE_INTERNAL_SECRET")
         self.backend_url = _require("BRIDGE_BACKEND_URL")  # e.g. https://nextcloud.example
+
+        # Shared secret authenticating this daemon to the fritzboxbridge
+        # Nextcloud app's own /call/ring and /call/clear endpoints (see
+        # nextcloud-app/fritzboxbridge/lib/Controller/CallSignalController.php)
+        # - a machine-to-machine call, not a user login, so a plain shared
+        # secret rather than a Nextcloud session. Required for any line's
+        # notify_user to actually do anything.
+        self.notify_secret = os.environ.get("BRIDGE_NOTIFY_SECRET", "")
 
         # Local HTTP control API (status/toggle) for the Nextcloud app to
         # call. Bind to an address reachable from the Nextcloud container

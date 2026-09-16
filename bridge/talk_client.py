@@ -21,6 +21,8 @@ import hmac
 import json
 import secrets
 import threading
+import urllib.error
+import urllib.request
 
 import numpy as np
 import websockets
@@ -72,6 +74,27 @@ def _parse_ice_candidate(cand_str: str, sdp_mid=None, sdp_mline_index=0) -> RTCI
         priority=int(parts[3]), protocol=parts[2], type=parts[7],
         sdpMid=sdp_mid, sdpMLineIndex=sdp_mline_index,
     )
+
+
+def _notify_call_sync(action: str, call_id: str, *, caller: str = "", roomid: str = "", user: str = ""):
+    """Blocking HTTP call to the fritzboxbridge Nextcloud app's own
+    /call/ring or /call/clear endpoint - run via asyncio.to_thread from the
+    caller. No-ops quietly if notify_secret isn't configured (feature off).
+    Deliberately stdlib-only (urllib), not a new dependency, for one POST
+    that doesn't need to be fast."""
+    if not config.notify_secret:
+        return
+    url = f"{config.backend_url.rstrip('/')}/apps/fritzboxbridge/call/{action}"
+    body = json.dumps({"callId": call_id, "caller": caller, "roomToken": roomid, "user": user}).encode()
+    req = urllib.request.Request(url, data=body, method="POST", headers={
+        "Content-Type": "application/json",
+        "X-Bridge-Secret": config.notify_secret,
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            resp.read()
+    except (urllib.error.URLError, OSError) as e:
+        print(f"[talk] Notify {action} for {call_id} failed: {e!r}")
 
 
 class SipAudioTrack(AudioStreamTrack):
@@ -320,10 +343,16 @@ class TalkClient:
           Talk's "Anruf beenden" button): carries no "changed" list at all,
           only a full "users" room-membership snapshot with each entry's
           current inCall value - so leaving has to be inferred from that
-          snapshot rather than a delta."""
+          snapshot rather than a delta.
+
+        Also doubles, symmetrically, as the accept signal for a call still
+        waiting on _handle_incoming_ring: there the question is the opposite
+        one - has a human just joined the call - checked against the same
+        three event shapes."""
         with self._call_sessions_lock:
             own_and_virtual = {self.own_sessionid}
             active_call_id = None
+            waiting_call_id = None
             for call_id, entry in self._call_sessions.items():
                 if entry.get("virtual_sessionid"):
                     own_and_virtual.add(entry["virtual_sessionid"])
@@ -331,7 +360,9 @@ class TalkClient:
                     own_and_virtual.add(entry["virtual_room_sessionid"])
                 if "pc" in entry:
                     active_call_id = call_id
-        if active_call_id is None:
+                elif entry.get("waiting_for_accept"):
+                    waiting_call_id = call_id
+        if active_call_id is None and waiting_call_id is None:
             return
 
         def is_in_call(raw) -> bool:
@@ -339,6 +370,31 @@ class TalkClient:
                 return bool(int(raw) & 1)
             except (TypeError, ValueError):
                 return False
+
+        if waiting_call_id is not None:
+            accepted = False
+            if update.get("all"):
+                in_call_raw = update.get("incall", update.get("inCall"))
+                accepted = in_call_raw is not None and is_in_call(in_call_raw)
+            else:
+                for item in update.get("changed") or []:
+                    session_id = item.get("sessionId") or item.get("sessionid")
+                    if session_id and session_id not in own_and_virtual and "inCall" in item and is_in_call(item["inCall"]):
+                        accepted = True
+                        break
+                if not accepted:
+                    for u in update.get("users") or []:
+                        if (u.get("sessionId") or u.get("sessionid")) not in own_and_virtual and is_in_call(u.get("inCall")):
+                            accepted = True
+                            break
+            if accepted:
+                print(f"[talk] Human joined the call - accepting {waiting_call_id}")
+                with self._call_sessions_lock:
+                    entry = self._call_sessions.get(waiting_call_id)
+                    if entry is not None:
+                        entry["waiting_for_accept"] = False  # avoid double-triggering answer()
+                self.call_manager.answer()
+            return
 
         if update.get("all"):
             # Room.PublishUsersInCallChangedAll: a whole-room "the call
@@ -551,6 +607,12 @@ class TalkClient:
             entry = self._call_sessions.pop(sip_call_id, None)
         if not entry:
             return
+        if entry.get("waiting_for_accept"):
+            # The call ended (cancelled - a physical phone in the same
+            # parallel ring group answered first, or the caller hung up)
+            # before a human joined it in Talk - retract the ring
+            # notification, nothing else to publish/remove.
+            await self._clear_incoming_notification(sip_call_id, self.call_manager.line.notify_user)
         if "relay_task" in entry:
             entry["relay_task"].cancel()
         if "sub_pc" in entry:
@@ -562,14 +624,15 @@ class TalkClient:
         if entry.get("kind") == "dialout":
             await self._send_dialout_status(sip_call_id, roomid, "cleared")
         print(f"[talk] Call {sip_call_id} ended, virtual session removed")
-        if "pc" in entry:
+        if "pc" in entry or entry.get("waiting_for_accept"):
             # The signaling server permanently drops a "start-dialout"
             # session from its dialout candidates the moment it joins any
             # room (confirmed in its own source - there is no code path
-            # that re-adds it, including on leaving the room again). The
-            # only way to become dialout-eligible again is a fresh
-            # connection with a new hello, so force a reconnect - handled
-            # by the retry loop in _connect_and_serve.
+            # that re-adds it, including on leaving the room again) - and
+            # _handle_incoming_ring joins the room too, just to watch for an
+            # accept. The only way to become dialout-eligible again is a
+            # fresh connection with a new hello, so force a reconnect -
+            # handled by the retry loop in _connect_and_serve.
             await self.ws.close()
 
     def _entry_roomid(self, call_id: str) -> str:
@@ -605,17 +668,48 @@ class TalkClient:
         # The signaling protocol has no ringing/accept-decline exchange for
         # inbound calls ("addsession" represents an already-connected call,
         # and dialout is Talk-initiated only), so there is no native way to
-        # ask before picking up. Answering is therefore off unless
-        # config.auto_answer_calls is explicitly enabled - an unanswered
-        # call just keeps ringing (or is picked up elsewhere), same as any
-        # other registered phone that nobody happens to pick up.
+        # ask before picking up over the signaling protocol itself.
+        # config.auto_answer_calls picks up immediately with no Talk-side
+        # involvement; short of that, a line with notify_user configured
+        # instead rings a real Nextcloud notification and waits for a human
+        # to join the call in Talk (see _handle_incoming_ring) - e.g. to let
+        # Talk act as one more device in a FritzBox-side parallel ring
+        # group, racing the physical phones. A line with neither just rings
+        # unnoticed by Talk, same as any other registered phone nobody
+        # happens to pick up.
         with self._call_sessions_lock:
             self._call_sessions[call_id] = {"kind": "inbound", "number": caller}
-        if not config.auto_answer_calls:
-            print(f"[talk] Incoming call {call_id} from {caller} - auto-answer disabled, leaving it ringing")
+        if config.auto_answer_calls:
+            print(f"[talk] Incoming call {call_id} from {caller} - answering with real audio")
+            self.call_manager.answer()
             return
-        print(f"[talk] Incoming call {call_id} from {caller} - answering with real audio")
-        self.call_manager.answer()
+        asyncio.run_coroutine_threadsafe(self._handle_incoming_ring(call_id, caller), self.loop)
+
+    async def _handle_incoming_ring(self, call_id: str, caller: str):
+        line = self.call_manager.line
+        roomid = line.default_room_token
+        if not roomid or not line.notify_user:
+            print(f"[talk] Incoming call {call_id} from {caller} on line {line.id} - "
+                  f"no notify_user/default room configured, leaving it ringing")
+            return
+        await self._notify_incoming_call(call_id, caller, roomid, line.notify_user)
+        self._room_joined_event.clear()
+        await self.ws.send(json.dumps({"id": "bridge-room", "type": "room", "room": {"roomid": roomid}}))
+        try:
+            await asyncio.wait_for(self._room_joined_event.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            print(f"[talk] Warning: no room-join confirmation for {roomid} while waiting for {call_id} to be accepted")
+        with self._call_sessions_lock:
+            entry = self._call_sessions.get(call_id)
+            if entry is not None:
+                entry["waiting_for_accept"] = True
+        print(f"[talk] Notified {line.notify_user} of call {call_id} from {caller}, watching room {roomid} for accept")
+
+    async def _notify_incoming_call(self, call_id: str, caller: str, roomid: str, user: str):
+        await asyncio.to_thread(_notify_call_sync, "ring", call_id, caller=caller, roomid=roomid, user=user)
+
+    async def _clear_incoming_notification(self, call_id: str, user: str):
+        await asyncio.to_thread(_notify_call_sync, "clear", call_id, user=user)
 
 
 def start_in_background(call_manager) -> TalkClient:

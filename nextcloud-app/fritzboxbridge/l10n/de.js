@@ -11,6 +11,8 @@ OC.L10N.register(
     "Inactive (not registered)" : "Inaktiv (nicht registriert)",
     "Turn on" : "Einschalten",
     "Turn off" : "Ausschalten",
-    "Error loading status: {message}" : "Fehler beim Laden des Status: {message}"
+    "Error loading status: {message}" : "Fehler beim Laden des Status: {message}",
+    "Incoming call from %s" : "Eingehender Anruf von %s",
+    "Incoming call" : "Eingehender Anruf"
 },
 "nplurals=2; plural=(n != 1);");
