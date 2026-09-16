@@ -4,10 +4,18 @@ Connects a FritzBox phone line to Nextcloud Talk using Talk's native SIP
 bridge protocol: incoming calls appear as real, named "phone" participants
 in a room, and outgoing calls are placed from Talk's own call UI.
 
-See `docs/CONCEPT.md` for the architecture and `docs/CONFIG.md` for
-configuration.
+See `docs/CONCEPT.md` for the architecture, `docs/CONFIG.md` for
+configuration, and `deploy/README.md` for installation.
 
 ## Status
 
-Not yet implemented. This repository currently holds only the initial
-structure and the migration concept.
+- `bridge/` - the daemon: gateway registration, real audio for inbound and
+  outbound calls, native Talk dialout integration, local HTTP control API
+  (status/toggle). Verified against the production gateway and signaling
+  server, including a real phone call and an independent FFT-verified audio
+  check (`bridge/test_publish_and_verify.py`).
+- `nextcloud-app/fritzboxbridge/` - admin settings page (status/toggle),
+  installed and verified on the production Nextcloud instance.
+- Not yet deployed as the primary bridge - runs alongside the
+  `sip-fritzbox-experiment` PoC's daemon during evaluation, not in place of
+  it.
