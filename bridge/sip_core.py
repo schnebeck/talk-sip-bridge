@@ -373,6 +373,12 @@ class CallManager:
         ], body=sdp, to_tag=to_tag)
         if config.media_relay_enabled:
             rtp.send_pcm(np.zeros(160, dtype=np.int16))  # prime the relay
+        timer = threading.Timer(config.max_call_duration, self.hangup)
+        timer.daemon = True
+        with self.lock:
+            if self.call and self.call["call_id"] == call_id:
+                self.call["bye_timer"] = timer
+        timer.start()
         self.on_call_connected(call_id=call_id, direction="inbound", rtp=rtp)
         return True
 
@@ -415,6 +421,8 @@ class CallManager:
                 return
             call = self.call
             self.call = None
+        if call.get("bye_timer"):
+            call["bye_timer"].cancel()
         if call.get("rtp"):
             call["rtp"].close()
         if call.get("direction") == "outbound":
@@ -558,6 +566,12 @@ class CallManager:
                             self.call["rtp"] = rtp
                     if config.media_relay_enabled:
                         rtp.send_pcm(np.zeros(160, dtype=np.int16))
+                    timer = threading.Timer(config.max_call_duration, self.hangup)
+                    timer.daemon = True
+                    with self.lock:
+                        if self.call and self.call["call_id"] == call_id:
+                            self.call["bye_timer"] = timer
+                    timer.start()
                     connected = True
                     self.on_call_connected(call_id=call_id, direction="outbound", rtp=rtp)
                     return

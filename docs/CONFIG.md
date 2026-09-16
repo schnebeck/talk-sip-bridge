@@ -27,6 +27,7 @@ No IPs, ports, or secrets are hardcoded in code.
 | `BRIDGE_REGISTER_EXPIRES` | 600 | SIP registration lifetime in seconds. |
 | `BRIDGE_SIP_RESPONSE_TIMEOUT` | 6 | How long to wait for a SIP response before giving up. |
 | `BRIDGE_OUTBOUND_CALL_TIMEOUT` | 30 | How long an outbound call may ring before giving up. |
+| `BRIDGE_MAX_CALL_DURATION` | 14400 (4h) | Safety net: a connected call is hung up after this many seconds even without a BYE, so a stuck call (e.g. the gateway silently drops it) can't block every other call indefinitely - only one is ever handled at a time. |
 | `BRIDGE_DEFAULT_ROOM` | (empty) | Talk room token that inbound/outbound calls are bridged into. |
 | `BRIDGE_CONTROL_BIND` / `BRIDGE_CONTROL_PORT` | `127.0.0.1` / `8765` | Local HTTP control API (`GET /status`, `POST /toggle`) for the Nextcloud app. Not authenticated - bind only to an address reachable from the Nextcloud container/host (e.g. the Docker bridge gateway), never a public interface. |
 | `BRIDGE_AUTO_ANSWER` | `false` | Whether an incoming call is answered automatically. When `false` (the default), incoming calls just keep ringing - there is no native ringing/accept-decline exchange in the signaling protocol to gate this on, so answering must be opted into explicitly. |

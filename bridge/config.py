@@ -35,6 +35,11 @@ class Config:
         self.register_expires = int(os.environ.get("BRIDGE_REGISTER_EXPIRES", "600"))
         self.sip_response_timeout = float(os.environ.get("BRIDGE_SIP_RESPONSE_TIMEOUT", "6"))
         self.outbound_call_timeout = float(os.environ.get("BRIDGE_OUTBOUND_CALL_TIMEOUT", "30"))
+        # Safety net against a call that never gets a BYE (e.g. the gateway
+        # silently drops it) - without this, a single stuck call blocks
+        # every other call indefinitely, since only one is ever handled at
+        # a time. Four hours comfortably exceeds any real call.
+        self.max_call_duration = float(os.environ.get("BRIDGE_MAX_CALL_DURATION", str(4 * 3600)))
         # Off by default: an incoming call is left ringing (never answered)
         # unless explicitly enabled. Must be set to "true" to answer inbound
         # calls automatically.
