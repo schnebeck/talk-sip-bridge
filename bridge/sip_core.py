@@ -165,8 +165,8 @@ class SipRegistrar:
         # Contact points at the configured proxy/relay's LAN-reachable
         # address, not at ourselves, when a relay is configured (see
         # docs/CONFIG.md) - otherwise the gateway can't deliver calls here.
-        contact_host = config.relay_lan_host or config.local_ip
-        contact_port = config.relay_lan_port or config.local_sip_port
+        contact_host = config.contact_host or config.local_ip
+        contact_port = config.contact_port or config.local_sip_port
         contact = "*" if wildcard_contact else f"<sip:{config.sip_user}@{contact_host}:{contact_port};transport=tcp>"
         lines = [
             f"REGISTER sip:{config.gateway_host} SIP/2.0",
@@ -355,8 +355,8 @@ class CallManager:
             self.call["status"] = "connected"
             self.call["rtp"] = rtp
         sdp, _, _ = _audio_sdp(config.local_rtp_port)
-        contact_host = config.relay_lan_host or config.local_ip
-        contact_port = config.relay_lan_port or config.local_sip_port
+        contact_host = config.contact_host or config.local_ip
+        contact_port = config.contact_port or config.local_sip_port
         self._send_response("200 OK", headers, remote_addr, extra_headers=[
             f"Contact: <sip:{config.sip_user}@{contact_host}:{contact_port}>",
             "Content-Type: application/sdp",
@@ -458,7 +458,7 @@ class CallManager:
                 f"To: <sip:{number}@{config.gateway_host}>",
                 f"Call-ID: {call_id}",
                 f"CSeq: {cseq} INVITE",
-                f"Contact: <sip:{config.sip_user}@{config.relay_lan_host or config.local_ip}:{config.relay_lan_port or config.local_sip_port};transport=tcp>",
+                f"Contact: <sip:{config.sip_user}@{config.contact_host or config.local_ip}:{config.contact_port or config.local_sip_port};transport=tcp>",
                 "Allow: INVITE, ACK, BYE, CANCEL, OPTIONS",
                 "Content-Type: application/sdp",
                 f"Content-Length: {len(sdp)}",

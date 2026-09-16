@@ -22,6 +22,7 @@ No IPs, ports, or secrets are hardcoded in code.
 |---|---|---|
 | `BRIDGE_PROXY_HOST` / `BRIDGE_PROXY_PORT` | gateway host / 5060 | Where SIP requests are actually sent - a relay if one is needed (see "Media relay" below), otherwise the gateway itself. |
 | `BRIDGE_LOCAL_SIP_PORT` | 5060 | Local UDP port for SIP signaling. |
+| `BRIDGE_CONTACT_HOST` / `BRIDGE_CONTACT_PORT` | `BRIDGE_LOCAL_IP` / `BRIDGE_LOCAL_SIP_PORT` | Address advertised in the SIP Contact header - where the gateway sends calls for this registration. Only needs to differ from the defaults when a SIP proxy/relay sits between this host and the gateway; it is then that relay's address, not this host's or the media relay's. |
 | `BRIDGE_LOCAL_RTP_PORT` | 40000 | Local UDP port for RTP media. |
 | `BRIDGE_REGISTER_EXPIRES` | 600 | SIP registration lifetime in seconds. |
 | `BRIDGE_SIP_RESPONSE_TIMEOUT` | 6 | How long to wait for a SIP response before giving up. |

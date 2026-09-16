@@ -26,6 +26,12 @@ class Config:
         self.local_ip = _require("BRIDGE_LOCAL_IP")
         self.local_sip_port = int(os.environ.get("BRIDGE_LOCAL_SIP_PORT", "5060"))
         self.local_rtp_port = int(os.environ.get("BRIDGE_LOCAL_RTP_PORT", "40000"))
+        # Address/port to advertise in the SIP Contact header - where the
+        # gateway sends calls and other requests for our registration. Only
+        # needs to differ from local_ip/local_sip_port when a SIP proxy/relay
+        # sits between this host and the gateway (see docs/CONFIG.md).
+        self.contact_host = os.environ.get("BRIDGE_CONTACT_HOST", "")
+        self.contact_port = int(os.environ.get("BRIDGE_CONTACT_PORT", "0") or 0)
         self.register_expires = int(os.environ.get("BRIDGE_REGISTER_EXPIRES", "600"))
         self.sip_response_timeout = float(os.environ.get("BRIDGE_SIP_RESPONSE_TIMEOUT", "6"))
         self.outbound_call_timeout = float(os.environ.get("BRIDGE_OUTBOUND_CALL_TIMEOUT", "30"))

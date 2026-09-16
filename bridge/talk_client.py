@@ -219,6 +219,7 @@ class TalkClient:
             await entry["pc"].close()
         if "virtual_sessionid" in entry:
             await self._remove_virtual_session(entry["virtual_sessionid"], roomid)
+        print(f"[talk] Call {sip_call_id} ended, virtual session removed")
 
     # -- thread-safe entry points for sip_core.CallManager callbacks ------
     def on_call_connected(self, *, call_id, direction, rtp):
