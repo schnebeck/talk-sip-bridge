@@ -88,7 +88,10 @@ production `spreed` app config only, not written down here). The native
    (`AUTO_BYE_SECONDS` safety net, no real audio) and its separate
    audio-bridge proof of concept get merged into one daemon that both
    registers continuously and carries real audio.
-6. **Packaging.** Nextcloud app follows the same pattern as the PoC app
-   (`custom_apps`, admin settings, `occ app:*`), adjusted for the removed
-   chat-bot UI - status/config only, no accept/decline commands needed once
-   calls are native Talk participants.
+6. **Packaging.** A `custom_apps`-installed Nextcloud app for admin settings
+   (status/config), installed and updated via `occ app:*`.
+7. **Localization.** Any Nextcloud UI component (admin settings page, JS)
+   uses English as the source language (`$l->t()` / `t()` calls with English
+   strings), with a generated German translation in `l10n/de.json` /
+   `l10n/de.js` - Nextcloud's standard i18n mechanism, not hardcoded German
+   text in the templates.
