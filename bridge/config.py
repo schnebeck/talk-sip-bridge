@@ -70,6 +70,12 @@ class Config:
         self.backend_url = _require("BRIDGE_BACKEND_URL")  # e.g. https://nextcloud.example
         self.default_room_token = os.environ.get("BRIDGE_DEFAULT_ROOM", "")
 
+        # Local HTTP control API (status/toggle) for the Nextcloud app to
+        # call. Bind to an address reachable from the Nextcloud container
+        # (e.g. the Docker bridge gateway), never 0.0.0.0.
+        self.control_bind = os.environ.get("BRIDGE_CONTROL_BIND", "127.0.0.1")
+        self.control_port = int(os.environ.get("BRIDGE_CONTROL_PORT", "8765"))
+
     @property
     def media_relay_enabled(self) -> bool:
         return bool(self.relay_lan_host and self.relay_overlay_host)

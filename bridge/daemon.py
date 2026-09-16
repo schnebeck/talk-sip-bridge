@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Production daemon: registers with the phone gateway, connects to Talk's
-signaling server as a dialout-capable internal client, and bridges real
-audio between the two for both inbound and outbound calls. See
-docs/CONCEPT.md for the architecture and docs/CONFIG.md for the required
-environment variables.
+"""Production daemon: connects to Talk's signaling server as a
+dialout-capable internal client and exposes a local HTTP control API
+(GET /status, POST /toggle) for the Nextcloud app to enable/disable gateway
+registration. Registration starts off; nothing calls the gateway until
+toggled on. See docs/CONCEPT.md for the architecture and docs/CONFIG.md for
+the required environment variables.
 """
-import sys
 import time
 
 from config import config
+import control_api
 import sip_core
 import talk_client
 
@@ -30,11 +31,8 @@ def main():
     transport_holder["transport"] = sip_core.SipTransport(call_manager)
     call_manager.transport = transport_holder["transport"]
 
-    print(f"[daemon] Registering {config.sip_user} against {config.proxy_host}:{config.proxy_port} ...")
-    if not registrar.turn_on():
-        print(f"[daemon] Registration failed: {registrar.last_error}", file=sys.stderr)
-        sys.exit(1)
-    print("[daemon] Registered. Waiting for calls / dialout requests ...")
+    control_api.start_in_background(config.control_bind, config.control_port, registrar, call_manager)
+    print(f"[daemon] Ready ({config.sip_user} not yet registered - toggle via the control API).")
 
     try:
         while True:

@@ -302,6 +302,16 @@ class CallManager:
         self.on_call_ended = on_call_ended or (lambda **kw: None)
         self.on_call_failed = on_call_failed or (lambda **kw: None)
 
+    def status(self) -> dict:
+        with self.lock:
+            if not self.call:
+                return {"active_call": None}
+            return {"active_call": {
+                "direction": self.call.get("direction", "inbound"),
+                "status": self.call["status"],
+                "number": self.call.get("number"),
+            }}
+
     def _send_response(self, status_line, req_headers, remote_addr, extra_headers=None, body="", to_tag=None):
         via_values = req_headers.get("via", [])
         if isinstance(via_values, str):
