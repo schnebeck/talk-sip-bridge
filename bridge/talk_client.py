@@ -15,9 +15,11 @@ daemon.py) and bridges to sip_core.CallManager, whose callbacks fire from
 plain worker threads via asyncio.run_coroutine_threadsafe.
 """
 import asyncio
+import base64
 import fractions
 import hashlib
 import hmac
+import http.cookiejar
 import json
 import secrets
 import threading
@@ -76,25 +78,65 @@ def _parse_ice_candidate(cand_str: str, sdp_mid=None, sdp_mline_index=0) -> RTCI
     )
 
 
-def _notify_call_sync(action: str, call_id: str, *, caller: str = "", roomid: str = "", user: str = ""):
-    """Blocking HTTP call to the fritzboxbridge Nextcloud app's own
-    /call/ring or /call/clear endpoint - run via asyncio.to_thread from the
-    caller. No-ops quietly if notify_secret isn't configured (feature off).
-    Deliberately stdlib-only (urllib), not a new dependency, for one POST
-    that doesn't need to be fast."""
-    if not config.notify_secret:
-        return
-    url = f"{config.backend_url.rstrip('/')}/apps/fritzboxbridge/call/{action}"
-    body = json.dumps({"callId": call_id, "caller": caller, "roomToken": roomid, "user": user}).encode()
-    req = urllib.request.Request(url, data=body, method="POST", headers={
-        "Content-Type": "application/json",
-        "X-Bridge-Secret": config.notify_secret,
-    })
+def _talk_ocs_request(opener, base: str, auth_header: str, method: str, path: str, body: dict = None):
+    data = json.dumps(body).encode() if body is not None else None
+    headers = {"OCS-APIREQUEST": "true", "Accept": "application/json", "Authorization": auth_header}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(f"{base}{path}", data=data, method=method, headers=headers)
+    with opener.open(req, timeout=5) as resp:
+        return resp.read()
+
+
+def _talk_ring_start_sync(roomid: str, nc_user: str, nc_app_password: str):
+    """Uses Talk's own OCS call-signaling API (POST .../call/{token}) to
+    make the bridge's Nextcloud account one more device joining the room's
+    call - confirmed live that this is what actually triggers real ringing
+    (push notification, full-screen call UI) on every other device logged
+    into that account or already in the room, not just a chat message or a
+    custom notification.
+
+    Joining the call requires an existing room session first - confirmed
+    live that calling the call endpoint directly, without having joined the
+    room, fails with 404 (Talk's RequireParticipant check rejects it). The
+    room join is cookie/session-based (like a browser), so the returned
+    opener/cookie jar has to be kept and reused for the matching
+    _talk_ring_stop_sync call - joining a fresh session there and leaving
+    immediately would end the call before anyone had a chance to answer it.
+
+    Returns (opener, session_id) on success, or (None, None) if the feature
+    isn't configured or the calls failed. session_id is the room session id
+    Talk assigned to this triggering join (from the join-room response) -
+    the signaling server broadcasts this same account joining the call to
+    every room member including our own internal client, so it has to be
+    recognized and excluded from "a human accepted" detection, or the
+    bridge would immediately mistake its own ring-trigger for an accept."""
+    if not nc_user or not nc_app_password:
+        return None, None
+    base = config.backend_url.rstrip('/')
+    auth_header = "Basic " + base64.b64encode(f"{nc_user}:{nc_app_password}".encode()).decode()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            resp.read()
+        join_resp = _talk_ocs_request(opener, base, auth_header, "POST", f"/ocs/v2.php/apps/spreed/api/v4/room/{roomid}/participants/active", {})
+        session_id = json.loads(join_resp)["ocs"]["data"].get("sessionId")
+        _talk_ocs_request(opener, base, auth_header, "POST", f"/ocs/v2.php/apps/spreed/api/v4/call/{roomid}", {"flags": 1})
+        return opener, session_id
+    except (urllib.error.URLError, OSError, KeyError, ValueError) as e:
+        print(f"[talk] Starting Talk call ring for room {roomid} failed: {e!r}")
+        return None, None
+
+
+def _talk_ring_stop_sync(opener, roomid: str, nc_user: str, nc_app_password: str):
+    """Ends what _talk_ring_start_sync started - leaves the call, then the
+    room, using the same session (opener) so Talk attributes it to the
+    right participant."""
+    base = config.backend_url.rstrip('/')
+    auth_header = "Basic " + base64.b64encode(f"{nc_user}:{nc_app_password}".encode()).decode()
+    try:
+        _talk_ocs_request(opener, base, auth_header, "DELETE", f"/ocs/v2.php/apps/spreed/api/v4/call/{roomid}?all=false")
+        _talk_ocs_request(opener, base, auth_header, "DELETE", f"/ocs/v2.php/apps/spreed/api/v4/room/{roomid}/participants/active")
     except (urllib.error.URLError, OSError) as e:
-        print(f"[talk] Notify {action} for {call_id} failed: {e!r}")
+        print(f"[talk] Stopping Talk call ring for room {roomid} failed: {e!r}")
 
 
 class SipAudioTrack(AudioStreamTrack):
@@ -353,6 +395,7 @@ class TalkClient:
             own_and_virtual = {self.own_sessionid}
             active_call_id = None
             waiting_call_id = None
+            waiting_entry = None
             for call_id, entry in self._call_sessions.items():
                 if entry.get("virtual_sessionid"):
                     own_and_virtual.add(entry["virtual_sessionid"])
@@ -362,6 +405,7 @@ class TalkClient:
                     active_call_id = call_id
                 elif entry.get("waiting_for_accept"):
                     waiting_call_id = call_id
+                    waiting_entry = entry
         if active_call_id is None and waiting_call_id is None:
             return
 
@@ -372,27 +416,40 @@ class TalkClient:
                 return False
 
         if waiting_call_id is not None:
+            # Deliberately no "all: true" check here, unlike the hangup
+            # detection below: our own ring-trigger session (see
+            # _handle_incoming_ring/_talk_ring_start_sync) is the one
+            # putting the room into its call state in the first place, and
+            # that transition is exactly what "all: true" reports - reacting
+            # to it would make the bridge mistake its own ring for a human
+            # accepting. A real human joining afterwards is a per-session
+            # change instead ("changed" delta or a "users" snapshot), which
+            # can be filtered by session id, so only those are treated as an
+            # accept signal.
+            exclude = own_and_virtual | {waiting_entry.get("talk_ring_sessionid")}
             accepted = False
-            if update.get("all"):
-                in_call_raw = update.get("incall", update.get("inCall"))
-                accepted = in_call_raw is not None and is_in_call(in_call_raw)
-            else:
-                for item in update.get("changed") or []:
-                    session_id = item.get("sessionId") or item.get("sessionid")
-                    if session_id and session_id not in own_and_virtual and "inCall" in item and is_in_call(item["inCall"]):
+            for item in update.get("changed") or []:
+                session_id = item.get("sessionId") or item.get("sessionid")
+                if session_id and session_id not in exclude and "inCall" in item and is_in_call(item["inCall"]):
+                    accepted = True
+                    break
+            if not accepted:
+                for u in update.get("users") or []:
+                    if (u.get("sessionId") or u.get("sessionid")) not in exclude and is_in_call(u.get("inCall")):
                         accepted = True
                         break
-                if not accepted:
-                    for u in update.get("users") or []:
-                        if (u.get("sessionId") or u.get("sessionid")) not in own_and_virtual and is_in_call(u.get("inCall")):
-                            accepted = True
-                            break
             if accepted:
                 print(f"[talk] Human joined the call - accepting {waiting_call_id}")
                 with self._call_sessions_lock:
                     entry = self._call_sessions.get(waiting_call_id)
                     if entry is not None:
                         entry["waiting_for_accept"] = False  # avoid double-triggering answer()
+                opener = waiting_entry.get("talk_ring_opener")
+                if opener is not None:
+                    # The ring-trigger session's job is done now that a real
+                    # client has joined - leave it so the bridge doesn't
+                    # linger as a phantom extra participant.
+                    await self._stop_talk_ring(self._entry_roomid(waiting_call_id), opener, self.call_manager.line)
                 self.call_manager.answer()
             return
 
@@ -607,12 +664,12 @@ class TalkClient:
             entry = self._call_sessions.pop(sip_call_id, None)
         if not entry:
             return
-        if entry.get("waiting_for_accept"):
+        if entry.get("waiting_for_accept") and entry.get("talk_ring_opener") is not None:
             # The call ended (cancelled - a physical phone in the same
             # parallel ring group answered first, or the caller hung up)
-            # before a human joined it in Talk - retract the ring
-            # notification, nothing else to publish/remove.
-            await self._clear_incoming_notification(sip_call_id, self.call_manager.line.notify_user)
+            # before a human joined it in Talk - leave the ring-trigger call/
+            # room session, nothing else to publish/remove.
+            await self._stop_talk_ring(roomid, entry["talk_ring_opener"], self.call_manager.line)
         if "relay_task" in entry:
             entry["relay_task"].cancel()
         if "sub_pc" in entry:
@@ -688,11 +745,14 @@ class TalkClient:
     async def _handle_incoming_ring(self, call_id: str, caller: str):
         line = self.call_manager.line
         roomid = line.default_room_token
-        if not roomid or not line.notify_user:
+        if not roomid or not line.notify_user or not line.notify_app_password:
             print(f"[talk] Incoming call {call_id} from {caller} on line {line.id} - "
-                  f"no notify_user/default room configured, leaving it ringing")
+                  f"no notify_user/notify_app_password/default room configured, leaving it ringing")
             return
-        await self._notify_incoming_call(call_id, caller, roomid, line.notify_user)
+        opener, ring_sessionid = await asyncio.to_thread(
+            _talk_ring_start_sync, roomid, line.notify_user, line.notify_app_password)
+        if opener is None:
+            return
         self._room_joined_event.clear()
         await self.ws.send(json.dumps({"id": "bridge-room", "type": "room", "room": {"roomid": roomid}}))
         try:
@@ -703,13 +763,12 @@ class TalkClient:
             entry = self._call_sessions.get(call_id)
             if entry is not None:
                 entry["waiting_for_accept"] = True
-        print(f"[talk] Notified {line.notify_user} of call {call_id} from {caller}, watching room {roomid} for accept")
+                entry["talk_ring_opener"] = opener
+                entry["talk_ring_sessionid"] = ring_sessionid
+        print(f"[talk] Ringing {line.notify_user} for call {call_id} from {caller}, watching room {roomid} for accept")
 
-    async def _notify_incoming_call(self, call_id: str, caller: str, roomid: str, user: str):
-        await asyncio.to_thread(_notify_call_sync, "ring", call_id, caller=caller, roomid=roomid, user=user)
-
-    async def _clear_incoming_notification(self, call_id: str, user: str):
-        await asyncio.to_thread(_notify_call_sync, "clear", call_id, user=user)
+    async def _stop_talk_ring(self, roomid: str, opener, line):
+        await asyncio.to_thread(_talk_ring_stop_sync, opener, roomid, line.notify_user, line.notify_app_password)
 
 
 def start_in_background(call_manager) -> TalkClient:

@@ -21,7 +21,7 @@ per-line variable in the tables below (everything except
 `BRIDGE_OUTBOUND_CALL_TIMEOUT`, `BRIDGE_MAX_CALL_DURATION`,
 `BRIDGE_AUTO_ANSWER`, `BRIDGE_AGC_*`, `BRIDGE_CONTROL_BIND`/`_PORT`,
 `BRIDGE_WS_URL`, `BRIDGE_INTERNAL_SECRET`, `BRIDGE_BACKEND_URL`,
-`BRIDGE_NOTIFY_SECRET` and `BRIDGE_LOCAL_IP`, which stay global) is then
+`BRIDGE_LOCAL_IP`, which stay global) is then
 set per line as
 `BRIDGE_LINE_<id>_<name>`, e.g. `BRIDGE_LINE_<id>_SIP_USER`,
 `BRIDGE_LINE_<id>_LOCAL_SIP_PORT`. `LOCAL_SIP_PORT` and `LOCAL_RTP_PORT`
@@ -46,18 +46,23 @@ whichever line's own registered number was actually dialed.
 
 For a line whose gateway already rings several physical devices in parallel
 for the same number (e.g. a FritzBox call-distribution group), setting
-`NOTIFY_USER` makes the bridge one more competing device: an inbound call
-on that line (while `BRIDGE_AUTO_ANSWER` is off, the default) triggers a
-real Nextcloud notification for that user linking straight into the call's
-Talk room, and the bridge answers automatically the moment they join it
-there - racing whichever device (physical or Talk) answers first. If a
-physical device wins, the gateway cancels the bridge's leg as usual and the
-notification is retracted. See `docs/CONCEPT.md` point 12.
+`NOTIFY_USER` and `NOTIFY_APP_PASSWORD` makes the bridge one more competing
+device: an inbound call on that line (while `BRIDGE_AUTO_ANSWER` is off,
+the default) signs into that Nextcloud account and uses Talk's own OCS call
+API to join the call in the configured room - the same mechanism a real
+Talk client uses to start a call, so it triggers real ringing (push,
+full-screen call UI) on every other device logged into that account or
+already in the room, not just a chat message. The bridge answers the SIP
+side automatically the moment a different, real session joins that call -
+racing whichever device (physical phone or Talk) answers first. If a
+physical device wins, the gateway cancels the bridge's SIP leg as usual and
+the bridge leaves the Talk call it triggered. See `docs/CONCEPT.md` point
+12.
 
-Requires `BRIDGE_NOTIFY_SECRET` (global) and the `fritzboxbridge` Nextcloud
-app's own `notify_secret` app config set to the same value
-(`occ config:app:set fritzboxbridge notify_secret --value=...`) - see
-`deploy/README.md`.
+`NOTIFY_APP_PASSWORD` is an app password for `NOTIFY_USER`'s account
+(Nextcloud Settings -> Security -> "Create new app password"), not that
+account's real login password. That account must already be a member of
+the line's `DEFAULT_ROOM`.
 
 ## Required
 
@@ -92,8 +97,8 @@ app's own `notify_secret` app config set to the same value
 | `BRIDGE_AGC_ENABLED` | `true` | Automatic gain control on audio coming from the phone side before it's published into Talk (see `agc.py`). Some handsets (e.g. a DECT cordless) have a much quieter microphone than a laptop/headset, with no way to adjust that from this end of the call, and how quiet it sounds also varies with distance to the handset - AGC adapts continuously rather than needing one fixed multiplier. |
 | `BRIDGE_AGC_TARGET_PEAK` | 10000 | Peak amplitude (out of a max of 32767) the AGC aims for. |
 | `BRIDGE_AGC_MAX_GAIN` | 20.0 | Upper bound on how far the AGC will amplify a quiet signal. |
-| `BRIDGE_NOTIFY_SECRET` | (empty) | Global. Shared secret authenticating this daemon to the `fritzboxbridge` app's `/call/ring` and `/call/clear` endpoints - see "Ring notification" above. Empty disables the feature for every line regardless of their own `NOTIFY_USER`. |
-| `BRIDGE_NOTIFY_USER` | (empty) | Per-line. Nextcloud user id to notify for an inbound call on this line that isn't auto-answered - see "Ring notification" above. Empty leaves the line ringing with no Talk-side notification, as before this existed. |
+| `BRIDGE_NOTIFY_USER` | (empty) | Per-line. Nextcloud account the bridge signs into to ring a call on this line's behalf, via Talk's own OCS call API - see "Ring notification" above. Empty leaves the line ringing with no Talk-side signal, as before this existed. |
+| `BRIDGE_NOTIFY_APP_PASSWORD` | (empty) | Per-line. App password for `BRIDGE_NOTIFY_USER`'s account. |
 
 ## Media relay (only if the gateway can't reach this host directly)
 

@@ -159,24 +159,43 @@ production `spreed` app config only, not written down here). The native
     first line, so a single-line deployment is unaffected). Lines are
     independent of the registrar/gateway they point at, so a deployment
     could mix e.g. a FritzBox line and an Asterisk line.
-12. **Ring notification, for a line where a human should get a chance to
-    answer in Talk.** The signaling protocol has no ringing/accept-decline
+12. **Ring signal, for a line where a human should get a chance to answer
+    in Talk.** The signaling protocol has no ringing/accept-decline
     exchange for inbound calls, so there's no native way to ask before
-    picking up - `LineConfig.notify_user` builds one: `on_incoming_call`
-    (when `BRIDGE_AUTO_ANSWER` is off) POSTs to the `fritzboxbridge`
-    Nextcloud app's own `/call/ring` endpoint (shared-secret authenticated,
-    `config.notify_secret`; see `nextcloud-app/fritzboxbridge/lib/Controller/CallSignalController.php`),
-    which creates a real Nextcloud notification linking into the call's
-    Talk room. The bridge then joins that room itself (same mechanism as
-    `_publish_call_audio`'s room-join) purely to watch its
-    `participants`/`update` events for a human joining the call -
-    `_handle_participants_update` handles this symmetrically to its
-    existing call-end detection, just checking for the opposite inCall
-    transition. On accept, it calls `CallManager.answer()`. If a different
-    device answers instead (e.g. a physical phone in the same FritzBox
+    picking up - `LineConfig.notify_user`/`notify_app_password` build one:
+    `on_incoming_call` (when `BRIDGE_AUTO_ANSWER` is off) signs into that
+    Nextcloud account and calls Talk's own OCS call API
+    (`_talk_ring_start_sync`) - `POST .../room/{token}/participants/active`
+    to establish a room session, then `POST .../call/{token}` to join the
+    call - the same two calls a real Talk client makes to start a call, so
+    it triggers real ringing (push, full-screen call UI) on every other
+    device logged into that account or already in the room, not just a
+    chat message or a bare notification. Confirmed live that skipping the
+    room-join step and calling the call endpoint directly fails with 404
+    (`RequireParticipant`) - a bare custom Nextcloud endpoint was tried
+    first here and abandoned after extensive testing surfaced a routing bug
+    specific to this instance's `fritzboxbridge` app (all its POST/GET
+    routes except one returning a bare 405 straight from Symfony's router,
+    root cause not identified); Talk's own OCS API sidesteps it entirely.
+
+    The triggering session is deliberately kept open (its cookies/opener
+    stored on the call entry) rather than immediately left - leaving right
+    away would end the call's ring before another device had a chance to
+    answer. The bridge also joins the room itself over its own internal-
+    client connection (same mechanism as `_publish_call_audio`'s room-join)
+    purely to watch `participants`/`update` events for a *different* real
+    session joining the call - `_handle_participants_update` handles this
+    symmetrically to its existing call-end detection, checking for the
+    opposite inCall transition, deliberately excluding both its own
+    session and the ring-trigger session's id (the "all: true" room-wide
+    broadcast is excluded from this check entirely, since the ring-trigger
+    joining a previously-callless room is itself what causes that specific
+    broadcast). On a genuine accept, the bridge leaves the ring-trigger
+    session and calls `CallManager.answer()`. If a different device
+    answers instead (e.g. a physical phone in the same FritzBox
     parallel-ring group), the gateway cancels this INVITE as usual
-    (`CallManager.handle_cancel`), and `/call/clear` retracts the
-    notification. `_handle_incoming_ring`'s room-join has the same
-    dial-out-eligibility cost as a real call's publish (point 3) and is
-    cleaned up the same way (a forced reconnect once the call ends, whether
-    accepted or cancelled).
+    (`CallManager.handle_cancel`), which leaves the ring-trigger session
+    the same way. `_handle_incoming_ring`'s internal-client room-join has
+    the same dial-out-eligibility cost as a real call's publish (point 3)
+    and is cleaned up the same way (a forced reconnect once the call ends,
+    whether accepted or cancelled).

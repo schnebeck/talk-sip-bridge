@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace OCA\FritzboxBridge\AppInfo;
 
-use OCA\FritzboxBridge\Notification\Notifier;
 use OCP\AppFramework\App;
 use OCP\AppFramework\Bootstrap\IBootContext;
 use OCP\AppFramework\Bootstrap\IBootstrap;
@@ -18,7 +17,6 @@ class Application extends App implements IBootstrap {
 	}
 
 	public function register(IRegistrationContext $context): void {
-		$context->registerNotifierService(Notifier::class);
 	}
 
 	public function boot(IBootContext $context): void {
