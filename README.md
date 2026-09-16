@@ -18,6 +18,5 @@ configuration, and `deploy/README.md` for installation.
   (`bridge/test_publish_and_verify.py`).
 - `nextcloud-app/fritzboxbridge/` - admin settings page (status/toggle),
   installed and verified on the production Nextcloud instance.
-- Not yet deployed as the primary bridge - runs alongside the
-  `sip-fritzbox-experiment` PoC's daemon during evaluation, not in place of
-  it.
+- Deployed as the primary bridge (`deploy/`), running as the
+  `fritzbox-talk-bridge` systemd service.

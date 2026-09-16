@@ -41,9 +41,9 @@ No IPs, ports, or secrets are hardcoded in code.
 ## Media relay (only if the gateway can't reach this host directly)
 
 Leave unset if the phone gateway can deliver SIP and RTP directly to
-`BRIDGE_LOCAL_IP`. Set all four if a relay is needed (see the PoC's
-`NETZWERK.md` and `rtp_relay.py` for why the FritzBox specifically needs
-this):
+`BRIDGE_LOCAL_IP`. Set all four if a relay is needed - e.g. a FritzBox
+reachable only through a VPN, with a relay host on its LAN forwarding
+SIP/RTP to this host over the tunnel:
 
 | Variable | Meaning |
 |---|---|
