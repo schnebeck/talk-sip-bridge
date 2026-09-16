@@ -32,6 +32,32 @@ it.
   param and the ICE trickle-candidate handling.
 - FFT-based audio verification methodology for testing.
 
+## Unlocking the native UI in Talk
+
+All native SIP/dialout endpoints (`POST /call/{token}/dialout/{attendeeId}`,
+`verify-dialout`, etc.) are gated behind `Config::isSIPConfigured()` /
+`isSIPDialOutEnabled()`, found in `custom_apps/spreed/lib/Config.php`. Three
+`spreed` app config values, settable via `occ config:app:set`:
+
+- `sip_bridge_shared_secret` - any non-empty secret (used for the separate
+  REST `/signaling/settings` SIP-bridge auth path, not the WS-level
+  `dialout` mechanism itself, but required for `isSIPConfigured()`).
+- `sip_bridge_dialin_info` - must be non-empty (free text shown to users;
+  content irrelevant to us since we don't use real dial-in phone numbers).
+- `sip_dialout` - must not be `no` (e.g. `yes`) to satisfy
+  `isSIPDialOutEnabled()`.
+- `sip_bridge_groups` (optional) - restricts which groups can enable SIP
+  per-room; empty means all users. Worth setting to an admin/test group
+  while this is unfinished, so the new UI doesn't appear for regular users
+  before the daemon side actually works.
+
+**Applied on the production server** (2026-09-16): `sip_bridge_groups` set to
+a new `sip-testers` group containing only `sip-tester`, `sip_bridge_dialin_info`
+set to a placeholder string, `sip_dialout` set to `yes`, and
+`sip_bridge_shared_secret` set to a freshly generated secret (value is in the
+production `spreed` app config only, not written down here). The native
+"call a phone number" UI is now visible only to `sip-tester`.
+
 ## What's new here
 
 1. **Config, not hardcoded constants.** All IPs/ports/secrets come from a

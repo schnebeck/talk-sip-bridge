@@ -1,0 +1,41 @@
+# Configuration
+
+All configuration is via environment variables (`bridge/config.py`), loaded
+by `deploy/bridge.env` in a real deployment (see `deploy/bridge.service`).
+No IPs, ports, or secrets are hardcoded in code.
+
+## Required
+
+| Variable | Meaning |
+|---|---|
+| `BRIDGE_SIP_USER` | SIP account username on the phone gateway. |
+| `BRIDGE_SIP_PASS` | SIP account password. |
+| `BRIDGE_GATEWAY_HOST` | The phone gateway's SIP registrar address (e.g. the FritzBox). |
+| `BRIDGE_LOCAL_IP` | This host's address, used in SIP Via/Contact and RTP binding. |
+| `BRIDGE_WS_URL` | The Talk standalone signaling server's WebSocket URL. |
+| `BRIDGE_INTERNAL_SECRET` | The signaling server's `internalsecret` (from its `server.conf`). |
+| `BRIDGE_BACKEND_URL` | The Nextcloud instance URL (sent as the internal-client `backend` hello param). |
+
+## Optional
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `BRIDGE_PROXY_HOST` / `BRIDGE_PROXY_PORT` | gateway host / 5060 | Where SIP requests are actually sent - a relay if one is needed (see "Media relay" below), otherwise the gateway itself. |
+| `BRIDGE_LOCAL_SIP_PORT` | 5060 | Local UDP port for SIP signaling. |
+| `BRIDGE_LOCAL_RTP_PORT` | 40000 | Local UDP port for RTP media. |
+| `BRIDGE_REGISTER_EXPIRES` | 600 | SIP registration lifetime in seconds. |
+| `BRIDGE_SIP_RESPONSE_TIMEOUT` | 6 | How long to wait for a SIP response before giving up. |
+| `BRIDGE_OUTBOUND_CALL_TIMEOUT` | 30 | How long an outbound call may ring before giving up. |
+| `BRIDGE_DEFAULT_ROOM` | (empty) | Talk room token that inbound/outbound calls are bridged into. |
+
+## Media relay (only if the gateway can't reach this host directly)
+
+Leave unset if the phone gateway can deliver SIP and RTP directly to
+`BRIDGE_LOCAL_IP`. Set all four if a relay is needed (see the PoC's
+`NETZWERK.md` and `rtp_relay.py` for why the FritzBox specifically needs
+this):
+
+| Variable | Meaning |
+|---|---|
+| `BRIDGE_RELAY_LAN_HOST` / `BRIDGE_RELAY_LAN_PORT` | The relay's address reachable from the gateway's own LAN - advertised in our SIP Contact header and SDP. |
+| `BRIDGE_RELAY_OVERLAY_HOST` / `BRIDGE_RELAY_OVERLAY_PORT` | The relay's address reachable from this host - where our own SIP/RTP sockets actually send to. |
