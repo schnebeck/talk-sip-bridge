@@ -97,11 +97,15 @@ production `spreed` app config only, not written down here). The native
    route audio anywhere - the bridge also joins the room itself
    (`{"type": "room", "room": {"roomid": ...}}`) so the signaling server
    routes its self-addressed WebRTC offer to that room's Janus instance;
-   verified via `bridge/test_publish_and_verify.py`. Joining a room makes
-   the signaling server exclude the session from dialout candidates for as
-   long as it stays there, so the bridge leaves the room again
-   (`roomid: ""`) once the call ends - fine given only one call is ever
-   handled at a time.
+   verified via `bridge/test_publish_and_verify.py`. Joining a room
+   permanently drops the session from the signaling server's dialout
+   candidates for the lifetime of that WebSocket connection - confirmed in
+   its own source, there is no code path that restores it, including on
+   leaving the room again. The only way to regain dialout eligibility is a
+   fresh connection with a new hello, so the bridge deliberately closes and
+   reconnects once a call ends (handled by the existing reconnect loop in
+   `_connect_and_serve`) - fine given only one call is ever handled at a
+   time.
 4. **Multi-call daemon.** The PoC's standalone audio-bridge script handles
    exactly one call and then exits; the production daemon needs to keep
    registering and accepting new calls indefinitely (the always-on

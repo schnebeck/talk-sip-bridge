@@ -58,6 +58,19 @@ def _digest_response(username: str, realm: str, password: str, method: str, uri:
     return md5hex(f"{ha1}:{nonce}:{ha2}")
 
 
+def _extract_contact_uri(contact_header: str) -> str:
+    """A Contact header value may be "<sip:...>" or a bare "sip:...",
+    optionally followed by ;params. In-dialog requests (BYE, etc.) must be
+    sent to this URI, not the original Request-URI/To - RFC 3261 - the
+    party at the other end may only be reachable at an address it gave us
+    dynamically (e.g. the gateway assigning an opaque per-dialog contact)."""
+    contact_header = contact_header.strip()
+    m = re.search(r'<([^>]+)>', contact_header)
+    if m:
+        return m.group(1)
+    return contact_header.split(';')[0].strip()
+
+
 def _parse_auth_challenge(auth_val: str) -> dict:
     if auth_val.lower().startswith("digest"):
         auth_val = auth_val.split(" ", 1)[1]
@@ -426,8 +439,13 @@ class CallManager:
         if call.get("rtp"):
             call["rtp"].close()
         if call.get("direction") == "outbound":
+            # In-dialog requests go to the Contact the gateway gave us in
+            # its 200 OK (often an opaque per-dialog URI, not the number we
+            # dialed) - falls back to the original target if a call somehow
+            # never captured one (should not normally happen once connected).
+            request_uri = call.get("remote_contact") or f"sip:{call['number']}@{config.gateway_host}"
             bye = (
-                f"BYE sip:{call['number']}@{config.gateway_host} SIP/2.0\r\n"
+                f"BYE {request_uri} SIP/2.0\r\n"
                 f"Via: SIP/2.0/UDP {config.local_ip}:{config.local_sip_port};rport;branch=z9hG4bK{secrets.token_hex(4)}\r\n"
                 f"Max-Forwards: 70\r\n"
                 f"From: <sip:{config.sip_user}@{config.gateway_host}>;tag={call['from_tag']}\r\n"
@@ -437,8 +455,12 @@ class CallManager:
             self.transport.send(bye.encode())
         else:
             headers = call["headers"]
+            # Likewise, the caller's own Contact from their INVITE is the
+            # correct in-dialog target - not the gateway's registrar address.
+            caller_contact = headers.get("contact", "")
+            request_uri = _extract_contact_uri(caller_contact) if caller_contact else f"sip:{config.gateway_host}"
             bye = (
-                f"BYE sip:{config.gateway_host} SIP/2.0\r\n"
+                f"BYE {request_uri} SIP/2.0\r\n"
                 f"Via: SIP/2.0/UDP {config.local_ip}:{config.local_sip_port};rport;branch=z9hG4bK{secrets.token_hex(4)}\r\n"
                 f"Max-Forwards: 70\r\n"
                 f"From: {headers.get('to', '')}\r\n"
@@ -558,12 +580,15 @@ class CallManager:
                     to_header = resp_headers.get("to", "")
                     m = re.search(r'tag=([^;>\s]+)', to_header)
                     to_tag = m.group(1) if m else None
+                    remote_contact = resp_headers.get("contact", "")
                     send_ack(to_header, cseq)
                     with self.lock:
                         if self.call and self.call["call_id"] == call_id:
                             self.call["status"] = "connected"
                             self.call["to_tag"] = to_tag
                             self.call["rtp"] = rtp
+                            if remote_contact:
+                                self.call["remote_contact"] = _extract_contact_uri(remote_contact)
                     if config.media_relay_enabled:
                         rtp.send_pcm(np.zeros(160, dtype=np.int16))
                     timer = threading.Timer(config.max_call_duration, self.hangup)

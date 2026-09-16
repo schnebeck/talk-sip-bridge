@@ -36,9 +36,19 @@ UPSAMPLE_FACTOR = AUDIO_SAMPLE_RATE // SIP_SAMPLE_RATE
 RTP_QUEUE_POLL_INTERVAL = 0.02  # matches one 20ms RTP packet - keeps frame pacing real-time
 
 
+def _upsample_linear(pcm: np.ndarray, factor: int) -> np.ndarray:
+    """Linear interpolation, not sample repetition - repetition produces a
+    staircase waveform (harsh, aliased); this is a large audible
+    improvement for a small amount of code, without adding a dependency
+    for full sinc-based resampling."""
+    n_in = len(pcm)
+    x_out = np.linspace(0, n_in - 1, n_in * factor)
+    return np.interp(x_out, np.arange(n_in), pcm).astype(np.int16)
+
+
 class SipAudioTrack(AudioStreamTrack):
     """Reads decoded PCM (8kHz mono) from an RtpSession's receive queue,
-    upsampled to AUDIO_SAMPLE_RATE by simple repetition."""
+    upsampled to AUDIO_SAMPLE_RATE."""
 
     def __init__(self, rtp_session):
         super().__init__()
@@ -50,7 +60,7 @@ class SipAudioTrack(AudioStreamTrack):
             pcm_8k = await asyncio.to_thread(self.rtp_session.recv_queue.get, True, RTP_QUEUE_POLL_INTERVAL)
         except Exception:
             pcm_8k = np.zeros(160, dtype=np.int16)
-        pcm_48k = np.repeat(pcm_8k, UPSAMPLE_FACTOR)
+        pcm_48k = _upsample_linear(pcm_8k, UPSAMPLE_FACTOR)
         frame = AudioFrame.from_ndarray(pcm_48k.reshape(1, -1), format="s16", layout="mono")
         frame.sample_rate = AUDIO_SAMPLE_RATE
         frame.pts = self._pts
@@ -123,6 +133,15 @@ class TalkClient:
                 await self._handle_webrtc_message(msg["message"])
             elif msg_type == "room" and msg.get("id") == "bridge-room":
                 self._room_joined_event.set()
+            elif msg_type == "control" and msg.get("control", {}).get("data", {}).get("type") == "hangup":
+                # Sent when the call's virtual phone session is disinvited
+                # (the room participant hung up in Talk, or the room's call
+                # ended) or targeted with an explicit hangup control message
+                # - the server rewrites the recipient to our own session
+                # either way. Only one call is ever active, so there is
+                # nothing else to disambiguate against.
+                print("[talk] Hangup control received - ending the active call")
+                self.call_manager.hangup()
 
     async def _handle_dialout(self, msg: dict):
         """Talk's native "call a phone number" UI triggers this. The
@@ -225,6 +244,32 @@ class TalkClient:
         virtual_sessionid = await self._add_virtual_session(sip_call_id, roomid=roomid, number=number, caller=True)
         pc = RTCPeerConnection()
         pc.addTrack(SipAudioTrack(rtp_session))
+
+        # Ending a call in Talk's UI does not send an explicit hangup control
+        # message for this room type - what actually happens is the Janus
+        # publisher gets torn down at the DTLS level. That alone does not
+        # reliably move iceConnectionState to "closed"/"failed" in aiortc,
+        # but connectionState (which also factors in the DTLS/SCTP state)
+        # does. This is the only observed signal that the human ended the
+        # call, so it drives the actual SIP hangup - without it, the phone
+        # side stays connected indefinitely regardless of what Talk shows.
+        hangup_triggered = False
+
+        def maybe_hangup(source: str, state: str):
+            nonlocal hangup_triggered
+            print(f"[talk] Publish {source}: {state}")
+            if not hangup_triggered and state in ("failed", "closed", "disconnected"):
+                hangup_triggered = True
+                self.call_manager.hangup()
+
+        @pc.on("iceconnectionstatechange")
+        async def on_ice_state_change():
+            maybe_hangup("ICE state", pc.iceConnectionState)
+
+        @pc.on("connectionstatechange")
+        async def on_connection_state_change():
+            maybe_hangup("connection state", pc.connectionState)
+
         with self._call_sessions_lock:
             entry = self._call_sessions.setdefault(sip_call_id, {})
             entry["virtual_sessionid"] = virtual_sessionid
@@ -260,13 +305,18 @@ class TalkClient:
             await entry["pc"].close()
         if "virtual_sessionid" in entry:
             await self._remove_virtual_session(entry["virtual_sessionid"], roomid)
-        if "pc" in entry:
-            # Leave the room we joined to publish - restores dialout
-            # eligibility for the next call.
-            await self.ws.send(json.dumps({"id": "bridge-room-leave", "type": "room", "room": {"roomid": ""}}))
         if entry.get("kind") == "dialout":
             await self._send_dialout_status(sip_call_id, roomid, "cleared")
         print(f"[talk] Call {sip_call_id} ended, virtual session removed")
+        if "pc" in entry:
+            # The signaling server permanently drops a "start-dialout"
+            # session from its dialout candidates the moment it joins any
+            # room (confirmed in its own source - there is no code path
+            # that re-adds it, including on leaving the room again). The
+            # only way to become dialout-eligible again is a fresh
+            # connection with a new hello, so force a reconnect - handled
+            # by the retry loop in _connect_and_serve.
+            await self.ws.close()
 
     def _entry_roomid(self, call_id: str) -> str:
         # Dialout calls carry their own room id, learned from the request
