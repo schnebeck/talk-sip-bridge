@@ -1,6 +1,9 @@
-"""SIP registration and call handling against the phone gateway, with real
-audio for both inbound and outbound calls. Holds at most one active call -
-a second incoming call is rejected with "486 Busy Here".
+"""SIP registration and call handling against a phone gateway, with real
+audio for both inbound and outbound calls. Each CallManager is bound to one
+LineConfig (see config.py) and holds at most one active call on that line -
+a second incoming call on the same line is rejected with "486 Busy Here".
+Running several lines concurrently means constructing several independent
+(SipTransport, SipRegistrar, CallManager) sets, one per line.
 
 Contains no Talk-specific logic - callers pass callback hooks
 (on_incoming_call, on_call_connected, on_call_ended, on_call_failed) so the
@@ -84,13 +87,15 @@ def _parse_auth_challenge(auth_val: str) -> dict:
 
 
 class SipTransport:
-    """A single, permanently bound UDP socket for everything: our own
-    REGISTER/INVITE transactions AND incoming requests. Our Contact header
-    (where calls arrive) points at exactly this port."""
+    """A single, permanently bound UDP socket for one line: its own
+    REGISTER/INVITE transactions AND incoming requests. Its Contact header
+    (where calls arrive) points at exactly this port. Only accepts traffic
+    from that line's own configured proxy/gateway."""
 
-    def __init__(self, call_manager):
+    def __init__(self, call_manager, line):
+        self.line = line
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind((config.local_ip, config.local_sip_port))
+        self.sock.bind((line.local_ip, line.local_sip_port))
         self.pending = {}
         self.pending_lock = threading.Lock()
         self.call_manager = call_manager
@@ -98,7 +103,7 @@ class SipTransport:
         self.thread.start()
 
     def send(self, data: bytes, addr=None):
-        self.sock.sendto(data, addr or (config.proxy_host, config.proxy_port))
+        self.sock.sendto(data, addr or (self.line.proxy_host, self.line.proxy_port))
 
     def wait_response(self, call_id: str, timeout: float = None):
         if timeout is None:
@@ -130,11 +135,11 @@ class SipTransport:
                 data, addr = self.sock.recvfrom(65536)
             except OSError:
                 return
-            if addr[0] != config.proxy_host:
-                # Only the configured proxy/gateway may send us SIP traffic -
-                # anything else on this network could otherwise forge an
-                # INVITE, BYE or CANCEL for an existing call.
-                print(f"[sip] Ignoring packet from unexpected source {addr[0]} (expected {config.proxy_host})")
+            if addr[0] != self.line.proxy_host:
+                # Only this line's configured proxy/gateway may send it SIP
+                # traffic - anything else on this network could otherwise
+                # forge an INVITE, BYE or CANCEL for an existing call.
+                print(f"[sip:{self.line.id}] Ignoring packet from unexpected source {addr[0]} (expected {self.line.proxy_host})")
                 continue
             text = data.decode(errors="replace")
             if not text.strip():
@@ -161,11 +166,12 @@ class SipTransport:
                 elif method == "OPTIONS":
                     self.call_manager.handle_options(text, headers, call_id, addr)
             except Exception as e:
-                print(f"[sip] Error handling {method}: {e}")
+                print(f"[sip:{self.line.id}] Error handling {method}: {e}")
 
 
 class SipRegistrar:
-    def __init__(self, transport_holder):
+    def __init__(self, transport_holder, line):
+        self.line = line
         self.lock = threading.Lock()
         self.registered = False
         self.keepalive_thread = None
@@ -174,19 +180,20 @@ class SipRegistrar:
         self._transport_holder = transport_holder
 
     def _build_register(self, cseq, call_id, tag, branch, auth_header=None, expires=None, wildcard_contact=False):
+        line = self.line
         expires = config.register_expires if expires is None else expires
         # Contact points at the configured proxy/relay's LAN-reachable
-        # address, not at ourselves, when a relay is configured (see
+        # address, not at this host itself, when a relay is configured (see
         # docs/CONFIG.md) - otherwise the gateway can't deliver calls here.
-        contact_host = config.contact_host or config.local_ip
-        contact_port = config.contact_port or config.local_sip_port
-        contact = "*" if wildcard_contact else f"<sip:{config.sip_user}@{contact_host}:{contact_port};transport=tcp>"
+        contact_host = line.contact_host or line.local_ip
+        contact_port = line.contact_port or line.local_sip_port
+        contact = "*" if wildcard_contact else f"<sip:{line.sip_user}@{contact_host}:{contact_port};transport=tcp>"
         lines = [
-            f"REGISTER sip:{config.gateway_host} SIP/2.0",
-            f"Via: SIP/2.0/UDP {config.local_ip}:{config.local_sip_port};rport;branch={branch}",
+            f"REGISTER sip:{line.gateway_host} SIP/2.0",
+            f"Via: SIP/2.0/UDP {line.local_ip}:{line.local_sip_port};rport;branch={branch}",
             "Max-Forwards: 70",
-            f"From: <sip:{config.sip_user}@{config.gateway_host}>;tag={tag}",
-            f"To: <sip:{config.sip_user}@{config.gateway_host}>",
+            f"From: <sip:{line.sip_user}@{line.gateway_host}>;tag={tag}",
+            f"To: <sip:{line.sip_user}@{line.gateway_host}>",
             f"Call-ID: {call_id}",
             f"CSeq: {cseq} REGISTER",
             f"Contact: {contact}",
@@ -202,8 +209,9 @@ class SipRegistrar:
         return "\r\n".join(lines).encode()
 
     def _do_register(self, expires: int, wildcard: bool = False) -> bool:
+        line = self.line
         transport = self._transport_holder()
-        call_id = f"bridge-reg-{secrets.token_hex(6)}@{config.local_ip}"
+        call_id = f"bridge-reg-{secrets.token_hex(6)}@{line.local_ip}"
         tag = f"tag{secrets.token_hex(4)}"
         branch = f"z9hG4bK{secrets.token_hex(4)}"
 
@@ -224,10 +232,10 @@ class SipRegistrar:
         headers = parse_sip_headers(resp_text)
         challenge = _parse_auth_challenge(headers.get("www-authenticate", ""))
         realm, nonce = challenge.get("realm", ""), challenge.get("nonce", "")
-        uri = f"sip:{config.gateway_host}"
-        response_digest = _digest_response(config.sip_user, realm, config.sip_pass, "REGISTER", uri, nonce)
+        uri = f"sip:{line.gateway_host}"
+        response_digest = _digest_response(line.sip_user, realm, line.sip_pass, "REGISTER", uri, nonce)
         auth_header = (
-            f'Authorization: Digest username="{config.sip_user}", realm="{realm}", '
+            f'Authorization: Digest username="{line.sip_user}", realm="{realm}", '
             f'nonce="{nonce}", uri="{uri}", response="{response_digest}", algorithm=MD5'
         )
         branch2 = f"z9hG4bK{secrets.token_hex(4)}x2"
@@ -280,28 +288,29 @@ class SipRegistrar:
 
     def status(self) -> dict:
         return {
+            "line": self.line.id,
             "registered": self.registered,
-            "username": config.sip_user,
-            "proxy": f"{config.proxy_host}:{config.proxy_port}",
+            "username": self.line.sip_user,
+            "proxy": f"{self.line.proxy_host}:{self.line.proxy_port}",
             "last_error": self.last_error,
         }
 
 
-def _sdp_host_port(local_port: int) -> tuple[str, int]:
+def _sdp_host_port(line, local_port: int) -> tuple[str, int]:
     """Advertises the relay's LAN-reachable address if a media relay is
-    configured (see config.media_relay_enabled) - the gateway can only
-    deliver RTP to an address on its own LAN, same constraint as the SIP
-    Contact header."""
-    host = config.relay_lan_host if config.media_relay_enabled else config.local_ip
-    port = config.relay_lan_port if config.media_relay_enabled else local_port
+    configured for this line (see LineConfig.media_relay_enabled) - the
+    gateway can only deliver RTP to an address on its own LAN, same
+    constraint as the SIP Contact header."""
+    host = line.relay_lan_host if line.media_relay_enabled else line.local_ip
+    port = line.relay_lan_port if line.media_relay_enabled else local_port
     return host, port
 
 
-def _offer_sdp(local_port: int) -> tuple[str, str, int]:
+def _offer_sdp(line, local_port: int) -> tuple[str, str, int]:
     """Returns (sdp, advertised_host, advertised_port). Offers G.722
     ("HD-Telefonie") first, PCMU as a fallback for gateways that don't
     support it - the far end picks one in its answer."""
-    host, port = _sdp_host_port(local_port)
+    host, port = _sdp_host_port(line, local_port)
     sdp = (
         f"v=0\r\no=- 0 0 IN IP4 {host}\r\ns=-\r\n"
         f"c=IN IP4 {host}\r\nt=0 0\r\nm=audio {port} RTP/AVP {PT_G722} {PT_PCMU}\r\n"
@@ -310,10 +319,10 @@ def _offer_sdp(local_port: int) -> tuple[str, str, int]:
     return sdp, host, port
 
 
-def _answer_sdp(local_port: int, payload_type: int) -> tuple[str, str, int]:
+def _answer_sdp(line, local_port: int, payload_type: int) -> tuple[str, str, int]:
     """Returns (sdp, advertised_host, advertised_port) for a single, already
-    chosen codec - used when we're the UAS answering an INVITE."""
-    host, port = _sdp_host_port(local_port)
+    chosen codec - used when this line is the UAS answering an INVITE."""
+    host, port = _sdp_host_port(line, local_port)
     name = "G722" if payload_type == PT_G722 else "PCMU"
     sdp = (
         f"v=0\r\no=- 0 0 IN IP4 {host}\r\ns=-\r\n"
@@ -345,11 +354,13 @@ def _choose_payload_type(offered: list[int]) -> int:
 
 
 class CallManager:
-    """Holds at most one active call. Real audio (via RtpSession) is set up
-    for both inbound and outbound calls; talk_client.py reads from/writes to
-    call["rtp"] to bridge it into a Talk room."""
+    """Bound to one LineConfig; holds at most one active call on that line.
+    Real audio (via RtpSession) is set up for both inbound and outbound
+    calls; talk_client.py reads from/writes to call["rtp"] to bridge it into
+    a Talk room."""
 
-    def __init__(self, *, on_incoming_call=None, on_call_connected=None, on_call_ended=None, on_call_failed=None):
+    def __init__(self, line, *, on_incoming_call=None, on_call_connected=None, on_call_ended=None, on_call_failed=None):
+        self.line = line
         self.lock = threading.Lock()
         self.call = None
         self.transport = None
@@ -391,9 +402,10 @@ class CallManager:
         self.transport.send("\r\n".join(lines).encode(), remote_addr)
 
     def _new_rtp_session(self, payload_type: int = PT_PCMU) -> RtpSession:
-        if config.media_relay_enabled:
-            return RtpSession(config.local_ip, config.local_rtp_port, config.relay_overlay_host, config.relay_overlay_port, payload_type=payload_type)
-        return RtpSession(config.local_ip, config.local_rtp_port, config.gateway_host, config.local_rtp_port, payload_type=payload_type)
+        line = self.line
+        if line.media_relay_enabled:
+            return RtpSession(line.local_ip, line.local_rtp_port, line.relay_overlay_host, line.relay_overlay_port, payload_type=payload_type)
+        return RtpSession(line.local_ip, line.local_rtp_port, line.gateway_host, line.local_rtp_port, payload_type=payload_type)
 
     def handle_invite(self, text, headers, call_id, remote_addr):
         offered_pts = _parse_offered_payload_types(_extract_sip_body(text))
@@ -406,12 +418,13 @@ class CallManager:
                          "status": "ringing", "bye_timer": None, "to_tag": to_tag, "rtp": None,
                          "offered_pts": offered_pts}
         caller = headers.get("from", "unknown")
-        print(f"[call] Incoming call from {caller}")
+        print(f"[call:{self.line.id}] Incoming call from {caller}")
         self._send_response("180 Ringing", headers, remote_addr, to_tag=to_tag)
         self.on_incoming_call(call_id=call_id, caller=caller)
 
     def answer(self) -> bool:
         """Accepts the current ringing call with real audio."""
+        line = self.line
         with self.lock:
             if not self.call or self.call["status"] != "ringing":
                 return False
@@ -423,14 +436,14 @@ class CallManager:
             rtp = self._new_rtp_session(payload_type)
             self.call["status"] = "connected"
             self.call["rtp"] = rtp
-        sdp, _, _ = _answer_sdp(config.local_rtp_port, payload_type)
-        contact_host = config.contact_host or config.local_ip
-        contact_port = config.contact_port or config.local_sip_port
+        sdp, _, _ = _answer_sdp(line, line.local_rtp_port, payload_type)
+        contact_host = line.contact_host or line.local_ip
+        contact_port = line.contact_port or line.local_sip_port
         self._send_response("200 OK", headers, remote_addr, extra_headers=[
-            f"Contact: <sip:{config.sip_user}@{contact_host}:{contact_port}>",
+            f"Contact: <sip:{line.sip_user}@{contact_host}:{contact_port}>",
             "Content-Type: application/sdp",
         ], body=sdp, to_tag=to_tag)
-        if config.media_relay_enabled:
+        if line.media_relay_enabled:
             rtp.send_pcm(np.zeros(rtp.samples_per_packet, dtype=np.int16))  # prime the relay
         timer = threading.Timer(config.max_call_duration, self.hangup)
         timer.daemon = True
@@ -475,6 +488,7 @@ class CallManager:
 
     def hangup(self):
         """Ends the current call (either direction) from our side."""
+        line = self.line
         with self.lock:
             if not self.call:
                 return
@@ -489,13 +503,13 @@ class CallManager:
             # its 200 OK (often an opaque per-dialog URI, not the number we
             # dialed) - falls back to the original target if a call somehow
             # never captured one (should not normally happen once connected).
-            request_uri = call.get("remote_contact") or f"sip:{call['number']}@{config.gateway_host}"
+            request_uri = call.get("remote_contact") or f"sip:{call['number']}@{line.gateway_host}"
             bye = (
                 f"BYE {request_uri} SIP/2.0\r\n"
-                f"Via: SIP/2.0/UDP {config.local_ip}:{config.local_sip_port};rport;branch=z9hG4bK{secrets.token_hex(4)}\r\n"
+                f"Via: SIP/2.0/UDP {line.local_ip}:{line.local_sip_port};rport;branch=z9hG4bK{secrets.token_hex(4)}\r\n"
                 f"Max-Forwards: 70\r\n"
-                f"From: <sip:{config.sip_user}@{config.gateway_host}>;tag={call['from_tag']}\r\n"
-                f"To: <sip:{call['number']}@{config.gateway_host}>;tag={call['to_tag']}\r\n"
+                f"From: <sip:{line.sip_user}@{line.gateway_host}>;tag={call['from_tag']}\r\n"
+                f"To: <sip:{call['number']}@{line.gateway_host}>;tag={call['to_tag']}\r\n"
                 f"Call-ID: {call['call_id']}\r\nCSeq: 2 BYE\r\nContent-Length: 0\r\n\r\n"
             )
             self.transport.send(bye.encode())
@@ -504,10 +518,10 @@ class CallManager:
             # Likewise, the caller's own Contact from their INVITE is the
             # correct in-dialog target - not the gateway's registrar address.
             caller_contact = headers.get("contact", "")
-            request_uri = _extract_contact_uri(caller_contact) if caller_contact else f"sip:{config.gateway_host}"
+            request_uri = _extract_contact_uri(caller_contact) if caller_contact else f"sip:{line.gateway_host}"
             bye = (
                 f"BYE {request_uri} SIP/2.0\r\n"
-                f"Via: SIP/2.0/UDP {config.local_ip}:{config.local_sip_port};rport;branch=z9hG4bK{secrets.token_hex(4)}\r\n"
+                f"Via: SIP/2.0/UDP {line.local_ip}:{line.local_sip_port};rport;branch=z9hG4bK{secrets.token_hex(4)}\r\n"
                 f"Max-Forwards: 70\r\n"
                 f"From: {headers.get('to', '')}\r\n"
                 f"To: {headers.get('from', '')}\r\n"
@@ -517,26 +531,26 @@ class CallManager:
         self.on_call_ended(call_id=call["call_id"], reason="local_hangup")
 
     def dial(self, number: str) -> dict:
+        """number is already this line's own dial target (stripped/prefixed
+        by the caller, e.g. talk_client.py's line-selection logic) - this
+        only re-validates the allowlist, it does not re-derive the target."""
+        line = self.line
         if not _VALID_NUMBER.fullmatch(number):
             return {"error": f"Rejected number (disallowed characters): {number!r}"}
-        if config.dialout_number_allowlist and not re.fullmatch(config.dialout_number_allowlist, number):
-            return {"error": f"Number not in the configured allowlist: {number!r}"}
+        if line.dialout_number_allowlist and not re.fullmatch(line.dialout_number_allowlist, number):
+            return {"error": f"Number not in line {line.id}'s configured allowlist: {number!r}"}
         # A number that passed the allowlist is, by construction of that
         # allowlist, an internal extension - only those get the gateway's
         # own dial-prefix notation (e.g. "**" on a FritzBox) added, needed
         # to actually alert the physical device rather than just being
-        # accepted at the SIP signaling level. A deployment dialing both
-        # internal extensions and real external numbers would need a more
-        # specific classification than "matches the allowlist" - out of
-        # scope while this bridge only ever reaches one FritzBox's internal
-        # extensions.
+        # accepted at the SIP signaling level.
         dial_target = number
-        if config.dialout_number_allowlist and config.dialout_internal_dial_prefix:
-            dial_target = config.dialout_internal_dial_prefix + number
+        if line.dialout_number_allowlist and line.dialout_internal_dial_prefix:
+            dial_target = line.dialout_internal_dial_prefix + number
         with self.lock:
             if self.call is not None:
-                return {"error": "A call is already active"}
-            call_id = f"bridge-out-{secrets.token_hex(6)}@{config.local_ip}"
+                return {"error": f"Line {line.id} already has an active call"}
+            call_id = f"bridge-out-{secrets.token_hex(6)}@{line.local_ip}:{line.local_sip_port}"
             from_tag = f"tag{secrets.token_hex(4)}"
             self.call = {"call_id": call_id, "direction": "outbound", "status": "dialing",
                          "to_tag": None, "bye_timer": None, "number": number, "from_tag": from_tag, "rtp": None}
@@ -544,19 +558,20 @@ class CallManager:
         return {"started": True, "call_id": call_id}
 
     def _outbound_worker(self, number, call_id, from_tag):
+        line = self.line
         rtp = self._new_rtp_session()  # payload type finalized once the 200 OK's answer is parsed
-        sdp, _, _ = _offer_sdp(config.local_rtp_port)
+        sdp, _, _ = _offer_sdp(line, line.local_rtp_port)
 
         def build_invite(cseq, branch, auth_header=None):
             lines = [
-                f"INVITE sip:{number}@{config.gateway_host} SIP/2.0",
-                f"Via: SIP/2.0/UDP {config.local_ip}:{config.local_sip_port};rport;branch={branch}",
+                f"INVITE sip:{number}@{line.gateway_host} SIP/2.0",
+                f"Via: SIP/2.0/UDP {line.local_ip}:{line.local_sip_port};rport;branch={branch}",
                 "Max-Forwards: 70",
-                f"From: <sip:{config.sip_user}@{config.gateway_host}>;tag={from_tag}",
-                f"To: <sip:{number}@{config.gateway_host}>",
+                f"From: <sip:{line.sip_user}@{line.gateway_host}>;tag={from_tag}",
+                f"To: <sip:{number}@{line.gateway_host}>",
                 f"Call-ID: {call_id}",
                 f"CSeq: {cseq} INVITE",
-                f"Contact: <sip:{config.sip_user}@{config.contact_host or config.local_ip}:{config.contact_port or config.local_sip_port};transport=tcp>",
+                f"Contact: <sip:{line.sip_user}@{line.contact_host or line.local_ip}:{line.contact_port or line.local_sip_port};transport=tcp>",
                 "Allow: INVITE, ACK, BYE, CANCEL, OPTIONS",
                 "Content-Type: application/sdp",
                 f"Content-Length: {len(sdp)}",
@@ -569,10 +584,10 @@ class CallManager:
 
         def send_ack(to_header, cseq):
             ack = (
-                f"ACK sip:{number}@{config.gateway_host} SIP/2.0\r\n"
-                f"Via: SIP/2.0/UDP {config.local_ip}:{config.local_sip_port};rport;branch=z9hG4bK{secrets.token_hex(4)}\r\n"
+                f"ACK sip:{number}@{line.gateway_host} SIP/2.0\r\n"
+                f"Via: SIP/2.0/UDP {line.local_ip}:{line.local_sip_port};rport;branch=z9hG4bK{secrets.token_hex(4)}\r\n"
                 f"Max-Forwards: 70\r\n"
-                f"From: <sip:{config.sip_user}@{config.gateway_host}>;tag={from_tag}\r\n"
+                f"From: <sip:{line.sip_user}@{line.gateway_host}>;tag={from_tag}\r\n"
                 f"To: {to_header}\r\nCall-ID: {call_id}\r\nCSeq: {cseq} ACK\r\nContent-Length: 0\r\n\r\n"
             )
             self.transport.send(ack.encode())
@@ -580,7 +595,7 @@ class CallManager:
         cseq = 1
         q = self.transport.open_waiter(call_id)
         self.transport.send(build_invite(cseq, f"z9hG4bK{secrets.token_hex(4)}"))
-        print(f"[call] Outbound call started to {number}")
+        print(f"[call:{line.id}] Outbound call started to {number}")
         deadline = time.time() + config.outbound_call_timeout
         connected = False
         try:
@@ -611,10 +626,10 @@ class CallManager:
                     auth_hdr_name = "www-authenticate" if code == "401" else "proxy-authenticate"
                     challenge = _parse_auth_challenge(resp_headers.get(auth_hdr_name, ""))
                     realm, nonce = challenge.get("realm", ""), challenge.get("nonce", "")
-                    uri = f"sip:{number}@{config.gateway_host}"
-                    resp_digest = _digest_response(config.sip_user, realm, config.sip_pass, "INVITE", uri, nonce)
+                    uri = f"sip:{number}@{line.gateway_host}"
+                    resp_digest = _digest_response(line.sip_user, realm, line.sip_pass, "INVITE", uri, nonce)
                     auth_header = (
-                        f'Authorization: Digest username="{config.sip_user}", realm="{realm}", '
+                        f'Authorization: Digest username="{line.sip_user}", realm="{realm}", '
                         f'nonce="{nonce}", uri="{uri}", response="{resp_digest}", algorithm=MD5'
                     )
                     cseq += 1
@@ -638,7 +653,7 @@ class CallManager:
                             self.call["rtp"] = rtp
                             if remote_contact:
                                 self.call["remote_contact"] = _extract_contact_uri(remote_contact)
-                    if config.media_relay_enabled:
+                    if line.media_relay_enabled:
                         rtp.send_pcm(np.zeros(rtp.samples_per_packet, dtype=np.int16))
                     timer = threading.Timer(config.max_call_duration, self.hangup)
                     timer.daemon = True

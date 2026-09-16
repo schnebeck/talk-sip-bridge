@@ -145,3 +145,17 @@ production `spreed` app config only, not written down here). The native
     from this end of the call. The human-to-phone direction is left alone:
     browsers already apply their own mic AGC by default, and a second one
     on top risks audible "pumping".
+11. **Multiple lines.** Each SIP account/number (`config.LineConfig`) gets
+    its own `SipTransport`/`SipRegistrar`/`CallManager` (still one call at a
+    time per line, as before) and its own dedicated `TalkClient` - i.e. its
+    own connection to the signaling server, not a shared one. That's
+    necessary, not just simpler: joining a room to publish a call's audio
+    makes an internal-client connection ineligible for new dial-out
+    requests for as long as it stays open (point 3 above); lines sharing
+    one connection would make each other's dial-out unavailable whenever
+    either has a call in progress. `daemon.py` starts one full set per
+    configured line; `control_api.py` aggregates their status and accepts
+    an optional `?line=<id>` on `/toggle` and `/hangup` (defaulting to the
+    first line, so a single-line deployment is unaffected). Lines are
+    independent of the registrar/gateway they point at, so a deployment
+    could mix e.g. a FritzBox line and an Asterisk line.

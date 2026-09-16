@@ -221,8 +221,9 @@ class TalkClient:
         dialout = msg["internal"]["dialout"]
         roomid = dialout.get("roomid", "")
         number = dialout.get("request", {}).get("number", "")
-        if config.dialout_strip_prefix and number.startswith(config.dialout_strip_prefix):
-            number = number[len(config.dialout_strip_prefix):]
+        line = self.call_manager.line
+        if line.dialout_strip_prefix and number.startswith(line.dialout_strip_prefix):
+            number = number[len(line.dialout_strip_prefix):]
         print(f"[talk] Dialout request for {number} in room {roomid}")
         result = self.call_manager.dial(number)
         if "error" in result:
@@ -574,9 +575,10 @@ class TalkClient:
     def _entry_roomid(self, call_id: str) -> str:
         # Dialout calls carry their own room id, learned from the request
         # that started them. Inbound calls have no such association in the
-        # protocol - config.default_room_token is the only option there.
+        # protocol - this line's own configured default room is the only
+        # option there.
         with self._call_sessions_lock:
-            return self._call_sessions.get(call_id, {}).get("roomid") or config.default_room_token
+            return self._call_sessions.get(call_id, {}).get("roomid") or self.call_manager.line.default_room_token
 
     # -- thread-safe entry points for sip_core.CallManager callbacks ------
     def on_call_connected(self, *, call_id, direction, rtp):

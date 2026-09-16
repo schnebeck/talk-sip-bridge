@@ -4,6 +4,43 @@ All configuration is via environment variables (`bridge/config.py`), loaded
 by `deploy/bridge.env` in a real deployment (see `deploy/bridge.service`).
 No IPs, ports, or secrets are hardcoded in code.
 
+## Single line vs. multiple lines
+
+By default the bridge runs one line, configured with the flat `BRIDGE_*`
+variables below (e.g. `BRIDGE_SIP_USER`). To run several lines side by side
+- independent SIP accounts, even against entirely different
+registrars/gateways (a FritzBox and an Asterisk box at once, say) - set:
+
+```
+BRIDGE_LINES=<id1>,<id2>,...
+```
+
+with `<id>` any identifier made of letters, digits and underscore. Every
+per-line variable in the tables below (everything except
+`BRIDGE_REGISTER_EXPIRES`, `BRIDGE_SIP_RESPONSE_TIMEOUT`,
+`BRIDGE_OUTBOUND_CALL_TIMEOUT`, `BRIDGE_MAX_CALL_DURATION`,
+`BRIDGE_AUTO_ANSWER`, `BRIDGE_AGC_*`, `BRIDGE_CONTROL_BIND`/`_PORT`,
+`BRIDGE_WS_URL`, `BRIDGE_INTERNAL_SECRET`, `BRIDGE_BACKEND_URL` and
+`BRIDGE_LOCAL_IP`, which stay global) is then set per line as
+`BRIDGE_LINE_<id>_<name>`, e.g. `BRIDGE_LINE_<id>_SIP_USER`,
+`BRIDGE_LINE_<id>_LOCAL_SIP_PORT`. `LOCAL_SIP_PORT` and `LOCAL_RTP_PORT`
+have no default in this form and must be set explicitly and distinctly per
+line (unlike the flat single-line form, where they default to 5060/40000).
+
+Each line gets its own registration, its own `CallManager` (one call at a
+time, per line), and its own dedicated connection to the Talk signaling
+server - see `docs/CONCEPT.md` point 3 for why a shared connection across
+lines wouldn't work (joining a room to publish one line's call audio makes
+that connection ineligible for new dial-out requests on any other line for
+as long as the connection stays open).
+
+Dial-out routing across multiple lines is not yet deterministic by number:
+a Talk-initiated "call a phone number" request is placed with whichever
+line's connection the signaling server currently considers available, and
+only that line's own `DIALOUT_NUMBER_ALLOWLIST` decides whether it's
+accepted. This is not a concern for inbound calls, which always land on
+whichever line's own registered number was actually dialed.
+
 ## Required
 
 | Variable | Meaning |
