@@ -106,19 +106,62 @@ production `spreed` app config only, not written down here). The native
    reconnects once a call ends (handled by the existing reconnect loop in
    `_connect_and_serve`) - fine given only one call is ever handled at a
    time.
-4. **Multi-call daemon.** The PoC's standalone audio-bridge script handles
+4. **Call-end detection.** Ending a call in Talk's UI does not tear down the
+   bridge's own publisher - confirmed via the signaling server's own logs,
+   only the human's own publisher/room gets destroyed - so watching our own
+   `RTCPeerConnection`'s ICE/connection state never reliably detects it (kept
+   as a secondary check for other teardown paths, e.g. the browser tab
+   closing outright). The actual, reliable signal is the signaling server's
+   room-wide `{"type": "event", "event": {"target": "participants", "type":
+   "update", "update": {"roomid": ..., "incall": 0, "all": true}}}`
+   broadcast (`Room.PublishUsersInCallChangedAll` server-side) - sent to
+   every room member, including the bridge since it joins the room to
+   publish, whenever the call itself ends for the whole room. `incall` uses
+   the server's `FlagInCall = 1` bit; `incall & 1 == 0` means the call has
+   ended. Two other, narrower shapes of the same `participants`/`update`
+   event exist server-side (a `changed` delta from backend-driven "incall"
+   updates, and a full `users` room-membership snapshot from
+   `NotifySessionChanged`) and are also handled, though the `all: true`
+   broadcast is what an actual "Anruf beenden" click in Talk sends. The
+   virtual "phone" session added via `addsession` gets its own
+   server-assigned room session id (announced via a `room`/`join` event,
+   matched back to the call via its `user.callid`) that is unrelated to the
+   name chosen when adding it - needed to recognize the bridge's own virtual
+   session in room-roster snapshots rather than mistaking it for another
+   participant still on the call.
+5. **Multi-call daemon.** The PoC's standalone audio-bridge script handles
    exactly one call and then exits; the production daemon needs to keep
    registering and accepting new calls indefinitely (the always-on
    `sipbridge.service` already does this for signaling-only calls - this
    extends that, not the one-shot `audio-bridge/` scripts).
-5. **Real audio in the persistent daemon.** The PoC's signaling-only daemon
+6. **Real audio in the persistent daemon.** The PoC's signaling-only daemon
    (`AUTO_BYE_SECONDS` safety net, no real audio) and its separate
    audio-bridge proof of concept get merged into one daemon that both
    registers continuously and carries real audio.
-6. **Packaging.** A `custom_apps`-installed Nextcloud app for admin settings
+7. **Packaging.** A `custom_apps`-installed Nextcloud app for admin settings
    (status/config), installed and updated via `occ app:*`.
-7. **Localization.** Any Nextcloud UI component (admin settings page, JS)
+8. **Localization.** Any Nextcloud UI component (admin settings page, JS)
    uses English as the source language (`$l->t()` / `t()` calls with English
    strings), with a generated German translation in `l10n/de.json` /
    `l10n/de.js` - Nextcloud's standard i18n mechanism, not hardcoded German
    text in the templates.
+9. **Codec negotiation (G.722/"HD-Telefonie", PCMU fallback).** The SIP side
+   offers both (`sip_core.py`'s `_offer_sdp`/`_answer_sdp`), preferring
+   G.722 - real 16kHz audio despite SDP historically labeling it
+   `G722/8000` (see `g722.py`). `rtp.py`'s `RtpSession` is codec-agnostic
+   past construction (`set_payload_type`), and `talk_client.py`'s
+   `SipAudioTrack` resamples from whatever rate was actually negotiated.
+10. **Bidirectional audio.** `_publish_call_audio` covers only the phone-to-
+    Talk direction (a self-addressed WebRTC publish, see above). The
+    opposite direction subscribes to the human room participant's own audio
+    via a `requestoffer`/offer/answer/candidate exchange
+    (`_subscribe_human_audio`) and relays decoded frames into the RTP
+    session (`_relay_human_audio`), resampled to the call's negotiated
+    codec rate. The room roster needed to find "the human" to subscribe to
+    is tracked from `room`/`join`/`leave` events (`_room_roster`).
+11. **Automatic gain control.** Phone-side audio only (`agc.py`, applied in
+    `SipAudioTrack`) - some handsets (e.g. a DECT cordless) have a much
+    quieter microphone than a laptop/headset, with no way to adjust that
+    from this end of the call. The human-to-phone direction is left alone:
+    browsers already apply their own mic AGC by default, and a second one
+    on top risks audible "pumping".

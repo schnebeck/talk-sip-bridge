@@ -36,6 +36,13 @@ def _make_handler(registrar, call_manager):
             if self.path == "/toggle":
                 ok = registrar.turn_off() if registrar.registered else registrar.turn_on()
                 self._send_json(200 if ok else 502, self._status_payload())
+            elif self.path == "/hangup":
+                # Manual escape hatch: ends whatever call is currently
+                # active. Call-end detection on the Talk side is best
+                # effort (see docs/CONCEPT.md) - this lets a stuck call be
+                # cleared without restarting the whole daemon.
+                call_manager.hangup()
+                self._send_json(200, self._status_payload())
             else:
                 self._send_json(404, {"error": "not found"})
 
