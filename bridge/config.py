@@ -62,6 +62,16 @@ class Config:
         # a real external number dialed without that prefix is left alone.
         self.dialout_internal_dial_prefix = os.environ.get("BRIDGE_DIALOUT_INTERNAL_DIAL_PREFIX", "")
 
+        # Automatic gain control for audio coming from the phone side before
+        # it is published into Talk - see agc.py. On by default: some
+        # handsets (e.g. a DECT cordless) have a much quieter microphone
+        # than a laptop/headset, with no way to adjust that from this end of
+        # the call, and a fixed multiplier would either clip on loud moments
+        # or stay too quiet on soft ones.
+        self.agc_enabled = os.environ.get("BRIDGE_AGC_ENABLED", "true").strip().lower() == "true"
+        self.agc_target_peak = int(os.environ.get("BRIDGE_AGC_TARGET_PEAK", "10000"))
+        self.agc_max_gain = float(os.environ.get("BRIDGE_AGC_MAX_GAIN", "20.0"))
+
         # Optional media relay (only needed if the gateway can't reach this
         # host's own address directly for RTP - see docs/CONFIG.md).
         self.relay_lan_host = os.environ.get("BRIDGE_RELAY_LAN_HOST", "")

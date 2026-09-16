@@ -18,7 +18,7 @@ import time
 import numpy as np
 
 from config import config
-from rtp import RtpSession
+from rtp import PT_G722, PT_PCMU, RtpSession
 
 # Characters valid in a SIP user part / phone number (RFC 3261 user-unreserved
 # plus digits). Rejecting anything else before interpolating a number into a
@@ -287,18 +287,61 @@ class SipRegistrar:
         }
 
 
-def _audio_sdp(local_port: int) -> tuple[str, str, int]:
-    """Returns (sdp, advertised_host, advertised_port). Advertises the
-    relay's LAN-reachable address if a media relay is configured (see
-    config.media_relay_enabled) - the gateway can only deliver RTP to an
-    address on its own LAN, same constraint as the SIP Contact header."""
+def _sdp_host_port(local_port: int) -> tuple[str, int]:
+    """Advertises the relay's LAN-reachable address if a media relay is
+    configured (see config.media_relay_enabled) - the gateway can only
+    deliver RTP to an address on its own LAN, same constraint as the SIP
+    Contact header."""
     host = config.relay_lan_host if config.media_relay_enabled else config.local_ip
     port = config.relay_lan_port if config.media_relay_enabled else local_port
+    return host, port
+
+
+def _offer_sdp(local_port: int) -> tuple[str, str, int]:
+    """Returns (sdp, advertised_host, advertised_port). Offers G.722
+    ("HD-Telefonie") first, PCMU as a fallback for gateways that don't
+    support it - the far end picks one in its answer."""
+    host, port = _sdp_host_port(local_port)
     sdp = (
         f"v=0\r\no=- 0 0 IN IP4 {host}\r\ns=-\r\n"
-        f"c=IN IP4 {host}\r\nt=0 0\r\nm=audio {port} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n"
+        f"c=IN IP4 {host}\r\nt=0 0\r\nm=audio {port} RTP/AVP {PT_G722} {PT_PCMU}\r\n"
+        f"a=rtpmap:{PT_G722} G722/8000\r\na=rtpmap:{PT_PCMU} PCMU/8000\r\n"
     )
     return sdp, host, port
+
+
+def _answer_sdp(local_port: int, payload_type: int) -> tuple[str, str, int]:
+    """Returns (sdp, advertised_host, advertised_port) for a single, already
+    chosen codec - used when we're the UAS answering an INVITE."""
+    host, port = _sdp_host_port(local_port)
+    name = "G722" if payload_type == PT_G722 else "PCMU"
+    sdp = (
+        f"v=0\r\no=- 0 0 IN IP4 {host}\r\ns=-\r\n"
+        f"c=IN IP4 {host}\r\nt=0 0\r\nm=audio {port} RTP/AVP {payload_type}\r\n"
+        f"a=rtpmap:{payload_type} {name}/8000\r\n"
+    )
+    return sdp, host, port
+
+
+def _extract_sip_body(text: str) -> str:
+    parts = text.split("\r\n\r\n", 1)
+    return parts[1] if len(parts) > 1 else ""
+
+
+def _parse_offered_payload_types(sdp_body: str) -> list[int]:
+    for line in sdp_body.splitlines():
+        line = line.strip()
+        if line.startswith("m=audio"):
+            fields = line.split()
+            return [int(p) for p in fields[3:] if p.isdigit()]
+    return []
+
+
+def _choose_payload_type(offered: list[int]) -> int:
+    """We're the UAS (answering an INVITE) - pick G.722 if the caller
+    offered it, otherwise fall back to PCMU regardless of what else was
+    offered (the only two codecs this bridge implements)."""
+    return PT_G722 if PT_G722 in offered else PT_PCMU
 
 
 class CallManager:
@@ -347,19 +390,21 @@ class CallManager:
         lines.append(body)
         self.transport.send("\r\n".join(lines).encode(), remote_addr)
 
-    def _new_rtp_session(self) -> RtpSession:
+    def _new_rtp_session(self, payload_type: int = PT_PCMU) -> RtpSession:
         if config.media_relay_enabled:
-            return RtpSession(config.local_ip, config.local_rtp_port, config.relay_overlay_host, config.relay_overlay_port)
-        return RtpSession(config.local_ip, config.local_rtp_port, config.gateway_host, config.local_rtp_port)
+            return RtpSession(config.local_ip, config.local_rtp_port, config.relay_overlay_host, config.relay_overlay_port, payload_type=payload_type)
+        return RtpSession(config.local_ip, config.local_rtp_port, config.gateway_host, config.local_rtp_port, payload_type=payload_type)
 
     def handle_invite(self, text, headers, call_id, remote_addr):
+        offered_pts = _parse_offered_payload_types(_extract_sip_body(text))
         with self.lock:
             if self.call is not None:
                 self._send_response("486 Busy Here", headers, remote_addr, to_tag=f"bridge{secrets.token_hex(3)}")
                 return
             to_tag = f"bridge{secrets.token_hex(3)}"
             self.call = {"call_id": call_id, "headers": headers, "remote_addr": remote_addr,
-                         "status": "ringing", "bye_timer": None, "to_tag": to_tag, "rtp": None}
+                         "status": "ringing", "bye_timer": None, "to_tag": to_tag, "rtp": None,
+                         "offered_pts": offered_pts}
         caller = headers.get("from", "unknown")
         print(f"[call] Incoming call from {caller}")
         self._send_response("180 Ringing", headers, remote_addr, to_tag=to_tag)
@@ -374,10 +419,11 @@ class CallManager:
             remote_addr = self.call["remote_addr"]
             to_tag = self.call["to_tag"]
             call_id = self.call["call_id"]
-            rtp = self._new_rtp_session()
+            payload_type = _choose_payload_type(self.call.get("offered_pts") or [])
+            rtp = self._new_rtp_session(payload_type)
             self.call["status"] = "connected"
             self.call["rtp"] = rtp
-        sdp, _, _ = _audio_sdp(config.local_rtp_port)
+        sdp, _, _ = _answer_sdp(config.local_rtp_port, payload_type)
         contact_host = config.contact_host or config.local_ip
         contact_port = config.contact_port or config.local_sip_port
         self._send_response("200 OK", headers, remote_addr, extra_headers=[
@@ -385,7 +431,7 @@ class CallManager:
             "Content-Type: application/sdp",
         ], body=sdp, to_tag=to_tag)
         if config.media_relay_enabled:
-            rtp.send_pcm(np.zeros(160, dtype=np.int16))  # prime the relay
+            rtp.send_pcm(np.zeros(rtp.samples_per_packet, dtype=np.int16))  # prime the relay
         timer = threading.Timer(config.max_call_duration, self.hangup)
         timer.daemon = True
         with self.lock:
@@ -498,8 +544,8 @@ class CallManager:
         return {"started": True, "call_id": call_id}
 
     def _outbound_worker(self, number, call_id, from_tag):
-        rtp = self._new_rtp_session()
-        sdp, _, _ = _audio_sdp(config.local_rtp_port)
+        rtp = self._new_rtp_session()  # payload type finalized once the 200 OK's answer is parsed
+        sdp, _, _ = _offer_sdp(config.local_rtp_port)
 
         def build_invite(cseq, branch, auth_header=None):
             lines = [
@@ -581,6 +627,9 @@ class CallManager:
                     m = re.search(r'tag=([^;>\s]+)', to_header)
                     to_tag = m.group(1) if m else None
                     remote_contact = resp_headers.get("contact", "")
+                    answered_pts = _parse_offered_payload_types(_extract_sip_body(resp))
+                    if answered_pts:
+                        rtp.set_payload_type(_choose_payload_type(answered_pts))
                     send_ack(to_header, cseq)
                     with self.lock:
                         if self.call and self.call["call_id"] == call_id:
@@ -590,7 +639,7 @@ class CallManager:
                             if remote_contact:
                                 self.call["remote_contact"] = _extract_contact_uri(remote_contact)
                     if config.media_relay_enabled:
-                        rtp.send_pcm(np.zeros(160, dtype=np.int16))
+                        rtp.send_pcm(np.zeros(rtp.samples_per_packet, dtype=np.int16))
                     timer = threading.Timer(config.max_call_duration, self.hangup)
                     timer.daemon = True
                     with self.lock:
