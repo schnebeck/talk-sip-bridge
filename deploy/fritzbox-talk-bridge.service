@@ -1,0 +1,19 @@
+[Unit]
+Description=FritzBox Talk Bridge daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/fritzbox-talk-bridge/env
+ExecStart=/opt/fritzbox-talk-bridge-venv/bin/python3 -u /opt/fritzbox-talk-bridge/daemon.py
+WorkingDirectory=/opt/fritzbox-talk-bridge
+Restart=on-failure
+RestartSec=5
+User=fritzbox-talk-bridge
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
