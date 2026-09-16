@@ -1,8 +1,8 @@
 """Connects to the Nextcloud Talk standalone signaling server as an
-"internal client" with the "start-dialout" and "internal-incall" feature
-flags, so Talk's own native call UI (not a custom chat-bot command, see
-docs/CONCEPT.md) can trigger outbound calls and receive real, named
-"phone" participants for inbound ones.
+"internal client" with the "start-dialout" feature flag, so Talk's own
+native call UI (not a custom chat-bot command, see docs/CONCEPT.md) can
+trigger outbound calls and receive real, named "phone" participants for
+inbound ones.
 
 Protocol reference (public, no reference implementation found anywhere -
 built directly against this documentation, see docs/CONCEPT.md):
@@ -67,6 +67,7 @@ class TalkClient:
         self.loop = None
         self._call_sessions = {}  # sip call_id -> {"virtual_sessionid", "pc"}
         self._call_sessions_lock = threading.Lock()  # entries are written from both the asyncio loop and SIP worker threads
+        self._room_joined_event = asyncio.Event()
 
     # -- lifecycle, run from a background thread -----------------------
     def run_forever(self):
@@ -93,7 +94,13 @@ class TalkClient:
             "id": "bridge-hello", "type": "hello",
             "hello": {
                 "version": "1.0",
-                "features": ["start-dialout", "internal-incall"],
+                # Deliberately NOT declaring "internal-incall": that tells
+                # the server this client will manage its own inCall/
+                # publishing-audio flags, which nothing here currently does.
+                # Without it, the server sets both automatically on connect,
+                # which is what makes the self-addressed publish offer
+                # below actually work.
+                "features": ["start-dialout"],
                 "auth": {
                     "type": "internal",
                     "params": {"random": random_str, "token": token, "backend": config.backend_url},
@@ -114,6 +121,8 @@ class TalkClient:
                 await self._handle_dialout(msg)
             elif msg_type == "message":
                 await self._handle_webrtc_message(msg["message"])
+            elif msg_type == "room" and msg.get("id") == "bridge-room":
+                self._room_joined_event.set()
 
     async def _handle_dialout(self, msg: dict):
         """Talk's native "call a phone number" UI triggers this. The
@@ -200,6 +209,19 @@ class TalkClient:
 
     # -- publishing SIP call audio into the room --------------------------
     async def _publish_call_audio(self, sip_call_id: str, rtp_session, roomid: str, number: str):
+        # Join the room so the signaling server routes our self-addressed
+        # offer to that room's Janus instance and generates a real SDP
+        # answer - a plain addsession alone does not do this. This makes us
+        # briefly ineligible for a new dialout request (the signaling server
+        # excludes any internal session that is in a room from its dialout
+        # candidates) - acceptable since only one call is ever handled at a
+        # time here anyway; _teardown_call leaves the room again once done.
+        self._room_joined_event.clear()
+        await self.ws.send(json.dumps({"id": "bridge-room", "type": "room", "room": {"roomid": roomid}}))
+        try:
+            await asyncio.wait_for(self._room_joined_event.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            print(f"[talk] Warning: no room-join confirmation for {roomid} within 5s, publishing anyway")
         virtual_sessionid = await self._add_virtual_session(sip_call_id, roomid=roomid, number=number, caller=True)
         pc = RTCPeerConnection()
         pc.addTrack(SipAudioTrack(rtp_session))
@@ -207,16 +229,21 @@ class TalkClient:
             entry = self._call_sessions.setdefault(sip_call_id, {})
             entry["virtual_sessionid"] = virtual_sessionid
             entry["pc"] = pc
-            entry["ws_peer_sessionid"] = virtual_sessionid
+            # The offer is addressed to our OWN session, not the virtual
+            # one - a virtual session (addsession) only represents the call
+            # in the participant list, it has no real client attached that
+            # could answer a WebRTC offer. Publishing as ourselves is what
+            # makes the signaling server/Janus generate the SDP answer.
+            entry["ws_peer_sessionid"] = self.own_sessionid
 
         offer = await pc.createOffer()
         await pc.setLocalDescription(offer)
         await self.ws.send(json.dumps({
             "id": f"bridge-offer-{sip_call_id}", "type": "message",
             "message": {
-                "recipient": {"type": "session", "sessionid": virtual_sessionid},
+                "recipient": {"type": "session", "sessionid": self.own_sessionid},
                 "data": {
-                    "to": virtual_sessionid, "type": "offer", "sid": secrets.token_hex(8), "roomType": "video",
+                    "to": self.own_sessionid, "type": "offer", "sid": secrets.token_hex(8), "roomType": "video",
                     "payload": {"nick": number, "type": "offer", "sdp": pc.localDescription.sdp},
                     "audiocodec": "opus",
                 },
@@ -233,6 +260,10 @@ class TalkClient:
             await entry["pc"].close()
         if "virtual_sessionid" in entry:
             await self._remove_virtual_session(entry["virtual_sessionid"], roomid)
+        if "pc" in entry:
+            # Leave the room we joined to publish - restores dialout
+            # eligibility for the next call.
+            await self.ws.send(json.dumps({"id": "bridge-room-leave", "type": "room", "room": {"roomid": ""}}))
         if entry.get("kind") == "dialout":
             await self._send_dialout_status(sip_call_id, roomid, "cleared")
         print(f"[talk] Call {sip_call_id} ended, virtual session removed")

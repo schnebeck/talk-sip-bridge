@@ -65,20 +65,43 @@ production `spreed` app config only, not written down here). The native
    backup server) becomes one connectivity mode among others, not a fixed
    assumption - a deployment where the phone gateway is directly reachable
    needs no relay at all.
-2. **Native dialout integration.**
-   - Declare `"features": ["start-dialout"]` (and `"internal-incall"`) in
-     the hello message.
-   - Handle incoming `{"type": "dialout", "dialout": {...}}` messages on the
-     internal-client WebSocket connection; place the call via the existing
-     FritzBox SIP core; reply with `{"type": "dialout", "dialout":
-     {"callid": ...}}` on success or an `error` object on failure.
+2. **Native dialout integration.** Verified working end to end through
+   Talk's own "call a phone number" UI.
+   - Declare `"features": ["start-dialout"]` in the hello message.
+     Deliberately not `"internal-incall"`: that tells the server the client
+     manages its own inCall/publishing-audio flags, which this bridge does
+     not do - without it, the server sets both automatically on connect,
+     which the self-addressed WebRTC publish below relies on.
+   - A dialout request arrives as `{"id": "...", "type": "internal",
+     "internal": {"type": "dialout", "dialout": {"roomid": "...", "backend":
+     "...", "request": {"number": "...", "options": {...}}}}}` - the room id
+     is read from this message, not assumed. The reply must echo the same
+     `id`, wrapped the same way, with `dialout: {"type": "status", "roomid":
+     ..., "status": {"callid": ..., "status": "accepted"}}` (or `"type":
+     "error"` with an `error` object) - a flat `{"type": "dialout", ...}` at
+     the top level, with no `internal` wrapper or `id` echo, is silently
+     ignored by the signaling server.
+   - Nextcloud's own number validation (`libphonenumber`, not configurable)
+     runs before any request reaches this bridge at all, and Talk formats
+     any number a user enters as E.164 - see `docs/CONFIG.md`'s
+     `BRIDGE_DIALOUT_STRIP_PREFIX` / `BRIDGE_DIALOUT_INTERNAL_DIAL_PREFIX`
+     for how a real, syntactically valid number gets mapped back to the
+     gateway's own internal-extension dial notation.
    - This replaces the PoC's `/dial` chat command with Talk's own "call a
      phone number" UI.
 3. **Virtual sessions for calls.** Represent each phone call as its own
    session via `addsession`/`updatesession`/`removesession`, with
    `user.type = "phone"`, `callid`, and `number` - so a caller shows up as a
    real, named participant instead of anonymous published audio. Replaces
-   the PoC's chat messages for call state.
+   the PoC's chat messages for call state. `addsession` alone does not
+   route audio anywhere - the bridge also joins the room itself
+   (`{"type": "room", "room": {"roomid": ...}}`) so the signaling server
+   routes its self-addressed WebRTC offer to that room's Janus instance;
+   verified via `bridge/test_publish_and_verify.py`. Joining a room makes
+   the signaling server exclude the session from dialout candidates for as
+   long as it stays there, so the bridge leaves the room again
+   (`roomid: ""`) once the call ends - fine given only one call is ever
+   handled at a time.
 4. **Multi-call daemon.** The PoC's standalone audio-bridge script handles
    exactly one call and then exits; the production daemon needs to keep
    registering and accepting new calls indefinitely (the always-on
