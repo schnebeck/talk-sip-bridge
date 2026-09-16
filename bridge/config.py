@@ -29,6 +29,10 @@ class Config:
         self.register_expires = int(os.environ.get("BRIDGE_REGISTER_EXPIRES", "600"))
         self.sip_response_timeout = float(os.environ.get("BRIDGE_SIP_RESPONSE_TIMEOUT", "6"))
         self.outbound_call_timeout = float(os.environ.get("BRIDGE_OUTBOUND_CALL_TIMEOUT", "30"))
+        # Off by default: an incoming call is left ringing (never answered)
+        # unless explicitly enabled. Must be set to "true" to answer inbound
+        # calls automatically.
+        self.auto_answer_calls = os.environ.get("BRIDGE_AUTO_ANSWER", "false").strip().lower() == "true"
 
         # Optional media relay (only needed if the gateway can't reach this
         # host's own address directly for RTP - see docs/CONFIG.md).

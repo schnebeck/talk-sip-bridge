@@ -241,11 +241,17 @@ class TalkClient:
     def on_incoming_call(self, *, call_id, caller):
         # The signaling protocol has no ringing/accept-decline exchange for
         # inbound calls ("addsession" represents an already-connected call,
-        # and dialout is Talk-initiated only) - every incoming call is
-        # answered immediately.
+        # and dialout is Talk-initiated only), so there is no native way to
+        # ask before picking up. Answering is therefore off unless
+        # config.auto_answer_calls is explicitly enabled - an unanswered
+        # call just keeps ringing (or is picked up elsewhere), same as any
+        # other registered phone that nobody happens to pick up.
         with self._call_sessions_lock:
             self._call_sessions[call_id] = {"kind": "inbound", "number": caller}
-        print(f"[talk] Incoming call {call_id} from {caller} - auto-accepting with real audio")
+        if not config.auto_answer_calls:
+            print(f"[talk] Incoming call {call_id} from {caller} - auto-answer disabled, leaving it ringing")
+            return
+        print(f"[talk] Incoming call {call_id} from {caller} - answering with real audio")
         self.call_manager.answer()
 
 
