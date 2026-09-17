@@ -255,7 +255,9 @@ class SipAudioTrack(AudioStreamTrack):
             self._stats["since"] = loop.time()
         elif loop.time() - self._stats["since"] >= 1.0:
             s = self._stats
-            print(f"[talk] Phone audio: {s['from_phone']} packets, {s['silence']} silence-filled, peak {s['peak']}")
+            gain = f", agc gain {self._agc.gain:.1f}x" if self._agc is not None else ""
+            print(f"[talk] Phone audio: {s['from_phone']} packets, {s['silence']} silence-filled, "
+                  f"peak {s['peak']} (before agc){gain}")
             self._stats = {"from_phone": 0, "silence": 0, "peak": 0, "since": loop.time()}
 
         now = loop.time()
