@@ -56,11 +56,14 @@ production `spreed` app config only, not written down here). The native
    needs no relay at all (`config.media_relay_enabled`).
 2. **Native dialout integration**, through Talk's own "call a phone number"
    UI.
-   - Declare `"features": ["start-dialout"]` in the hello message.
-     Deliberately not `"internal-incall"`: that tells the server the client
-     manages its own inCall/publishing-audio flags, which this bridge does
-     not do - without it, the server sets both automatically on connect,
-     which the self-addressed WebRTC publish below relies on.
+   - Declare `"features": ["start-dialout", "internal-incall"]` in the hello
+     message. `internal-incall` puts this client in charge of its own inCall
+     flags: it announces `FLAG_IN_CALL | FLAG_WITH_AUDIO` only once its
+     publisher exists, and clears them when the call ends. Without it the
+     server sets both on connect, so Talk clients ask this session for an
+     audio stream while it is merely watching a room for an accept, get
+     `client_not_found`, and then back off to one retry every 10 seconds -
+     which costs a real call its first seconds of audio.
    - A dialout request arrives as `{"id": "...", "type": "internal",
      "internal": {"type": "dialout", "dialout": {"roomid": "...", "backend":
      "...", "request": {"number": "...", "options": {...}}}}}` - the room id
@@ -79,7 +82,17 @@ production `spreed` app config only, not written down here). The native
 3. **Virtual sessions for calls.** Each phone call is represented as its own
    session via `addsession`/`updatesession`/`removesession`, with
    `user.type = "phone"`, `callid`, and `number` - so a caller shows up as a
-   real, named participant instead of anonymous published audio.
+   real, named participant, and dialout status/hangup can be correlated by
+   call id. It is a name plate only: in MCU mode a virtual session can never
+   carry media, because the signaling server looks a publisher up by the raw
+   recipient session id with no virtual-to-owner mapping, and publishers only
+   ever exist under a real client session's own id. Its flags are therefore
+   set to `FLAG_IN_CALL | FLAG_WITH_PHONE` explicitly, without
+   `FLAG_WITH_AUDIO` - Talk clients only request a stream from a participant
+   carrying audio or video, and pointing them at a session that cannot
+   publish leaves them retrying forever against a silent tile. The call's
+   audio rides on the bridge's own session instead, labelled with the
+   caller's name through the publish offer's `nick`.
    `addsession` alone does not route audio anywhere - the bridge also joins
    the room itself (`{"type": "room", "room": {"roomid": ...}}`) so the
    signaling server routes its self-addressed WebRTC offer to that room's
@@ -136,9 +149,14 @@ production `spreed` app config only, not written down here). The native
    direction subscribes to the human room participant's own audio via a
    `requestoffer`/offer/answer/candidate exchange (`_subscribe_human_audio`)
    and relays decoded frames into the RTP session (`_relay_human_audio`),
-   resampled to the call's negotiated codec rate. The room roster needed to
-   find "the human" to subscribe to is tracked from `room`/`join`/`leave`
-   events (`_room_roster`).
+   resampled to the call's negotiated codec rate. The `requestoffer` is
+   repeated until an offer arrives: the other side's publisher may not exist
+   yet, and the signaling server rejects such a request with
+   `client_not_found` rather than queuing it. Who to subscribe to is the
+   session id that accept detection saw entering the call; the room roster
+   (`_room_roster`, tracked from `room`/`join`/`leave` events) is only the
+   fallback for dialout calls, and it can hold sessions that dropped without
+   the server ever sending a `leave` for them.
 10. **Automatic gain control.** Phone-side audio only (`agc.py`, applied in
     `SipAudioTrack`) - some handsets (e.g. a DECT cordless) have a much
     quieter microphone than a laptop/headset, with no way to adjust that

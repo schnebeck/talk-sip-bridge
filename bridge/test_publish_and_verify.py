@@ -29,6 +29,7 @@ from talk_client import TalkClient
 LOOPBACK_IP = "127.0.0.1"
 SENDER_PORT = 45200
 RECEIVER_PORT = 45201
+REQUEST_RETRY_INTERVAL = 3
 
 
 def send_tone_loop(sender, freq, duration):
@@ -116,7 +117,20 @@ async def verify(publisher_sessionid, expected_freq, wait_seconds, result_holder
                 got_audio.set()
 
         deadline = asyncio.get_event_loop().time() + wait_seconds
+        next_request = asyncio.get_event_loop().time() + REQUEST_RETRY_INTERVAL
         while asyncio.get_event_loop().time() < deadline and not got_audio.is_set():
+            # The publisher does not exist yet while the bridge is still
+            # gathering ICE, and the signaling server rejects a request for
+            # a missing publisher instead of queuing it - so keep asking
+            # until an offer actually arrives.
+            if offer_sid is None and asyncio.get_event_loop().time() >= next_request:
+                await ws.send(json.dumps({
+                    "id": "verify-reqoffer", "type": "message",
+                    "message": {"recipient": {"type": "session", "sessionid": publisher_sessionid},
+                                "data": {"type": "requestoffer", "roomType": "video"}},
+                }))
+                print("[verify] No offer yet, requesting again.")
+                next_request = asyncio.get_event_loop().time() + REQUEST_RETRY_INTERVAL
             try:
                 raw = await asyncio.wait_for(ws.recv(), timeout=1)
             except asyncio.TimeoutError:
@@ -185,7 +199,7 @@ async def main():
         message_loop_task = asyncio.ensure_future(client._message_loop())
 
         publish_task = asyncio.ensure_future(client._publish_call_audio("test-call-1", receiver, roomid, "loopback-test"))
-        await asyncio.sleep(1.5)  # let the publish reach "connected" before we subscribe
+        await asyncio.sleep(1.5)  # a head start; verify() keeps re-requesting until the publisher exists
 
         result = {"success": False}
         await verify(client.own_sessionid, freq, duration, result)

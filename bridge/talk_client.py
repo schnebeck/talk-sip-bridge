@@ -21,6 +21,7 @@ import hashlib
 import hmac
 import http.cookiejar
 import json
+import re
 import secrets
 import threading
 import traceback
@@ -38,6 +39,29 @@ from config import config
 
 AUDIO_SAMPLE_RATE = 48000
 RTP_QUEUE_POLL_INTERVAL = 0.02  # matches one 20ms RTP packet - keeps frame pacing real-time
+
+# Call flags, shared by Talk's clients and the signaling server. Talk's own
+# clients only ever subscribe to a participant carrying AUDIO or VIDEO
+# (spreed's webrtc.js: userHasStreams()), which is what makes the
+# distinction below matter rather than being cosmetic.
+FLAG_IN_CALL = 1
+FLAG_WITH_AUDIO = 2
+FLAG_WITH_PHONE = 8
+
+# A single requestoffer is not enough: the other side's publisher may not
+# exist yet when it goes out, and the signaling server answers that with
+# "client_not_found" rather than queuing. Talk's own client re-requests
+# every 10s for exactly this reason.
+SUBSCRIBE_RETRY_INTERVAL = 5
+SUBSCRIBE_MAX_ATTEMPTS = 6
+
+# How long after a ring starts a participants snapshot still counts as "who
+# was already in the call before this ring" (see _handle_participants_update).
+# The snapshot the server sends because we just joined the room arrives
+# within milliseconds; anything later is real activity and must stay
+# eligible as an accept, or a call could ring forever with nobody able to
+# answer it.
+RING_BASELINE_WINDOW = 3
 
 
 def _resample_linear(pcm: np.ndarray, in_rate: int, out_rate: int) -> np.ndarray:
@@ -68,6 +92,19 @@ def _frame_to_mono_pcm(frame: AudioFrame) -> np.ndarray:
         row = arr.flatten()
         mono = row.reshape(-1, channels).astype(np.float64).mean(axis=1) if channels > 1 else row.astype(np.float64)
     return np.clip(mono, -32768, 32767).astype(np.int16)
+
+
+def _sip_display_name(from_header: str) -> str:
+    """Reduces a SIP From header to something usable as a participant name
+    in Talk - the caller's display name if it sent one, else the user part
+    of the SIP URI. A plain dialled number passes through unchanged."""
+    quoted = re.match(r'\s*"([^"]+)"', from_header)
+    if quoted:
+        return quoted.group(1)
+    uri_user = re.search(r"sip:([^@;>]+)", from_header)
+    if uri_user:
+        return uri_user.group(1)
+    return from_header.split(";")[0].strip()
 
 
 def _parse_ice_candidate(cand_str: str, sdp_mid=None, sdp_mline_index=0) -> RTCIceCandidate:
@@ -224,13 +261,16 @@ class TalkClient:
             "id": "bridge-hello", "type": "hello",
             "hello": {
                 "version": "1.0",
-                # Deliberately NOT declaring "internal-incall": that tells
-                # the server this client will manage its own inCall/
-                # publishing-audio flags, which nothing here currently does.
-                # Without it, the server sets both automatically on connect,
-                # which is what makes the self-addressed publish offer
-                # below actually work.
-                "features": ["start-dialout"],
+                # "internal-incall" makes this client responsible for its own
+                # inCall flags (see _set_incall). Without it the server marks
+                # the session as in-call with audio the moment it connects -
+                # so every Talk client in the room asks for this session's
+                # audio stream immediately, long before any call exists,
+                # gets "client_not_found", and then only retries every 10
+                # seconds. That alone keeps the first seconds of a real call
+                # silent. With the flag, the session announces audio only
+                # once its publisher actually exists.
+                "features": ["start-dialout", "internal-incall"],
                 "auth": {
                     "type": "internal",
                     "params": {"random": random_str, "token": token, "backend": config.backend_url},
@@ -267,8 +307,7 @@ class TalkClient:
                 # - the server rewrites the recipient to our own session
                 # either way. Only one call is ever active, so there is
                 # nothing else to disambiguate against.
-                print("[talk] Hangup control received - ending the active call")
-                self.call_manager.hangup()
+                self._hangup_sip("Hangup control received - ending the active call")
             elif msg_type == "event":
                 event = msg.get("event", {})
                 print(f"[talk] DEBUG event target={event.get('target')} type={event.get('type')} raw={json.dumps(event)[:1500]}")
@@ -355,12 +394,12 @@ class TalkClient:
         data = message.get("data", {})
         sender_sessionid = message.get("sender", {}).get("sessionid")
         with self._call_sessions_lock:
-            for entry in self._call_sessions.values():
-                if entry.get("ws_peer_sessionid") == sender_sessionid and "pc" in entry:
-                    pc, peer, is_subscriber = entry["pc"], self.own_sessionid, False
+            for matched_entry in self._call_sessions.values():
+                if matched_entry.get("ws_peer_sessionid") == sender_sessionid and "pc" in matched_entry:
+                    pc, peer, is_subscriber = matched_entry["pc"], self.own_sessionid, False
                     break
-                if entry.get("human_sessionid") == sender_sessionid and "sub_pc" in entry:
-                    pc, peer, is_subscriber = entry["sub_pc"], sender_sessionid, True
+                if matched_entry.get("human_sessionid") == sender_sessionid and "sub_pc" in matched_entry:
+                    pc, peer, is_subscriber = matched_entry["sub_pc"], sender_sessionid, True
                     break
             else:
                 print(f"[talk] DEBUG unmatched webrtc message from sender={sender_sessionid} data.type={data.get('type')}")
@@ -373,7 +412,14 @@ class TalkClient:
             await pc.setRemoteDescription(RTCSessionDescription(sdp=data["payload"]["sdp"], type="answer"))
         elif msg_type == "offer" and is_subscriber:
             # The server's offer for the stream we requested via
-            # requestoffer (see _subscribe_human_audio) - we answer it.
+            # requestoffer (see _subscribe_human_audio) - we answer it, and
+            # stop the retry loop that was covering the case where the other
+            # side had no publisher yet.
+            offer_event = matched_entry.get("sub_offer_event")
+            if offer_event is not None:
+                if offer_event.is_set():
+                    return  # already negotiated; a late duplicate offer would reset the connection
+                offer_event.set()
             await pc.setRemoteDescription(RTCSessionDescription(sdp=data["payload"]["sdp"], type="offer"))
             answer = await pc.createAnswer()
             await pc.setLocalDescription(answer)
@@ -459,6 +505,48 @@ class TalkClient:
             # can be filtered by session id, so only those are treated as an
             # accept signal.
             exclude = own_and_virtual | {waiting_entry.get("talk_ring_sessionid")}
+
+            if not waiting_entry.get("baseline_captured"):
+                # The participants snapshot the server sends because we just
+                # joined the room is not a live change, it is the room's
+                # current state. Confirmed live: a session that had long
+                # since ended its Talk call kept reappearing in it as
+                # inCall=3 (the signaling server never cleared it), so every
+                # inbound call was "accepted" instantly against that dead
+                # session - before the phone had rung long enough for a human
+                # to react, and failing right after with client_not_found.
+                # Whoever is already in the call at that point is recorded
+                # as a baseline and is not eligible as "just accepted" for
+                # this ring; a real accept always arrives as a later update.
+                #
+                # That snapshot arrives within milliseconds of joining, so
+                # after RING_BASELINE_WINDOW there is nothing left to take a
+                # baseline from, and swallowing a possible real accept would
+                # be the worse failure - the call would ring with no way to
+                # answer it.
+                preexisting = set()
+                if self.loop.time() - waiting_entry.get("ring_started_at", 0) <= RING_BASELINE_WINDOW:
+                    for item in update.get("changed") or []:
+                        session_id = item.get("sessionId") or item.get("sessionid")
+                        if session_id and session_id not in exclude and "inCall" in item and is_in_call(item["inCall"]):
+                            preexisting.add(session_id)
+                    for u in update.get("users") or []:
+                        session_id = u.get("sessionId") or u.get("sessionid")
+                        if session_id and session_id not in exclude and is_in_call(u.get("inCall")):
+                            preexisting.add(session_id)
+                with self._call_sessions_lock:
+                    # Same dict object as waiting_entry, held under the lock
+                    # because the SIP worker threads write these entries too.
+                    entry = self._call_sessions.get(waiting_call_id)
+                    if entry is not None:
+                        entry["baseline_captured"] = True
+                        entry["preexisting_incall"] = preexisting
+                if preexisting:
+                    print(f"[talk] Ring baseline for {waiting_call_id}: ignoring {len(preexisting)} "
+                          f"already-in-call session(s) {preexisting}")
+                    return
+
+            exclude = exclude | waiting_entry.get("preexisting_incall", set())
             accepted_sessionid = None
             for item in update.get("changed") or []:
                 session_id = item.get("sessionId") or item.get("sessionid")
@@ -505,8 +593,7 @@ class TalkClient:
             # capture of the raw event.
             in_call_raw = update.get("incall", update.get("inCall"))
             if in_call_raw is not None and not is_in_call(in_call_raw):
-                print("[talk] Room call ended - ending SIP side")
-                self.call_manager.hangup()
+                self._hangup_sip("Room call ended - ending SIP side")
             return
 
         for item in update.get("changed") or []:
@@ -514,8 +601,7 @@ class TalkClient:
             if not session_id or session_id in own_and_virtual:
                 continue
             if "inCall" in item and not is_in_call(item["inCall"]):
-                print(f"[talk] Participant {session_id} left the call - ending SIP side")
-                self.call_manager.hangup()
+                self._hangup_sip(f"Participant {session_id} left the call - ending SIP side")
                 return
 
         users = update.get("users")
@@ -526,11 +612,49 @@ class TalkClient:
                 if (u.get("sessionId") or u.get("sessionid")) not in own_and_virtual
             )
             if not anyone_else_in_call:
-                print("[talk] No other participant left in the call - ending SIP side")
-                self.call_manager.hangup()
+                self._hangup_sip("No other participant left in the call - ending SIP side")
+
+    def _hangup_sip(self, reason: str = None):
+        """Ends the SIP call behind the room's call. There is no call
+        manager when this client runs without a SIP side, as
+        test_publish_and_verify.py drives it - then there is nothing to
+        hang up, and reaching for it would kill the message loop."""
+        if reason:
+            print(f"[talk] {reason}")
+        if self.call_manager is not None:
+            self.call_manager.hangup()
+
+    async def _set_incall(self, flags: int):
+        """Announces this session's call state to the room. Only meaningful
+        because "internal-incall" is declared in _hello - otherwise the
+        server owns these flags. Talk clients start asking for this
+        session's audio as soon as FLAG_WITH_AUDIO shows up here, so it is
+        set once the publisher exists and cleared when the call ends."""
+        if self.ws is None:
+            return
+        try:
+            await self.ws.send(json.dumps({
+                "type": "internal",
+                "internal": {"type": "incall", "incall": {"incall": flags}},
+            }))
+        except Exception as e:
+            print(f"[talk] Could not update inCall flags to {flags}: {e!r}")
 
     # -- virtual session management (addsession/removesession) -----------
     async def _add_virtual_session(self, sip_call_id: str, *, roomid: str, number: str, caller: bool) -> str:
+        """Adds the phone participant Talk shows in the room. This is a
+        name plate only: in MCU mode a virtual session can never carry
+        media, because publishers exist exclusively under a real client
+        session's own id (the signaling server looks a publisher up by the
+        raw recipient session id, with no virtual-to-owner mapping). The
+        call's audio therefore rides on this bridge's own session, which
+        carries the caller's name via the publish offer's "nick".
+
+        FLAG_WITH_AUDIO is deliberately absent: it would make Talk clients
+        request a stream from this session that cannot exist, leaving them
+        retrying against a participant that never answers. The flags have
+        to be spelled out because "internal-incall" turns off the server's
+        own default for virtual sessions too."""
         virtual_sessionid = f"phone-{secrets.token_hex(8)}"
         await self.ws.send(json.dumps({
             "type": "internal",
@@ -539,6 +663,7 @@ class TalkClient:
                 "addsession": {
                     "sessionid": virtual_sessionid,
                     "roomid": roomid,
+                    "incall": FLAG_IN_CALL | FLAG_WITH_PHONE,
                     "user": {"type": "phone", "callid": sip_call_id, "number": number},
                 },
             },
@@ -569,7 +694,8 @@ class TalkClient:
             await asyncio.wait_for(self._room_joined_event.wait(), timeout=5)
         except asyncio.TimeoutError:
             print(f"[talk] Warning: no room-join confirmation for {roomid} within 5s, publishing anyway")
-        virtual_sessionid = await self._add_virtual_session(sip_call_id, roomid=roomid, number=number, caller=True)
+        display_name = _sip_display_name(number)
+        virtual_sessionid = await self._add_virtual_session(sip_call_id, roomid=roomid, number=display_name, caller=True)
         pc = RTCPeerConnection()
         pc.addTrack(SipAudioTrack(rtp_session))
 
@@ -588,7 +714,7 @@ class TalkClient:
             print(f"[talk] Publish {source}: {state}")
             if not hangup_triggered and state in ("failed", "closed", "disconnected"):
                 hangup_triggered = True
-                self.call_manager.hangup()
+                self._hangup_sip(None)
 
         @pc.on("iceconnectionstatechange")
         async def on_ice_state_change():
@@ -633,12 +759,23 @@ class TalkClient:
                 "recipient": {"type": "session", "sessionid": self.own_sessionid},
                 "data": {
                     "to": self.own_sessionid, "type": "offer", "sid": secrets.token_hex(8), "roomType": "video",
-                    "payload": {"nick": number, "type": "offer", "sdp": pc.localDescription.sdp},
+                    # This nick is what Talk shows for the tile that actually
+                    # carries the call's audio - the phone participant added
+                    # via addsession is a name plate without media.
+                    "payload": {"nick": display_name, "type": "offer", "sdp": pc.localDescription.sdp},
                     "audiocodec": "opus",
                 },
             },
         }))
         print(f"[talk] Publishing call audio for {sip_call_id} as virtual session {virtual_sessionid}")
+
+        # Only now: announcing audio any earlier makes Talk clients ask for a
+        # stream that does not exist yet, and they back off to one retry
+        # every 10 seconds after that. Announcing it here also satisfies the
+        # signaling server's rule that both sides must be in the call before
+        # either may subscribe to the other, which the requestoffer below
+        # depends on.
+        await self._set_incall(FLAG_IN_CALL | FLAG_WITH_AUDIO)
 
         # Prefer the session id the accept-detection just confirmed as
         # in-call over scanning the room roster: the roster only ever gains
@@ -676,25 +813,47 @@ class TalkClient:
         def on_track(track):
             if track.kind != "audio":
                 return
+            # The only positive evidence that Talk's audio actually reaches
+            # the phone side - everything before this is just negotiation.
+            print(f"[talk] Receiving audio from {human_sessionid} for {sip_call_id}")
             task = asyncio.ensure_future(self._relay_human_audio(sip_call_id, rtp_session, track))
             with self._call_sessions_lock:
                 entry = self._call_sessions.get(sip_call_id)
                 if entry is not None:
                     entry["relay_task"] = task
 
+        offer_received = asyncio.Event()
         with self._call_sessions_lock:
             entry = self._call_sessions.setdefault(sip_call_id, {})
             entry["sub_pc"] = sub_pc
             entry["human_sessionid"] = human_sessionid
+            entry["sub_offer_event"] = offer_received
 
-        await self.ws.send(json.dumps({
-            "id": f"bridge-reqoffer-{sip_call_id}", "type": "message",
-            "message": {
-                "recipient": {"type": "session", "sessionid": human_sessionid},
-                "data": {"type": "requestoffer", "roomType": "video"},
-            },
-        }))
-        print(f"[talk] Requested audio from {human_sessionid} for {sip_call_id}")
+        for attempt in range(SUBSCRIBE_MAX_ATTEMPTS):
+            with self._call_sessions_lock:
+                still_current = self._call_sessions.get(sip_call_id, {}).get("sub_pc") is sub_pc
+            if not still_current:
+                return  # call ended, or a newer subscription replaced this one
+            try:
+                await self.ws.send(json.dumps({
+                    "id": f"bridge-reqoffer-{sip_call_id}", "type": "message",
+                    "message": {
+                        "recipient": {"type": "session", "sessionid": human_sessionid},
+                        "data": {"type": "requestoffer", "roomType": "video"},
+                    },
+                }))
+            except Exception as e:
+                print(f"[talk] Could not request audio from {human_sessionid}: {e!r}")
+                return
+            print(f"[talk] Requested audio from {human_sessionid} for {sip_call_id} "
+                  f"(attempt {attempt + 1}/{SUBSCRIBE_MAX_ATTEMPTS})")
+            try:
+                await asyncio.wait_for(offer_received.wait(), timeout=SUBSCRIBE_RETRY_INTERVAL)
+                return
+            except asyncio.TimeoutError:
+                continue
+        print(f"[talk] No audio offer from {human_sessionid} for {sip_call_id} - "
+              f"phone side stays silent for this call")
 
     async def _relay_human_audio(self, sip_call_id: str, rtp_session, track):
         """Reads Talk's audio (48kHz, from whatever the human's device
@@ -729,6 +888,11 @@ class TalkClient:
             await entry["pc"].close()
         if "virtual_sessionid" in entry:
             await self._remove_virtual_session(entry["virtual_sessionid"], roomid)
+        if "pc" in entry:
+            # The publisher is gone, so stop advertising audio - otherwise
+            # Talk clients keep asking this session for a stream that no
+            # longer exists.
+            await self._set_incall(0)
         if entry.get("kind") == "dialout":
             await self._send_dialout_status(sip_call_id, roomid, "cleared")
         print(f"[talk] Call {sip_call_id} ended, virtual session removed")
@@ -818,6 +982,7 @@ class TalkClient:
                 entry["waiting_for_accept"] = True
                 entry["talk_ring_opener"] = opener
                 entry["talk_ring_sessionid"] = ring_sessionid
+                entry["ring_started_at"] = self.loop.time()
         print(f"[talk] Ringing {line.notify_user} for call {call_id} from {caller}, watching room {roomid} for accept")
 
     async def _stop_talk_ring(self, roomid: str, opener, line):
