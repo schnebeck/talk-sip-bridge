@@ -23,6 +23,7 @@ import http.cookiejar
 import json
 import secrets
 import threading
+import traceback
 import urllib.error
 import urllib.request
 
@@ -139,6 +140,26 @@ def _talk_ring_stop_sync(opener, roomid: str, nc_user: str, nc_app_password: str
         print(f"[talk] Stopping Talk call ring for room {roomid} failed: {e!r}")
 
 
+def _run_coro_logged(coro, loop, label: str):
+    """asyncio.run_coroutine_threadsafe() returns a concurrent.futures.Future
+    whose exception is silently dropped unless something calls .result() on
+    it - unlike a plain asyncio Task, it does NOT log on garbage collection.
+    Every sip_core.CallManager callback in this module schedules its async
+    work this way from a plain worker thread, so without this wrapper any
+    exception anywhere in that coroutine (offer/answer negotiation, codec
+    setup, ...) simply vanishes with zero trace, no matter how bad."""
+    future = asyncio.run_coroutine_threadsafe(coro, loop)
+
+    def _log_if_failed(f):
+        exc = f.exception()
+        if exc is not None:
+            print(f"[talk] ERROR in {label}: {exc!r}")
+            traceback.print_exception(type(exc), exc, exc.__traceback__)
+
+    future.add_done_callback(_log_if_failed)
+    return future
+
+
 class SipAudioTrack(AudioStreamTrack):
     """Reads decoded PCM (mono, at the RtpSession's negotiated sample rate -
     8kHz for PCMU, 16kHz for G.722) from an RtpSession's receive queue,
@@ -232,6 +253,13 @@ class TalkClient:
                 await self._handle_webrtc_message(msg["message"])
             elif msg_type == "room" and msg.get("id") == "bridge-room":
                 self._room_joined_event.set()
+            elif msg_type == "error" and msg.get("id") == "bridge-room" and msg.get("error", {}).get("code") == "already_joined":
+                # Our own internal session never explicitly leaves a room
+                # between calls (see _handle_incoming_ring/_publish_call_audio),
+                # so a later join attempt for the same room routinely hits
+                # this instead of a real join confirmation - it means we are
+                # in the room already, which is just as good.
+                self._room_joined_event.set()
             elif msg_type == "control" and msg.get("control", {}).get("data", {}).get("type") == "hangup":
                 # Sent when the call's virtual phone session is disinvited
                 # (the room participant hung up in Talk, or the room's call
@@ -243,6 +271,7 @@ class TalkClient:
                 self.call_manager.hangup()
             elif msg_type == "event":
                 event = msg.get("event", {})
+                print(f"[talk] DEBUG event target={event.get('target')} type={event.get('type')} raw={json.dumps(event)[:1500]}")
                 if event.get("target") == "room" and event.get("type") == "join":
                     self._handle_room_join(event.get("join") or [])
                 elif event.get("target") == "room" and event.get("type") == "leave":
@@ -251,6 +280,8 @@ class TalkClient:
                             self._room_roster.pop(sessionid, None)
                 elif event.get("target") == "participants" and event.get("type") == "update":
                     await self._handle_participants_update(event.get("update") or {})
+            else:
+                print(f"[talk] DEBUG other message type={msg_type} raw={json.dumps(msg)[:1500]}")
 
     def _handle_room_join(self, join_entries: list):
         """Tracks room roster (for finding a human to subscribe to, see
@@ -332,6 +363,7 @@ class TalkClient:
                     pc, peer, is_subscriber = entry["sub_pc"], sender_sessionid, True
                     break
             else:
+                print(f"[talk] DEBUG unmatched webrtc message from sender={sender_sessionid} data.type={data.get('type')}")
                 return
 
         msg_type = data.get("type")
@@ -427,23 +459,34 @@ class TalkClient:
             # can be filtered by session id, so only those are treated as an
             # accept signal.
             exclude = own_and_virtual | {waiting_entry.get("talk_ring_sessionid")}
-            accepted = False
+            accepted_sessionid = None
             for item in update.get("changed") or []:
                 session_id = item.get("sessionId") or item.get("sessionid")
                 if session_id and session_id not in exclude and "inCall" in item and is_in_call(item["inCall"]):
-                    accepted = True
+                    accepted_sessionid = session_id
                     break
-            if not accepted:
+            if accepted_sessionid is None:
                 for u in update.get("users") or []:
-                    if (u.get("sessionId") or u.get("sessionid")) not in exclude and is_in_call(u.get("inCall")):
-                        accepted = True
+                    session_id = u.get("sessionId") or u.get("sessionid")
+                    if session_id and session_id not in exclude and is_in_call(u.get("inCall")):
+                        accepted_sessionid = session_id
                         break
-            if accepted:
+            if accepted_sessionid is not None:
                 print(f"[talk] Human joined the call - accepting {waiting_call_id}")
                 with self._call_sessions_lock:
                     entry = self._call_sessions.get(waiting_call_id)
                     if entry is not None:
                         entry["waiting_for_accept"] = False  # avoid double-triggering answer()
+                        # _find_human_in_room()'s room-roster scan can pick a
+                        # stale entry (a chat-relay session that silently
+                        # dropped without the signaling server ever sending
+                        # a "room"/"leave" for it - confirmed live: it kept
+                        # returning an hours-old dead session, and requesting
+                        # its audio failed with "client_not_found") - the
+                        # session id that just got detected as in-call right
+                        # here is the ground truth, so use it directly
+                        # instead of trusting the roster.
+                        entry["accepted_sessionid"] = accepted_sessionid
                 opener = waiting_entry.get("talk_ring_opener")
                 if opener is not None:
                     # The ring-trigger session's job is done now that a real
@@ -512,7 +555,7 @@ class TalkClient:
         }))
 
     # -- publishing SIP call audio into the room --------------------------
-    async def _publish_call_audio(self, sip_call_id: str, rtp_session, roomid: str, number: str):
+    async def _publish_call_audio(self, sip_call_id: str, rtp_session, roomid: str, number: str, human_sessionid_hint: str = None):
         # Join the room so the signaling server routes our self-addressed
         # offer to that room's Janus instance and generates a real SDP
         # answer - a plain addsession alone does not do this. This makes us
@@ -597,7 +640,15 @@ class TalkClient:
         }))
         print(f"[talk] Publishing call audio for {sip_call_id} as virtual session {virtual_sessionid}")
 
-        human_sessionid = await self._find_human_in_room()
+        # Prefer the session id the accept-detection just confirmed as
+        # in-call over scanning the room roster: the roster only ever gains
+        # entries (see _handle_room_join) and the signaling server does not
+        # reliably send a "room"/"leave" for a chat-relay session that just
+        # silently drops (e.g. the mobile app backgrounded) - confirmed
+        # live, this made _find_human_in_room() keep returning an hours-old
+        # dead session, and requesting its audio failed with
+        # "client_not_found" instead of ever reaching the real one.
+        human_sessionid = human_sessionid_hint or await self._find_human_in_room()
         if human_sessionid:
             asyncio.ensure_future(self._subscribe_human_audio(sip_call_id, rtp_session, human_sessionid))
         else:
@@ -703,23 +754,25 @@ class TalkClient:
     # -- thread-safe entry points for sip_core.CallManager callbacks ------
     def on_call_connected(self, *, call_id, direction, rtp):
         with self._call_sessions_lock:
-            number = self._call_sessions.get(call_id, {}).get("number", "")
+            entry = self._call_sessions.get(call_id, {})
+            number = entry.get("number", "")
+            human_sessionid_hint = entry.get("accepted_sessionid")
         roomid = self._entry_roomid(call_id)
 
         async def _connected():
-            await self._publish_call_audio(call_id, rtp, roomid, number)
+            await self._publish_call_audio(call_id, rtp, roomid, number, human_sessionid_hint=human_sessionid_hint)
             if direction == "outbound":
                 await self._send_dialout_status(call_id, roomid, "connected")
 
-        asyncio.run_coroutine_threadsafe(_connected(), self.loop)
+        _run_coro_logged(_connected(), self.loop, f"on_call_connected({call_id})")
 
     def on_call_ended(self, *, call_id, reason):
         roomid = self._entry_roomid(call_id)
-        asyncio.run_coroutine_threadsafe(self._teardown_call(call_id, roomid), self.loop)
+        _run_coro_logged(self._teardown_call(call_id, roomid), self.loop, f"on_call_ended({call_id})")
 
     def on_call_failed(self, *, call_id, reason):
         roomid = self._entry_roomid(call_id)
-        asyncio.run_coroutine_threadsafe(self._send_dialout_status(call_id, roomid, "rejected"), self.loop)
+        _run_coro_logged(self._send_dialout_status(call_id, roomid, "rejected"), self.loop, f"on_call_failed({call_id})")
 
     def on_incoming_call(self, *, call_id, caller):
         # The signaling protocol has no ringing/accept-decline exchange for
@@ -740,7 +793,7 @@ class TalkClient:
             print(f"[talk] Incoming call {call_id} from {caller} - answering with real audio")
             self.call_manager.answer()
             return
-        asyncio.run_coroutine_threadsafe(self._handle_incoming_ring(call_id, caller), self.loop)
+        _run_coro_logged(self._handle_incoming_ring(call_id, caller), self.loop, f"on_incoming_call({call_id})")
 
     async def _handle_incoming_ring(self, call_id: str, caller: str):
         line = self.call_manager.line

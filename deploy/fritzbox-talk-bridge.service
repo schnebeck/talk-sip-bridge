@@ -42,7 +42,11 @@ LockPersonality=true
 RemoveIPC=true
 CapabilityBoundingSet=
 AmbientCapabilities=
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# AF_NETLINK is required by aiortc/aioice's ICE candidate gathering
+# (ifaddr.get_adapters() enumerates network interfaces over a netlink
+# socket) - without it, setLocalDescription() on the call-audio publish
+# fails with EAFNOSUPPORT and the call never gets audio.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 
