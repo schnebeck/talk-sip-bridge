@@ -91,8 +91,16 @@ production `spreed` app config only, not written down here). The native
    `FLAG_WITH_AUDIO` - Talk clients only request a stream from a participant
    carrying audio or video, and pointing them at a session that cannot
    publish leaves them retrying forever against a silent tile. The call's
-   audio rides on the bridge's own session instead, labelled with the
-   caller's name through the publish offer's `nick`.
+   audio rides on the bridge's own session instead.
+
+   One caller therefore appears as two participants in Talk: the phone
+   session, named through `user.displayname` (the field Talk renders
+   participants by), and the bridge's own session carrying the audio, which
+   shows as "Gast" - an internal client has no display name in the
+   protocol. Registering the caller as a real Nextcloud participant through
+   `options.actorType`/`actorId` does not solve that either: Nextcloud
+   rejects an actor that is not already invited to the room, and fails the
+   whole `addsession` with it.
    `addsession` alone does not route audio anywhere - the bridge also joins
    the room itself (`{"type": "room", "room": {"roomid": ...}}`) so the
    signaling server routes its self-addressed WebRTC offer to that room's

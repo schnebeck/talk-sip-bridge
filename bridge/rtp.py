@@ -40,6 +40,7 @@ class RtpSession:
         self.ssrc = int.from_bytes(os.urandom(4), "big")
         self.recv_queue = queue.Queue()
         self.stop_event = threading.Event()
+        self._reported_pt = None  # payload type already reported as unexpected
         self.set_payload_type(payload_type)
         self.recv_thread = threading.Thread(target=self._recv_loop, daemon=True)
         self.recv_thread.start()
@@ -64,10 +65,22 @@ class RtpSession:
             return self._encoder.encode(chunk)
         return linear_to_ulaw(chunk).tobytes()
 
-    def _decode(self, payload: bytes) -> np.ndarray:
-        if self.payload_type == PT_G722:
+    def _decode(self, payload: bytes, payload_type: int = None):
+        """Decodes by the payload type the packet actually carries, not the
+        one that was negotiated. A peer may send comfort noise, DTMF events
+        or a codec that was not agreed; running those bytes through the
+        negotiated decoder turns them into noise instead of audio, which is
+        indistinguishable from a broken call at the far end. Returns None
+        for anything this bridge cannot decode, so it can be dropped."""
+        if payload_type is None:
+            payload_type = self.payload_type
+        if payload_type == PT_G722:
+            if self._decoder is None:
+                self._decoder = G722Decoder()
             return self._decoder.decode(payload)
-        return ulaw_to_linear(np.frombuffer(payload, dtype=np.uint8))
+        if payload_type == PT_PCMU:
+            return ulaw_to_linear(np.frombuffer(payload, dtype=np.uint8))
+        return None
 
     def send_pcm(self, pcm: np.ndarray):
         """pcm: int16 array of any length, at this session's sample_rate -
@@ -105,8 +118,13 @@ class RtpSession:
                 continue
             if len(data) < 12:
                 continue
-            payload = data[12:]
-            pcm = self._decode(payload)
+            payload_type = data[1] & 0x7F
+            if payload_type != self.payload_type and payload_type != self._reported_pt:
+                print(f"[rtp] Receiving payload type {payload_type} while {self.payload_type} was negotiated")
+                self._reported_pt = payload_type
+            pcm = self._decode(data[12:], payload_type)
+            if pcm is None:
+                continue
             self.recv_queue.put(pcm)
 
     def close(self):

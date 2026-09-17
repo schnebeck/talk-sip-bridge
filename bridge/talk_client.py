@@ -30,7 +30,7 @@ import urllib.request
 
 import numpy as np
 import websockets
-from aiortc import RTCIceCandidate, RTCPeerConnection, RTCSessionDescription
+from aiortc import RTCConfiguration, RTCIceCandidate, RTCPeerConnection, RTCSessionDescription
 from aiortc.mediastreams import AudioStreamTrack
 from av import AudioFrame
 
@@ -63,6 +63,15 @@ SUBSCRIBE_MAX_ATTEMPTS = 6
 # eligible as an accept, or a call could ring forever with nobody able to
 # answer it.
 RING_BASELINE_WINDOW = 3
+
+# aiortc defaults to a public STUN server, which costs a measured 5 seconds
+# of candidate gathering per call before anything can be published - five
+# seconds of silence after a caller is answered. The other end of every one
+# of these connections is the signaling server's own Janus on this host, so
+# host candidates are what actually get used; the reflexive ones it waits
+# for are useless here, and asking for them tells a third party about every
+# call placed.
+NO_ICE_SERVERS = RTCConfiguration(iceServers=[])
 
 
 def _resample_linear(pcm: np.ndarray, in_rate: int, out_rate: int) -> np.ndarray:
@@ -208,6 +217,7 @@ class SipAudioTrack(AudioStreamTrack):
         self.rtp_session = rtp_session
         self._pts = 0
         self._next_frame_at = None
+        self._stats = {"from_phone": 0, "silence": 0, "peak": 0, "since": None}
         self._silence = np.zeros(rtp_session.samples_per_packet, dtype=np.int16)
         self._agc = Agc(target_peak=config.agc_target_peak, max_gain=config.agc_max_gain) if config.agc_enabled else None
 
@@ -232,8 +242,21 @@ class SipAudioTrack(AudioStreamTrack):
 
         try:
             pcm_in = await asyncio.to_thread(rtp.recv_queue.get, True, RTP_QUEUE_POLL_INTERVAL)
+            self._stats["from_phone"] += 1
+            self._stats["peak"] = max(self._stats["peak"], int(np.abs(pcm_in.astype(np.int32)).max()) if len(pcm_in) else 0)
         except Exception:
             pcm_in = self._silence
+            self._stats["silence"] += 1
+
+        # A second's worth of "what actually arrived from the phone" - the
+        # difference between audio that is missing and audio that is
+        # mangled is not audible from the far end, but it is visible here.
+        if self._stats["since"] is None:
+            self._stats["since"] = loop.time()
+        elif loop.time() - self._stats["since"] >= 1.0:
+            s = self._stats
+            print(f"[talk] Phone audio: {s['from_phone']} packets, {s['silence']} silence-filled, peak {s['peak']}")
+            self._stats = {"from_phone": 0, "silence": 0, "peak": 0, "since": loop.time()}
 
         now = loop.time()
         if self._next_frame_at is None or self._next_frame_at < now - frame_duration:
@@ -711,7 +734,20 @@ class TalkClient:
                     "sessionid": virtual_sessionid,
                     "roomid": roomid,
                     "incall": FLAG_IN_CALL | FLAG_WITH_PHONE,
-                    "user": {"type": "phone", "callid": sip_call_id, "number": number},
+                    # No "options" actor here, which is why Talk shows the
+                    # caller as "Gast": passing actorType/actorId would have
+                    # the signaling server register this session with
+                    # Nextcloud as that actor, but Nextcloud rejects an
+                    # actor that is not already an invited participant of
+                    # the room ("The user is not invited to this room"), and
+                    # the whole addsession fails with it. Naming a caller
+                    # properly needs a real phone attendee in the room
+                    # first, which an inbound call has no way to create.
+                    # displayname is the field Talk renders participants by
+                    # (a real user arrives as user.displayname too) - without
+                    # it the caller shows up as "Gast".
+                    "user": {"type": "phone", "callid": sip_call_id, "number": number,
+                             "displayname": number},
                 },
             },
         }))
@@ -746,7 +782,7 @@ class TalkClient:
             return
         display_name = _sip_display_name(number)
         virtual_sessionid = await self._add_virtual_session(sip_call_id, roomid=roomid, number=display_name, caller=True)
-        pc = RTCPeerConnection()
+        pc = RTCPeerConnection(NO_ICE_SERVERS)
         pc.addTrack(SipAudioTrack(rtp_session))
 
         # Ending a call in Talk's UI does not send an explicit hangup control
@@ -869,7 +905,7 @@ class TalkClient:
 
     # -- subscribing to the human's audio, to relay it to the phone -------
     async def _subscribe_human_audio(self, sip_call_id: str, rtp_session, human_sessionid: str):
-        sub_pc = RTCPeerConnection()
+        sub_pc = RTCPeerConnection(NO_ICE_SERVERS)
 
         @sub_pc.on("track")
         def on_track(track):

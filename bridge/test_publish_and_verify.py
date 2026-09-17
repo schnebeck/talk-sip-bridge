@@ -185,6 +185,12 @@ async def main():
     roomid = sys.argv[1]
     freq = float(sys.argv[2]) if len(sys.argv) > 2 else 660.0
     duration = float(sys.argv[3]) if len(sys.argv) > 3 else 20.0
+    if duration < 15:
+        # Subscribing can need a retry before the publisher exists, and two
+        # seconds of audio have to be collected after that - a shorter run
+        # reports a failure that is only impatience.
+        print(f"Raising duration from {duration}s to the 15s this test needs.")
+        duration = 15.0
 
     receiver = RtpSession(LOOPBACK_IP, RECEIVER_PORT, LOOPBACK_IP, SENDER_PORT)
     sender = RtpSession(LOOPBACK_IP, SENDER_PORT, LOOPBACK_IP, RECEIVER_PORT)
