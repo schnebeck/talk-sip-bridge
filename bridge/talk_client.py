@@ -209,6 +209,36 @@ def _talk_ring_attendees_sync(opener, base: str, auth_header: str, roomid: str, 
             print(f"[talk] Could not ring {participant.get('actorId')}: {e!r}")
 
 
+def _talk_end_room_call_sync(roomid: str, nc_user: str, nc_app_password: str):
+    """Ends the room's call once the phone call behind it is over.
+
+    The room's call only exists because this bridge started it for an
+    inbound call, so it has to end with that call. Without this the person
+    who answered is left alone in a call that no longer has a phone on the
+    other end - Talk then plays its "waiting for someone" tone, which is
+    heard as a call that never stops ringing, and any call notification
+    stays alive with it.
+
+    Ending it for everyone needs moderator rights in the room; a bridge
+    account without them gets 403 here and the call has to be left to time
+    out instead."""
+    base = config.backend_url.rstrip('/')
+    auth_header = "Basic " + base64.b64encode(f"{nc_user}:{nc_app_password}".encode()).decode()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+    try:
+        _talk_ocs_request(opener, base, auth_header, "POST",
+                          f"/ocs/v2.php/apps/spreed/api/v4/room/{roomid}/participants/active", {})
+        _talk_ocs_request(opener, base, auth_header, "DELETE",
+                          f"/ocs/v2.php/apps/spreed/api/v4/call/{roomid}?all=true")
+        _talk_ocs_request(opener, base, auth_header, "DELETE",
+                          f"/ocs/v2.php/apps/spreed/api/v4/room/{roomid}/participants/active")
+        print(f"[talk] Ended the call in room {roomid} - the phone call behind it is over")
+    except urllib.error.HTTPError as e:
+        print(f"[talk] Could not end the call in room {roomid}: HTTP {e.code} {e.read()[:200]!r}")
+    except (urllib.error.URLError, OSError) as e:
+        print(f"[talk] Could not end the call in room {roomid}: {e!r}")
+
+
 def _talk_ring_stop_sync(opener, roomid: str, nc_user: str, nc_app_password: str):
     """Ends what _talk_ring_start_sync started - leaves the call, then the
     room, using the same session (opener) so Talk attributes it to the
@@ -1034,6 +1064,15 @@ class TalkClient:
         if entry.get("kind") == "dialout":
             await self._send_dialout_status(sip_call_id, roomid, "cleared")
         print(f"[talk] Call {sip_call_id} ended, virtual session removed")
+        if entry.get("talk_ring_opener") is not None and not entry.get("waiting_for_accept"):
+            # This bridge started the room's call for this phone call and
+            # somebody answered it, so it ends with the phone call too -
+            # see _talk_end_room_call_sync for what being left in it does.
+            # A call nobody answered is not ended here: it was already
+            # given up by _stop_talk_ring above.
+            line = self.call_manager.line
+            await asyncio.to_thread(_talk_end_room_call_sync, roomid,
+                                    line.notify_user, line.notify_app_password)
         if "pc" in entry or entry.get("waiting_for_accept"):
             # The signaling server permanently drops a "start-dialout"
             # session from its dialout candidates the moment it joins any
