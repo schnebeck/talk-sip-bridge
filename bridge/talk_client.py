@@ -1072,26 +1072,49 @@ class TalkClient:
         _run_coro_logged(self._handle_incoming_ring(call_id, caller), self.loop, f"on_incoming_call({call_id})")
 
     async def _handle_incoming_ring(self, call_id: str, caller: str):
+        """Rings Talk for an inbound call and waits for somebody to answer.
+
+        The order matters. Joining the room first establishes what the
+        room's call looks like before this call exists, because answering
+        is recognised as a change to that (see _apply_incall_update), and
+        arming the call before ringing closes the window in between.
+        Ringing first lets a fast answer land in the very snapshot that
+        establishes the starting state, where it is indistinguishable from
+        someone who was already in a call - confirmed live: a client that
+        answered within a second was never noticed and the phone rang
+        out."""
         line = self.call_manager.line
         roomid = line.default_room_token
         if not roomid or not line.notify_user or not line.notify_app_password:
             print(f"[talk] Incoming call {call_id} from {caller} on line {line.id} - "
                   f"no notify_user/notify_app_password/default room configured, leaving it ringing")
             return
-        opener, ring_sessionid = await asyncio.to_thread(
-            _talk_ring_start_sync, roomid, line.notify_user, line.notify_app_password)
-        if opener is None:
-            return
+
         self._room_joined_event.clear()
         await self.ws.send(json.dumps({"id": "bridge-room", "type": "room", "room": {"roomid": roomid}}))
         try:
             await asyncio.wait_for(self._room_joined_event.wait(), timeout=5)
         except asyncio.TimeoutError:
             print(f"[talk] Warning: no room-join confirmation for {roomid} while waiting for {call_id} to be accepted")
+
+        with self._call_sessions_lock:
+            entry = self._call_sessions.get(call_id)
+            if entry is None:
+                return  # the caller gave up while the room was being joined
+            entry["waiting_for_accept"] = True
+
+        opener, ring_sessionid = await asyncio.to_thread(
+            _talk_ring_start_sync, roomid, line.notify_user, line.notify_app_password)
+        if opener is None:
+            with self._call_sessions_lock:
+                entry = self._call_sessions.get(call_id)
+                if entry is not None:
+                    entry["waiting_for_accept"] = False
+            return
+
         with self._call_sessions_lock:
             entry = self._call_sessions.get(call_id)
             if entry is not None:
-                entry["waiting_for_accept"] = True
                 entry["talk_ring_opener"] = opener
                 entry["talk_ring_sessionid"] = ring_sessionid
         print(f"[talk] Ringing {line.notify_user} for call {call_id} from {caller}, watching room {roomid} for accept")
