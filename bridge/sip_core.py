@@ -374,6 +374,24 @@ def _parse_offered_payload_types(sdp_body: str) -> list[int]:
     return []
 
 
+def _parse_sdp_media_address(sdp_body: str):
+    """Where the peer wants its RTP sent, from an SDP offer or answer:
+    ("c=IN IP4 <host>", "m=audio <port> ..."). Returns None if either is
+    missing. Only needed on a line without a media relay - with one, RTP
+    always goes to the relay regardless of what the peer advertises."""
+    host = None
+    port = None
+    for line in sdp_body.splitlines():
+        line = line.strip()
+        if line.startswith("c=IN IP4 ") and host is None:
+            host = line[len("c=IN IP4 "):].split("/")[0].strip()
+        elif line.startswith("m=audio"):
+            fields = line.split()
+            if len(fields) > 1 and fields[1].isdigit():
+                port = int(fields[1])
+    return (host, port) if host and port else None
+
+
 def _choose_payload_type(offered: list[int]) -> int:
     """We're the UAS (answering an INVITE) - pick G.722 if the caller
     offered it, otherwise fall back to PCMU regardless of what else was
@@ -682,9 +700,19 @@ class CallManager:
                     m = re.search(r'tag=([^;>\s]+)', to_header)
                     to_tag = m.group(1) if m else None
                     remote_contact = resp_headers.get("contact", "")
-                    answered_pts = _parse_offered_payload_types(_extract_sip_body(resp))
+                    answer_sdp = _extract_sip_body(resp)
+                    answered_pts = _parse_offered_payload_types(answer_sdp)
                     if answered_pts:
                         rtp.set_payload_type(_choose_payload_type(answered_pts))
+                    if not line.media_relay_enabled:
+                        # Without a relay the peer's own advertised media
+                        # address is the only correct target - the address
+                        # this session was constructed with is a guess that
+                        # holds only when the gateway happens to use the
+                        # same port on its own address.
+                        media = _parse_sdp_media_address(answer_sdp)
+                        if media:
+                            rtp.remote_addr = media
                     send_ack(to_header, cseq)
                     with self.lock:
                         if self.call and self.call["call_id"] == call_id:
