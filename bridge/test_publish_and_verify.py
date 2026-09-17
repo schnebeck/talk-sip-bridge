@@ -198,6 +198,10 @@ async def main():
         await client._hello()
         message_loop_task = asyncio.ensure_future(client._message_loop())
 
+        # Register the call the way on_incoming_call does: publishing stops
+        # as soon as this entry is gone, which is how a torn-down call
+        # aborts a publish that is still gathering ICE.
+        client._call_sessions["test-call-1"] = {"kind": "test", "number": "loopback-test"}
         publish_task = asyncio.ensure_future(client._publish_call_audio("test-call-1", receiver, roomid, "loopback-test"))
         await asyncio.sleep(1.5)  # a head start; verify() keeps re-requesting until the publisher exists
 

@@ -507,6 +507,15 @@ class CallManager:
     def handle_cancel(self, text, headers, call_id, remote_addr):
         with self.lock:
             if self.call and self.call["call_id"] == call_id:
+                # A CANCEL can arrive just after the call was answered, when
+                # the caller gives up in the same moment - the media session
+                # created by answer() has to be released here too, or its
+                # socket keeps this line's RTP port bound and the next call
+                # cannot be answered at all ("Address already in use").
+                if self.call.get("bye_timer"):
+                    self.call["bye_timer"].cancel()
+                if self.call.get("rtp"):
+                    self.call["rtp"].close()
                 self.call = None
         self._send_response("200 OK", headers, remote_addr)
         self.on_call_ended(call_id=call_id, reason="cancelled")

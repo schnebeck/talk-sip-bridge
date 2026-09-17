@@ -605,8 +605,15 @@ class TalkClient:
                         entry["accepted_sessionid"] = accepted_sessionid
                 # Answer first: everything the caller hears from here on
                 # waits on this, and stopping the ring costs two OCS round
-                # trips that have nothing to do with the phone line.
-                self.call_manager.answer()
+                # trips that have nothing to do with the phone line. A
+                # failure here must not reach the message loop - losing the
+                # signaling connection over one call that cannot be
+                # answered takes every later call down with it.
+                try:
+                    self.call_manager.answer()
+                except Exception as e:
+                    print(f"[talk] Answering {waiting_call_id} failed: {e!r}")
+                    traceback.print_exc()
                 opener = waiting_entry.get("talk_ring_opener")
                 if opener is not None:
                     # The ring-trigger session's job is done now that a real
@@ -646,6 +653,13 @@ class TalkClient:
             )
             if not anyone_else_in_call:
                 self._hangup_sip("No other participant left in the call - ending SIP side")
+
+    def _call_still_running(self, sip_call_id: str) -> bool:
+        """_teardown_call removes the call's entry, so its presence is what
+        says the call is still worth working on - relevant across the
+        seconds that publishing spends gathering ICE."""
+        with self._call_sessions_lock:
+            return sip_call_id in self._call_sessions
 
     def _hangup_sip(self, reason: str = None):
         """Ends the SIP call behind the room's call. There is no call
@@ -727,6 +741,9 @@ class TalkClient:
             await asyncio.wait_for(self._room_joined_event.wait(), timeout=5)
         except asyncio.TimeoutError:
             print(f"[talk] Warning: no room-join confirmation for {roomid} within 5s, publishing anyway")
+        if not self._call_still_running(sip_call_id):
+            print(f"[talk] {sip_call_id} ended before publishing started - nothing to publish")
+            return
         display_name = _sip_display_name(number)
         virtual_sessionid = await self._add_virtual_session(sip_call_id, roomid=roomid, number=display_name, caller=True)
         pc = RTCPeerConnection()
@@ -774,9 +791,12 @@ class TalkClient:
         asyncio.ensure_future(poll_connection_state())
 
         with self._call_sessions_lock:
-            entry = self._call_sessions.setdefault(sip_call_id, {})
-            entry["virtual_sessionid"] = virtual_sessionid
-            entry["pc"] = pc
+            # get, not setdefault: _teardown_call removing the entry is what
+            # says the call is over, and recreating it here would hide that.
+            entry = self._call_sessions.get(sip_call_id)
+            if entry is not None:
+                entry["virtual_sessionid"] = virtual_sessionid
+                entry["pc"] = pc
             # The offer is addressed to our OWN session, not the virtual
             # one - a virtual session (addsession) only represents the call
             # in the participant list, it has no real client attached that
@@ -786,6 +806,15 @@ class TalkClient:
 
         offer = await pc.createOffer()
         await pc.setLocalDescription(offer)
+        if not self._call_still_running(sip_call_id):
+            # Gathering ICE takes seconds, and a caller who gives up in the
+            # meantime tears the call down underneath us. Publishing anyway
+            # would leave a live publisher and a subscriber running for a
+            # call that no longer exists.
+            print(f"[talk] {sip_call_id} ended while gathering ICE - discarding the publisher")
+            await pc.close()
+            await self._remove_virtual_session(virtual_sessionid, roomid)
+            return
         await self.ws.send(json.dumps({
             "id": f"bridge-offer-{sip_call_id}", "type": "message",
             "message": {
@@ -857,7 +886,9 @@ class TalkClient:
 
         offer_received = asyncio.Event()
         with self._call_sessions_lock:
-            entry = self._call_sessions.setdefault(sip_call_id, {})
+            entry = self._call_sessions.get(sip_call_id)
+            if entry is None:
+                return  # call already ended
             entry["sub_pc"] = sub_pc
             entry["human_sessionid"] = human_sessionid
             entry["sub_offer_event"] = offer_received
