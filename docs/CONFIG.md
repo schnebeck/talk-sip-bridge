@@ -97,7 +97,8 @@ the line's `DEFAULT_ROOM`.
 | `BRIDGE_DIALOUT_INTERNAL_DIAL_PREFIX` | (empty) | Prepended to a number that matched `BRIDGE_DIALOUT_NUMBER_ALLOWLIST` (i.e. was recognized as an internal extension) before dialing - the gateway's own notation for reaching a physical device by extension, e.g. `**` on a FritzBox. A bare extension may be accepted at the SIP signaling level without this but never actually alert the device. |
 | `BRIDGE_AGC_ENABLED` | `true` | Automatic gain control on audio coming from the phone side before it's published into Talk (see `agc.py`). Some handsets (e.g. a DECT cordless) have a much quieter microphone than a laptop/headset, with no way to adjust that from this end of the call, and how quiet it sounds also varies with distance to the handset - AGC adapts continuously rather than needing one fixed multiplier. |
 | `BRIDGE_AGC_TARGET_PEAK` | 10000 | Peak amplitude (out of a max of 32767) the AGC aims for. |
-| `BRIDGE_AGC_MAX_GAIN` | 20.0 | Upper bound on how far the AGC will amplify a quiet signal. |
+| `BRIDGE_AGC_MAX_GAIN` | 8.0 | Upper bound on how far the AGC will amplify a quiet signal. Measured on a DECT handset, speech peaks at 2000-4000 need a gain of 2.5-5 to reach the target, so this leaves headroom without letting quiet passages run away. |
+| `BRIDGE_AGC_SILENCE_THRESHOLD` | 500 | Peak below which the AGC stops adapting. It has to clear the line's own noise floor - measured at 150-250 on the same handset - or the gain rides the noise up between words and drops again on the next syllable, heard as a bubbling background. |
 | `BRIDGE_NOTIFY_USER` | (empty) | Per-line. Nextcloud account the bridge signs into to ring a call on this line's behalf, via Talk's own OCS call API - see "Ring notification" above. Empty leaves the line ringing with no Talk-side signal, as before this existed. |
 | `BRIDGE_NOTIFY_APP_PASSWORD` | (empty) | Per-line. App password for `BRIDGE_NOTIFY_USER`'s account. |
 

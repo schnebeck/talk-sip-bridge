@@ -134,7 +134,14 @@ class Config:
         # or stay too quiet on soft ones.
         self.agc_enabled = os.environ.get("BRIDGE_AGC_ENABLED", "true").strip().lower() == "true"
         self.agc_target_peak = int(os.environ.get("BRIDGE_AGC_TARGET_PEAK", "10000"))
-        self.agc_max_gain = float(os.environ.get("BRIDGE_AGC_MAX_GAIN", "20.0"))
+        # Measured on a DECT handset: speech peaks around 2000-4000 and the
+        # line's own noise floor sits at 150-250. A gain ceiling of 20 lets
+        # the AGC ride that noise floor up between words, which is heard as
+        # a bubbling background; 8 is more than enough to bring real speech
+        # to the target. The silence threshold has to clear the noise floor
+        # for the same reason - below it, the AGC keeps adapting to noise.
+        self.agc_max_gain = float(os.environ.get("BRIDGE_AGC_MAX_GAIN", "8.0"))
+        self.agc_silence_threshold = int(os.environ.get("BRIDGE_AGC_SILENCE_THRESHOLD", "500"))
 
         # Talk/signaling side.
         self.ws_url = _require("BRIDGE_WS_URL")  # standalone signaling server, e.g. ws://127.0.0.1:8080/spreed

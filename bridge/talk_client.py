@@ -168,10 +168,45 @@ def _talk_ring_start_sync(roomid: str, nc_user: str, nc_app_password: str):
         join_resp = _talk_ocs_request(opener, base, auth_header, "POST", f"/ocs/v2.php/apps/spreed/api/v4/room/{roomid}/participants/active", {})
         session_id = json.loads(join_resp)["ocs"]["data"].get("sessionId")
         _talk_ocs_request(opener, base, auth_header, "POST", f"/ocs/v2.php/apps/spreed/api/v4/call/{roomid}", {"flags": 1})
+        _talk_ring_attendees_sync(opener, base, auth_header, roomid, nc_user)
         return opener, session_id
     except (urllib.error.URLError, OSError, KeyError, ValueError) as e:
         print(f"[talk] Starting Talk call ring for room {roomid} failed: {e!r}")
         return None, None
+
+
+def _talk_ring_attendees_sync(opener, base: str, auth_header: str, roomid: str, nc_user: str):
+    """Asks Talk to ring every real user in the room for the call that was
+    just started. Joining the call alone does make Talk show an incoming
+    call, but confirmed live: a client whose signaling session has gone
+    stale still paints that screen and then does nothing when it is tapped -
+    no session ever joins the call. This is Talk's own "ring a participant
+    for the ongoing call" path and delivers a fresh call notification, which
+    is what gets the app to open a live session again. Best effort: the
+    join-driven ring stays in place regardless of what happens here."""
+    try:
+        raw = _talk_ocs_request(opener, base, auth_header, "GET",
+                                f"/ocs/v2.php/apps/spreed/api/v4/room/{roomid}/participants")
+        participants = json.loads(raw)["ocs"]["data"]
+    except (urllib.error.URLError, OSError, KeyError, ValueError) as e:
+        print(f"[talk] Could not list participants of room {roomid} to ring them: {e!r}")
+        return
+    for participant in participants:
+        if participant.get("actorType") != "users" or participant.get("actorId") == nc_user:
+            continue
+        attendee_id = participant.get("attendeeId")
+        if attendee_id is None:
+            continue
+        try:
+            _talk_ocs_request(opener, base, auth_header, "POST",
+                              f"/ocs/v2.php/apps/spreed/api/v4/call/{roomid}/ring/{attendee_id}", {})
+            print(f"[talk] Rang {participant.get('actorId')} for the call in room {roomid}")
+        except urllib.error.HTTPError as e:
+            # Talk refuses with "status" for do-not-disturb and stays silent
+            # for someone already in the call - neither is a bridge fault.
+            print(f"[talk] Could not ring {participant.get('actorId')}: HTTP {e.code} {e.read()[:200]!r}")
+        except (urllib.error.URLError, OSError) as e:
+            print(f"[talk] Could not ring {participant.get('actorId')}: {e!r}")
 
 
 def _talk_ring_stop_sync(opener, roomid: str, nc_user: str, nc_app_password: str):
@@ -219,7 +254,8 @@ class SipAudioTrack(AudioStreamTrack):
         self._next_frame_at = None
         self._stats = {"from_phone": 0, "silence": 0, "peak": 0, "since": None}
         self._silence = np.zeros(rtp_session.samples_per_packet, dtype=np.int16)
-        self._agc = Agc(target_peak=config.agc_target_peak, max_gain=config.agc_max_gain) if config.agc_enabled else None
+        self._agc = Agc(target_peak=config.agc_target_peak, max_gain=config.agc_max_gain,
+                        silence_threshold=config.agc_silence_threshold) if config.agc_enabled else None
 
     async def recv(self):
         """Hands out exactly one packet per packet interval of wall clock.
