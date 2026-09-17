@@ -157,6 +157,7 @@ class SipTransport:
                 continue
 
             method = first_line.split(" ")[0]
+            print(f"[sip:{self.line.id}] {method} received for call {call_id}")
             try:
                 if method == "INVITE":
                     self.call_manager.handle_invite(text, headers, call_id, addr)

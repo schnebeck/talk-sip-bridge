@@ -38,7 +38,8 @@ from agc import Agc
 from config import config
 
 AUDIO_SAMPLE_RATE = 48000
-RTP_QUEUE_POLL_INTERVAL = 0.02  # matches one 20ms RTP packet - keeps frame pacing real-time
+RTP_QUEUE_POLL_INTERVAL = 0.02  # one 20ms RTP packet - how long a frame waits for late audio
+MAX_QUEUED_PACKETS = 5  # 100ms of jitter cushion; older packets are only latency
 
 # Call flags, shared by Talk's clients and the signaling server. Talk's own
 # clients only ever subscribe to a participant carrying AUDIO or VIDEO
@@ -206,14 +207,41 @@ class SipAudioTrack(AudioStreamTrack):
         super().__init__()
         self.rtp_session = rtp_session
         self._pts = 0
+        self._next_frame_at = None
         self._silence = np.zeros(rtp_session.samples_per_packet, dtype=np.int16)
         self._agc = Agc(target_peak=config.agc_target_peak, max_gain=config.agc_max_gain) if config.agc_enabled else None
 
     async def recv(self):
+        """Hands out exactly one packet per packet interval of wall clock.
+        The base class paces its frames that way and this override has to do
+        the same: taking the timing from the receive queue instead means a
+        queued packet returns instantly while an empty queue costs a full
+        poll interval, so the track runs faster than real time and pads the
+        timeline with inserted silence - heard as badly distorted audio."""
+        loop = asyncio.get_running_loop()
+        rtp = self.rtp_session
+        frame_duration = rtp.samples_per_packet / rtp.sample_rate
+
+        # Once frames are paced, a backlog is pure added latency, so keep
+        # only a small jitter cushion and drop what is older than that.
+        while rtp.recv_queue.qsize() > MAX_QUEUED_PACKETS:
+            try:
+                rtp.recv_queue.get_nowait()
+            except Exception:
+                break
+
         try:
-            pcm_in = await asyncio.to_thread(self.rtp_session.recv_queue.get, True, RTP_QUEUE_POLL_INTERVAL)
+            pcm_in = await asyncio.to_thread(rtp.recv_queue.get, True, RTP_QUEUE_POLL_INTERVAL)
         except Exception:
             pcm_in = self._silence
+
+        now = loop.time()
+        if self._next_frame_at is None or self._next_frame_at < now - frame_duration:
+            self._next_frame_at = now  # first frame, or lost the thread of real time
+        elif self._next_frame_at > now:
+            await asyncio.sleep(self._next_frame_at - now)
+        self._next_frame_at += frame_duration
+
         if self._agc is not None:
             pcm_in = self._agc.process(pcm_in)
         pcm_48k = _resample_linear(pcm_in, self.rtp_session.sample_rate, AUDIO_SAMPLE_RATE)
@@ -575,13 +603,18 @@ class TalkClient:
                         # here is the ground truth, so use it directly
                         # instead of trusting the roster.
                         entry["accepted_sessionid"] = accepted_sessionid
+                # Answer first: everything the caller hears from here on
+                # waits on this, and stopping the ring costs two OCS round
+                # trips that have nothing to do with the phone line.
+                self.call_manager.answer()
                 opener = waiting_entry.get("talk_ring_opener")
                 if opener is not None:
                     # The ring-trigger session's job is done now that a real
                     # client has joined - leave it so the bridge doesn't
                     # linger as a phantom extra participant.
-                    await self._stop_talk_ring(self._entry_roomid(waiting_call_id), opener, self.call_manager.line)
-                self.call_manager.answer()
+                    _run_coro_logged(
+                        self._stop_talk_ring(self._entry_roomid(waiting_call_id), opener, self.call_manager.line),
+                        self.loop, f"stop ring for {waiting_call_id}")
             return
 
         if update.get("all"):
