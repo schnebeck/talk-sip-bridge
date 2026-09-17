@@ -18,6 +18,7 @@ eligibility for as long as it's joined to a room publishing a call (see
 docs/CONCEPT.md point 3), so lines sharing one Talk connection would make
 each other's dialout unavailable while either has a call in progress.
 """
+import signal
 import time
 
 from config import config, LineConfig
@@ -66,12 +67,30 @@ def main():
 
     control_api.start_in_background(config.control_bind, config.control_port, lines)
 
+    def shut_down(signum=None, frame=None):
+        """Hang up before going away. A gateway that never receives a BYE
+        keeps the call - and keeps streaming its audio at this host
+        indefinitely, where it mixes into every later call through the same
+        media path. systemd stops this service with SIGTERM, so without
+        handling it every restart during a call leaves such a stream
+        behind."""
+        for registrar, call_manager in lines.values():
+            try:
+                call_manager.hangup()
+            except Exception as e:
+                print(f"[daemon] Could not hang up on shutdown: {e!r}")
+        for registrar, _ in lines.values():
+            # Deregister, but keep the stored state: this line is meant to
+            # be registered, and a restart has to bring it back up.
+            registrar.turn_off(persist=False)
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, shut_down)
     try:
         while True:
             time.sleep(3600)
     except KeyboardInterrupt:
-        for registrar, _ in lines.values():
-            registrar.turn_off()
+        shut_down()
 
 
 if __name__ == "__main__":

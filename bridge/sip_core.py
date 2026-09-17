@@ -303,15 +303,22 @@ class SipRegistrar:
                 self.keepalive_thread.start()
             return ok
 
-    def turn_off(self) -> bool:
+    def turn_off(self, persist: bool = True) -> bool:
+        """Deregisters from the gateway. persist=False keeps the stored
+        "this line should be registered" state, for shutting down a line
+        that is meant to come back: the daemon deregisters on the way out
+        so the gateway does not keep sending calls to a dead endpoint, but
+        a restart has to bring the line up again by itself."""
         with self.lock:
             if not self.registered:
-                self._persist(False)
+                if persist:
+                    self._persist(False)
                 return True
             self.stop_event.set()
             ok = self._do_register(0)
             self.registered = False
-            self._persist(False)
+            if persist:
+                self._persist(False)
             return ok
 
     def status(self) -> dict:
