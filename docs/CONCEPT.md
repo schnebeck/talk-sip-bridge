@@ -125,12 +125,19 @@ production `spreed` app config only, not written down here). The native
    server-side) - sent to every room member, including the bridge since it
    joins the room to publish, whenever the call itself ends for the whole
    room. `incall` uses the server's `FlagInCall = 1` bit; `incall & 1 == 0`
-   means the call has ended. Two other, narrower shapes of the same
-   `participants`/`update` event exist server-side (a `changed` delta from
-   backend-driven "incall" updates, and a full `users` room-membership
-   snapshot from `NotifySessionChanged`) and are also handled, though the
-   `all: true` broadcast is what an actual "Anruf beenden" click in Talk
-   sends. The virtual "phone" session added via `addsession` gets its own
+   means the call has ended. The same `participants`/`update` event also
+   comes in two per-session shapes (a `changed` delta from backend-driven
+   "incall" updates, and a full `users` room-membership snapshot from
+   `NotifySessionChanged`); both feed one model of who is in the room's
+   call, and every decision is taken from a *transition* of that model,
+   never from its current state. Reading state instead is what made a
+   session the signaling server still listed as in-call, long after its
+   client was gone, look exactly like a person answering - inbound calls
+   were then picked up instantly against a dead peer. It also means
+   several sessions of the same person (Talk open in a browser and on a
+   phone at once) are unremarkable: only the one that moves counts. A
+   `users` snapshot replaces the model wholesale, which is the only way
+   sessions that vanished without a `leave` are ever forgotten. The virtual "phone" session added via `addsession` gets its own
    server-assigned room session id (announced via a `room`/`join` event,
    matched back to the call via its `user.callid`) that is unrelated to the
    name chosen when adding it - needed to recognize the bridge's own virtual
@@ -210,14 +217,19 @@ production `spreed` app config only, not written down here). The native
     answer. The bridge also joins the room itself over its own internal-
     client connection (same mechanism as `_publish_call_audio`'s room-join)
     purely to watch `participants`/`update` events for a *different* real
-    session joining the call - `_handle_participants_update` handles this
-    symmetrically to its existing call-end detection, checking for the
-    opposite inCall transition, deliberately excluding both its own
-    session and the ring-trigger session's id (the "all: true" room-wide
-    broadcast is excluded from this check entirely, since the ring-trigger
-    joining a previously-callless room is itself what causes that specific
-    broadcast). On a genuine accept, the bridge leaves the ring-trigger
-    session and calls `CallManager.answer()`. If a different device
+    session joining the call - the same room model as the call-end
+    detection above, read for the opposite transition and ignoring the
+    bridge's own sessions. On a genuine accept, the bridge answers the SIP
+    call and then leaves the ring-trigger session, in that order: the
+    caller waits on the answer, not on two OCS round trips.
+
+    Joining the room's call is not enough on its own to get a person to
+    answer. Confirmed live: a client whose signaling session has gone
+    stale still paints an incoming-call screen and then does nothing when
+    it is tapped, so the phone rings out. The bridge therefore also asks
+    Talk to ring the room's users for the call
+    (`POST .../call/{token}/ring/{attendeeId}`), which delivers a real
+    call notification and gets the app to open a live session again. If a different device
     answers instead (e.g. a physical phone in the same FritzBox
     parallel-ring group), the gateway cancels this INVITE as usual
     (`CallManager.handle_cancel`), which leaves the ring-trigger session

@@ -56,14 +56,6 @@ FLAG_WITH_PHONE = 8
 SUBSCRIBE_RETRY_INTERVAL = 5
 SUBSCRIBE_MAX_ATTEMPTS = 6
 
-# How long after a ring starts a participants snapshot still counts as "who
-# was already in the call before this ring" (see _handle_participants_update).
-# The snapshot the server sends because we just joined the room arrives
-# within milliseconds; anything later is real activity and must stay
-# eligible as an accept, or a call could ring forever with nobody able to
-# answer it.
-RING_BASELINE_WINDOW = 3
-
 # aiortc defaults to a public STUN server, which costs a measured 5 seconds
 # of candidate gathering per call before anything can be published - five
 # seconds of silence after a caller is answered. The other end of every one
@@ -102,6 +94,13 @@ def _frame_to_mono_pcm(frame: AudioFrame) -> np.ndarray:
         row = arr.flatten()
         mono = row.reshape(-1, channels).astype(np.float64).mean(axis=1) if channels > 1 else row.astype(np.float64)
     return np.clip(mono, -32768, 32767).astype(np.int16)
+
+
+def _has_in_call_flag(raw) -> bool:
+    try:
+        return bool(int(raw) & FLAG_IN_CALL)
+    except (TypeError, ValueError):
+        return False
 
 
 def _sip_display_name(from_header: str) -> str:
@@ -354,6 +353,7 @@ class TalkClient:
         self._call_sessions_lock = threading.Lock()  # entries are written from both the asyncio loop and SIP worker threads
         self._room_joined_event = asyncio.Event()
         self._room_roster = {}  # room sessionid -> {"is_human": bool} - who else is in the room, for subscribing to their audio
+        self._room_incall = None  # room sessionid -> in call? None until the first update seeds it
 
     # -- lifecycle, run from a background thread -----------------------
     def run_forever(self):
@@ -399,6 +399,7 @@ class TalkClient:
         await self.ws.recv()  # welcome banner
         resp = json.loads(await self.ws.recv())
         self.own_sessionid = resp["hello"]["sessionid"]
+        self._room_incall = None  # a new connection knows nothing about any room yet
         print(f"[talk] Connected as internal client, session {self.own_sessionid}")
 
     # -- incoming messages from the signaling server ---------------------
@@ -563,41 +564,69 @@ class TalkClient:
             except Exception as e:
                 print(f"[talk] Could not add ICE candidate: {e!r}")
 
+    def _apply_incall_update(self, update: dict):
+        """Keeps this room's in-call membership up to date and reports what
+        moved, as (joined, left) sets of session ids.
+
+        Every decision this bridge makes - somebody answered, the call is
+        over - is a transition, never a state. Reading state instead is
+        what made a session the signaling server still listed as in-call,
+        long after its client was gone, look exactly like a person
+        answering: inbound calls were picked up instantly against a dead
+        peer. It also means several sessions of the same person (Talk open
+        in a browser and on a phone at once) are unremarkable - only the
+        one that moves counts.
+
+        The first update after connecting carries the room's membership
+        rather than a change, so it seeds the model and reports nothing."""
+        def in_call(raw) -> bool:
+            try:
+                return bool(int(raw) & 1)
+            except (TypeError, ValueError):
+                return False
+
+        previous = self._room_incall
+        current = dict(previous or {})
+        users = update.get("users")
+        if users is not None:
+            # A snapshot replaces what we know: a session missing from it is
+            # gone. This is the only way the model learns about sessions
+            # that dropped without the server ever sending a "leave".
+            current = {}
+            for user in users:
+                session_id = user.get("sessionId") or user.get("sessionid")
+                if session_id:
+                    current[session_id] = in_call(user.get("inCall"))
+        for item in update.get("changed") or []:
+            session_id = item.get("sessionId") or item.get("sessionid")
+            if session_id and "inCall" in item:
+                current[session_id] = in_call(item["inCall"])
+
+        self._room_incall = current
+        if previous is None:
+            return set(), set()
+        joined = {s for s, now_in_call in current.items() if now_in_call and not previous.get(s)}
+        left = {s for s, was_in_call in previous.items() if was_in_call and not current.get(s)}
+        return joined, left
+
     async def _handle_participants_update(self, update: dict):
-        """Primary call-end signal. Confirmed via the signaling server's own
-        logs: when the human clicks "Anruf beenden", only their own
-        publisher/room gets torn down - our publisher (the SIP call's audio)
-        is never touched, so iceconnectionstatechange/connectionstatechange
-        on our own RTCPeerConnection (see _publish_call_audio) never fire in
-        this case. FlagInCall = 1 in the server's own bitmask, so
-        inCall & 1 == 0 means a participant is not (or no longer) in the
-        call.
+        """The room's two answers this bridge acts on: somebody joined the
+        call it is ringing for, or the call it is in has ended.
 
-        This event has two observed shapes, both confirmed via the
-        signaling server's own source (server/room.go):
-        - Room.PublishUsersInCallChanged (backend-driven "incall" updates):
-          carries a "changed" list of just the sessions whose flag moved.
-        - Room.NotifySessionChanged -> publishUsersChangedWithInternal (a
-          browser client leaving the call - the path actually taken by
-          Talk's "Anruf beenden" button): carries no "changed" list at all,
-          only a full "users" room-membership snapshot with each entry's
-          current inCall value - so leaving has to be inferred from that
-          snapshot rather than a delta.
+        Besides per-session updates the server also broadcasts a room-wide
+        "the call itself ended" (an "all" entry with a lowercase "incall"),
+        which is what Talk's own "end call" button produces."""
+        joined, left = self._apply_incall_update(update)
 
-        Also doubles, symmetrically, as the accept signal for a call still
-        waiting on _handle_incoming_ring: there the question is the opposite
-        one - has a human just joined the call - checked against the same
-        three event shapes."""
         with self._call_sessions_lock:
-            own_and_virtual = {self.own_sessionid}
+            ours = {self.own_sessionid}
             active_call_id = None
             waiting_call_id = None
             waiting_entry = None
             for call_id, entry in self._call_sessions.items():
-                if entry.get("virtual_sessionid"):
-                    own_and_virtual.add(entry["virtual_sessionid"])
-                if entry.get("virtual_room_sessionid"):
-                    own_and_virtual.add(entry["virtual_room_sessionid"])
+                for key in ("virtual_sessionid", "virtual_room_sessionid", "talk_ring_sessionid"):
+                    if entry.get(key):
+                        ours.add(entry[key])
                 if "pc" in entry:
                     active_call_id = call_id
                 elif entry.get("waiting_for_accept"):
@@ -606,144 +635,50 @@ class TalkClient:
         if active_call_id is None and waiting_call_id is None:
             return
 
-        def is_in_call(raw) -> bool:
-            try:
-                return bool(int(raw) & 1)
-            except (TypeError, ValueError):
-                return False
-
         if waiting_call_id is not None:
-            # Deliberately no "all: true" check here, unlike the hangup
-            # detection below: our own ring-trigger session (see
-            # _handle_incoming_ring/_talk_ring_start_sync) is the one
-            # putting the room into its call state in the first place, and
-            # that transition is exactly what "all: true" reports - reacting
-            # to it would make the bridge mistake its own ring for a human
-            # accepting. A real human joining afterwards is a per-session
-            # change instead ("changed" delta or a "users" snapshot), which
-            # can be filtered by session id, so only those are treated as an
-            # accept signal.
-            exclude = own_and_virtual | {waiting_entry.get("talk_ring_sessionid")}
-
-            if not waiting_entry.get("baseline_captured"):
-                # The participants snapshot the server sends because we just
-                # joined the room is not a live change, it is the room's
-                # current state. Confirmed live: a session that had long
-                # since ended its Talk call kept reappearing in it as
-                # inCall=3 (the signaling server never cleared it), so every
-                # inbound call was "accepted" instantly against that dead
-                # session - before the phone had rung long enough for a human
-                # to react, and failing right after with client_not_found.
-                # Whoever is already in the call at that point is recorded
-                # as a baseline and is not eligible as "just accepted" for
-                # this ring; a real accept always arrives as a later update.
-                #
-                # That snapshot arrives within milliseconds of joining, so
-                # after RING_BASELINE_WINDOW there is nothing left to take a
-                # baseline from, and swallowing a possible real accept would
-                # be the worse failure - the call would ring with no way to
-                # answer it.
-                preexisting = set()
-                if self.loop.time() - waiting_entry.get("ring_started_at", 0) <= RING_BASELINE_WINDOW:
-                    for item in update.get("changed") or []:
-                        session_id = item.get("sessionId") or item.get("sessionid")
-                        if session_id and session_id not in exclude and "inCall" in item and is_in_call(item["inCall"]):
-                            preexisting.add(session_id)
-                    for u in update.get("users") or []:
-                        session_id = u.get("sessionId") or u.get("sessionid")
-                        if session_id and session_id not in exclude and is_in_call(u.get("inCall")):
-                            preexisting.add(session_id)
-                with self._call_sessions_lock:
-                    # Same dict object as waiting_entry, held under the lock
-                    # because the SIP worker threads write these entries too.
-                    entry = self._call_sessions.get(waiting_call_id)
-                    if entry is not None:
-                        entry["baseline_captured"] = True
-                        entry["preexisting_incall"] = preexisting
-                if preexisting:
-                    print(f"[talk] Ring baseline for {waiting_call_id}: ignoring {len(preexisting)} "
-                          f"already-in-call session(s) {preexisting}")
-                    return
-
-            exclude = exclude | waiting_entry.get("preexisting_incall", set())
-            accepted_sessionid = None
-            for item in update.get("changed") or []:
-                session_id = item.get("sessionId") or item.get("sessionid")
-                if session_id and session_id not in exclude and "inCall" in item and is_in_call(item["inCall"]):
-                    accepted_sessionid = session_id
-                    break
+            accepted_sessionid = next((s for s in sorted(joined) if s not in ours), None)
             if accepted_sessionid is None:
-                for u in update.get("users") or []:
-                    session_id = u.get("sessionId") or u.get("sessionid")
-                    if session_id and session_id not in exclude and is_in_call(u.get("inCall")):
-                        accepted_sessionid = session_id
-                        break
-            if accepted_sessionid is not None:
-                print(f"[talk] Human joined the call - accepting {waiting_call_id}")
-                with self._call_sessions_lock:
-                    entry = self._call_sessions.get(waiting_call_id)
-                    if entry is not None:
-                        entry["waiting_for_accept"] = False  # avoid double-triggering answer()
-                        # _find_human_in_room()'s room-roster scan can pick a
-                        # stale entry (a chat-relay session that silently
-                        # dropped without the signaling server ever sending
-                        # a "room"/"leave" for it - confirmed live: it kept
-                        # returning an hours-old dead session, and requesting
-                        # its audio failed with "client_not_found") - the
-                        # session id that just got detected as in-call right
-                        # here is the ground truth, so use it directly
-                        # instead of trusting the roster.
-                        entry["accepted_sessionid"] = accepted_sessionid
-                # Answer first: everything the caller hears from here on
-                # waits on this, and stopping the ring costs two OCS round
-                # trips that have nothing to do with the phone line. A
-                # failure here must not reach the message loop - losing the
-                # signaling connection over one call that cannot be
-                # answered takes every later call down with it.
-                try:
-                    self.call_manager.answer()
-                except Exception as e:
-                    print(f"[talk] Answering {waiting_call_id} failed: {e!r}")
-                    traceback.print_exc()
-                opener = waiting_entry.get("talk_ring_opener")
-                if opener is not None:
-                    # The ring-trigger session's job is done now that a real
-                    # client has joined - leave it so the bridge doesn't
-                    # linger as a phantom extra participant.
-                    _run_coro_logged(
-                        self._stop_talk_ring(self._entry_roomid(waiting_call_id), opener, self.call_manager.line),
-                        self.loop, f"stop ring for {waiting_call_id}")
+                return
+            print(f"[talk] Human joined the call - accepting {waiting_call_id}")
+            with self._call_sessions_lock:
+                entry = self._call_sessions.get(waiting_call_id)
+                if entry is not None:
+                    entry["waiting_for_accept"] = False  # avoid double-triggering answer()
+                    # Whose audio to subscribe to: the session that just
+                    # joined, rather than whatever the room roster offers -
+                    # that can still hold sessions which dropped without a
+                    # "leave", and asking one of those for its audio fails
+                    # with client_not_found.
+                    entry["accepted_sessionid"] = accepted_sessionid
+            # Answer first: everything the caller hears from here on waits
+            # on this, and stopping the ring costs two OCS round trips that
+            # have nothing to do with the phone line. A failure here must
+            # not reach the message loop - losing the signaling connection
+            # over one call that cannot be answered would take every later
+            # call down with it.
+            try:
+                self.call_manager.answer()
+            except Exception as e:
+                print(f"[talk] Answering {waiting_call_id} failed: {e!r}")
+                traceback.print_exc()
+            opener = waiting_entry.get("talk_ring_opener")
+            if opener is not None:
+                _run_coro_logged(
+                    self._stop_talk_ring(self._entry_roomid(waiting_call_id), opener, self.call_manager.line),
+                    self.loop, f"stop ring for {waiting_call_id}")
             return
 
         if update.get("all"):
-            # Room.PublishUsersInCallChangedAll: a whole-room "the call
-            # itself ended" broadcast - no changed/users list, just a
-            # room-wide incall value (lowercase json key, unlike the
-            # per-session "inCall" used elsewhere). This is what actually
-            # fires when "Anruf beenden" is clicked - confirmed via a live
-            # capture of the raw event.
             in_call_raw = update.get("incall", update.get("inCall"))
-            if in_call_raw is not None and not is_in_call(in_call_raw):
+            if in_call_raw is not None and not _has_in_call_flag(in_call_raw):
                 self._hangup_sip("Room call ended - ending SIP side")
             return
 
-        for item in update.get("changed") or []:
-            session_id = item.get("sessionId") or item.get("sessionid")
-            if not session_id or session_id in own_and_virtual:
-                continue
-            if "inCall" in item and not is_in_call(item["inCall"]):
-                self._hangup_sip(f"Participant {session_id} left the call - ending SIP side")
-                return
-
-        users = update.get("users")
-        if users is not None:
-            anyone_else_in_call = any(
-                is_in_call(u.get("inCall"))
-                for u in users
-                if (u.get("sessionId") or u.get("sessionid")) not in own_and_virtual
-            )
-            if not anyone_else_in_call:
-                self._hangup_sip("No other participant left in the call - ending SIP side")
+        if not left:
+            return
+        still_there = any(flag for session_id, flag in self._room_incall.items() if session_id not in ours)
+        if not still_there:
+            self._hangup_sip(f"Everyone but this bridge left the call ({len(left)} session(s)) - ending SIP side")
 
     def _call_still_running(self, sip_call_id: str) -> bool:
         """_teardown_call removes the call's entry, so its presence is what
@@ -1159,7 +1094,6 @@ class TalkClient:
                 entry["waiting_for_accept"] = True
                 entry["talk_ring_opener"] = opener
                 entry["talk_ring_sessionid"] = ring_sessionid
-                entry["ring_started_at"] = self.loop.time()
         print(f"[talk] Ringing {line.notify_user} for call {call_id} from {caller}, watching room {roomid} for accept")
 
     async def _stop_talk_ring(self, roomid: str, opener, line):
