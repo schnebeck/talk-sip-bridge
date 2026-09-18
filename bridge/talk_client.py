@@ -24,6 +24,7 @@ import json
 import re
 import secrets
 import threading
+import time
 import traceback
 import urllib.error
 import urllib.request
@@ -166,7 +167,12 @@ def _talk_ring_start_sync(roomid: str, nc_user: str, nc_app_password: str):
     try:
         join_resp = _talk_ocs_request(opener, base, auth_header, "POST", f"/ocs/v2.php/apps/spreed/api/v4/room/{roomid}/participants/active", {})
         session_id = json.loads(join_resp)["ocs"]["data"].get("sessionId")
+        started = time.monotonic()
         _talk_ocs_request(opener, base, auth_header, "POST", f"/ocs/v2.php/apps/spreed/api/v4/call/{roomid}", {"flags": 1})
+        # This is the moment Talk clients start showing an incoming call.
+        # A caller waits about twenty seconds, so how much of that this
+        # takes is worth knowing on every call rather than guessing later.
+        print(f"[talk] Talk is ringing for room {roomid} ({time.monotonic() - started:.1f}s to join the call)")
         _talk_ring_attendees_sync(opener, base, auth_header, roomid, nc_user)
         return opener, session_id
     except (urllib.error.URLError, OSError, KeyError, ValueError) as e:
@@ -1093,9 +1099,13 @@ class TalkClient:
         self._room_joined_event.clear()
         await self.ws.send(json.dumps({"id": "bridge-room", "type": "room", "room": {"roomid": roomid}}))
         try:
-            await asyncio.wait_for(self._room_joined_event.wait(), timeout=5)
+            # Confirmation normally arrives in milliseconds. Waiting longer
+            # than this would eat into the caller's patience for no gain -
+            # the room state that answering is compared against also
+            # arrives while the OCS calls below are still running.
+            await asyncio.wait_for(self._room_joined_event.wait(), timeout=1.5)
         except asyncio.TimeoutError:
-            print(f"[talk] Warning: no room-join confirmation for {roomid} while waiting for {call_id} to be accepted")
+            print(f"[talk] No room-join confirmation for {roomid} yet, ringing anyway")
 
         with self._call_sessions_lock:
             entry = self._call_sessions.get(call_id)
