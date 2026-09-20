@@ -423,3 +423,22 @@ that exists only in the signaling server.
 
 Requires the `sip-direct-dialin` capability (Talk 21+) and a number mapped to a
 user; without the mapping the endpoint answers 404 and there is no room.
+
+Measured against a live Talk 24.0.5, with consequences that decide where this
+can be used at all:
+
+- The mapping is an **exact string match** on the stored number
+  (`PhoneNumberMapper::findByPhoneNumber`). `occ talk:phone-number:add` strips
+  the leading `+`, so a bridge asking for `+4930621` gets a 404 for a number
+  stored as `4930621`. Internal extensions are refused outright by the command
+  ("Not a valid phone number **621") - a gateway announcing one has to be
+  configured with the external number it stands for.
+- **The conversation belongs to the account the number is mapped to**, and
+  nobody else is in it. A bridge account cannot join it to ring anybody, which
+  is how the room-per-line arrangement rings people. Ringing is Nextcloud's
+  own doing here.
+- Which means **the line has to answer**: the caller is already a participant
+  waiting in a conversation of their own. That suits numbers that belong to
+  the bridge - a lobby a caller dials into - and it is wrong for a line whose
+  number also rings a person's own phone, where answering takes the call away
+  from them.

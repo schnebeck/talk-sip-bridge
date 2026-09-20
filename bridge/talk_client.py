@@ -644,6 +644,23 @@ class TalkClient:
                 if entry is not None:
                     entry.roomid = roomid
                     entry.dialin_actor = dialin
+        if dialin:
+            # Nextcloud made this conversation for this one call and owns
+            # it; the bridge's notify account is not in it and cannot ring
+            # anybody there. Ringing is Nextcloud's own business here - it
+            # knows whose number was dialled - and the caller is already a
+            # participant waiting in the room. What is left for the bridge
+            # is to answer, which it does only if allowed to: on a line
+            # that shares its number with a person's own phone, picking up
+            # automatically takes the call away from them.
+            if not config.auto_answer_calls:
+                print(f"[talk] {call_id} has a conversation of its own ({roomid}) but "
+                      f"auto-answer is off - nothing here can ring it, so it stays ringing "
+                      f"at the gateway. Direct dial-in expects a line that answers.")
+                return
+            print(f"[talk] Answering {call_id} into its own conversation {roomid}")
+            self.call_manager.answer()
+            return
         if not roomid or not line.notify_user or not line.notify_app_password:
             print(f"[talk] Incoming call {call_id} from {caller} on line {line.id} - "
                   f"no notify_user/notify_app_password/default room configured, leaving it ringing")
