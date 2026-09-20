@@ -80,6 +80,12 @@ the daemon side is verified.
 5. **Persistent daemon.** The daemon registers with the gateway and accepts
    new calls indefinitely - both signaling and real audio are handled by the
    same long-running process, not a one-shot script.
+
+   Whether a line *is* registered and whether it is *meant to be* are two
+   different things (`SipRegistrar.registered` / `.wanted`). A gateway that
+   reboots costs one refresh; treating that as "switched off" leaves the
+   line unreachable until somebody notices, so the keepalive keeps trying
+   and reports when the line comes back.
 6. **Packaging.** A `custom_apps`-installed Nextcloud app for admin settings
    (status/config), installed and updated via `occ app:*`.
 7. **Localization.** Any Nextcloud UI component (admin settings page, JS)

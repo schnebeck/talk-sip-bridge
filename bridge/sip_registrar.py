@@ -14,12 +14,22 @@ import sip_requests
 from config import config
 from sip_messages import digest_response, parse_auth_challenge, parse_sip_headers
 
+# How long to wait before trying again after a refresh was not answered.
+# A line that lost its registration cannot be called, so this is short -
+# but not so short that a gateway which is down gets hammered.
+RETRY_INTERVAL = 30
+
 
 class SipRegistrar:
     def __init__(self, transport_holder, line):
         self.line = line
         self.lock = threading.Lock()
+        # Two different things, which used to be one field: whether the
+        # line is registered right now, and whether it is meant to be. A
+        # failed refresh changes the first, never the second - otherwise
+        # one unanswered REGISTER ends the line until somebody notices.
         self.registered = False
+        self.wanted = False
         self.keepalive_thread = None
         self.stop_event = threading.Event()
         self.last_error = None
@@ -95,31 +105,47 @@ class SipRegistrar:
         return False
 
     def _keepalive_loop(self):
-        while not self.stop_event.wait(config.register_expires * 0.6):
+        """Keeps the registration alive, and brings it back when it lapses.
+
+        A gateway that reboots, or a relay that blinks, costs one refresh.
+        Giving up on that leaves the line silently unreachable until
+        somebody toggles it by hand - so the loop keeps trying until it is
+        told to stop, and says when the line comes back."""
+        while True:
+            delay = config.register_expires * 0.6 if self.registered else min(RETRY_INTERVAL, config.register_expires * 0.6)
+            if self.stop_event.wait(delay):
+                return  # turned off
             with self.lock:
-                if not self.registered:
+                if not self.wanted:
                     return
-                ok = self._do_register(config.register_expires)
-                if not ok:
-                    self.registered = False
-                    return
+                was_registered = self.registered
+                self.registered = self._do_register(config.register_expires)
+                error = self.last_error
+            if self.registered and not was_registered:
+                print(f"[sip:{self.line.id}] Registration is back")
+            elif not self.registered:
+                print(f"[sip:{self.line.id}] Registration refresh failed ({error}) - retrying")
 
     def wipe_all_bindings(self):
         with self.lock:
             self._do_register(0, wildcard=True)
 
     def turn_on(self) -> bool:
+        """Switches the line on and keeps it on. The return value is what
+        the first attempt did, so a caller sees immediately whether the
+        gateway answered - but a "no" is not the end of it: the line is
+        wanted now, and the keepalive keeps trying."""
         with self.lock:
             if self.registered:
                 return True
-            ok = self._do_register(config.register_expires)
-            self.registered = ok
-            if ok:
-                self._persist(True)
-                self.stop_event.clear()
+            self.wanted = True
+            self.registered = self._do_register(config.register_expires)
+            self._persist(True)
+            self.stop_event.clear()
+            if self.keepalive_thread is None or not self.keepalive_thread.is_alive():
                 self.keepalive_thread = threading.Thread(target=self._keepalive_loop, daemon=True)
                 self.keepalive_thread.start()
-            return ok
+            return self.registered
 
     def turn_off(self, persist: bool = True) -> bool:
         """Deregisters from the gateway. persist=False keeps the stored
@@ -128,7 +154,9 @@ class SipRegistrar:
         so the gateway does not keep sending calls to a dead endpoint, but
         a restart has to bring the line up again by itself."""
         with self.lock:
+            self.wanted = False
             if not self.registered:
+                self.stop_event.set()
                 if persist:
                     self._persist(False)
                 return True
