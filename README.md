@@ -31,6 +31,20 @@ server. See their module docstrings.
 the FritzBox, so that "works with the FritzBox" and "speaks SIP" stay
 distinguishable. It runs only while a test needs it.
 
+### Which of these to run
+
+What a change can break, not everything every time - the cost of a check
+should stay below the cost of the change it guards.
+
+| Changed | Worth running |
+|---|---|
+| `sip_messages`, `sip_sdp`, `sip_requests`, `payload_types` | `tests/` - sub-second, no setup |
+| A module boundary: new module, moved code, changed signature | `tests/` - `test_build` and `test_api` are what catch it |
+| `sip_call`, `sip_registrar`, `sip_transport` | `tests/`, then `test_peer_outbound.py` / `test_peer_inbound.py` against the test peer |
+| `rtp`, `g711`, `g722`, `agc` | `test_audio_quality.py`, and `test_audio_over_sip.py` for the real phone path |
+| `talk_client` | `test_publish_and_verify.py`, `test_call_lifecycle.py` - the unit suite says nothing about the Talk side |
+| Deployment, config, the relay host | A real call; nothing offline covers that path |
+
 ## Status
 
 - `bridge/` - the daemon: gateway registration, bidirectional real audio
