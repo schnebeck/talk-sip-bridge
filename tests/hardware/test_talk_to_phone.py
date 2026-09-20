@@ -37,6 +37,11 @@ from talk_participant import TalkParticipant
 MEETING_ID = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("IVR_MEETING_ID", "")
 TONE_HZ = float(os.environ.get("TALK_TONE_HZ", "660"))
 LISTEN_SECONDS = float(os.environ.get("TALK_LISTEN_SECONDS", "12"))
+OUT_WAV = os.environ.get("OUT_WAV", "")
+# Which codec the call runs at. A real call to this gateway negotiates
+# G.722, and its 16kHz resample from Talk's 48kHz for the way back
+# is a different operation than PCMU's 8kHz.
+CODEC = {"pcmu": 0, "g722": 9}[os.environ.get("TALK_CODEC", "pcmu").lower()]
 
 results = []
 
@@ -49,6 +54,45 @@ def record_result(name, ok, detail=""):
 def dominant_frequency(pcm: np.ndarray, rate: int) -> float:
     spectrum = np.abs(np.fft.rfft(pcm.astype(np.float64) * np.hanning(len(pcm))))
     return float(np.fft.rfftfreq(len(pcm), 1 / rate)[spectrum.argmax()])
+
+
+def glitches(pcm: np.ndarray, rate: int, frequency: float):
+    """Where a steady tone stops being steady.
+
+    A sine of known frequency has a known largest step between samples;
+    anything past that is a discontinuity - a click, a dropped packet, a
+    resampler starting over. Reported with the gaps between them,
+    because an artefact that repeats at a fixed interval names its own
+    cause: once per second is something on a one-second timer, every
+    20ms is per packet.
+    """
+    signal = pcm.astype(np.float64)
+    amplitude = np.abs(signal).max() or 1.0
+    steps = np.abs(np.diff(signal))
+    largest_expected = amplitude * 2 * np.pi * frequency / rate
+    at = np.flatnonzero(steps > 3 * largest_expected)
+    # One click spans a few samples; count it once.
+    if len(at):
+        at = at[np.insert(np.diff(at) > rate // 100, 0, True)]
+    return at / rate, (np.diff(at) / rate if len(at) > 1 else np.array([]))
+
+
+def tone_report(pcm: np.ndarray, rate: int, frequency: float) -> str:
+    """What the tone looks like on arrival, beyond its pitch."""
+    signal = pcm.astype(np.float64)
+    seconds = len(signal) / rate
+    spectrum = np.abs(np.fft.rfft(signal * np.hanning(len(signal))))
+    freqs = np.fft.rfftfreq(len(signal), 1 / rate)
+    fundamental = np.abs(freqs - frequency) < 15
+    rest = spectrum.copy()
+    rest[fundamental] = 0
+    purity = 20 * np.log10((rest.max() or 1e-9) / (spectrum.max() or 1e-9))
+    where, gaps = glitches(pcm, rate, frequency)
+    report = (f"{seconds:.1f}s, everything but the tone at {purity:.0f} dB, "
+              f"{len(where)} discontinuit{'y' if len(where) == 1 else 'ies'}")
+    if len(gaps):
+        report += f", every {gaps.mean():.2f}s (+-{gaps.std():.2f})"
+    return report
 
 
 async def main() -> int:
@@ -78,13 +122,13 @@ async def main() -> int:
 
         status, elapsed, rtp = await asyncio.to_thread(
             gateway.invite, (line.local_ip, line.local_sip_port),
-            scenario.CONFERENCE_NUMBER, scenario.CALLER)
+            scenario.CONFERENCE_NUMBER, scenario.CALLER, None, 30.0, CODEC)
         record_result("the call is answered", status == 200, f"{status} after {elapsed:.1f}s")
         # What the phone side is actually decoding. The frequency check
         # below reads the recording at this rate, so a rate that is not
         # the negotiated one turns a correct tone into a wrong one.
         record_result("the codec is the one the caller offered",
-                      rtp is not None and rtp.payload_type == 0,
+                      rtp is not None and rtp.payload_type == CODEC,
                       f"payload type {rtp.payload_type if rtp else '-'}, "
                       f"{rtp.sample_rate if rtp else '-'} Hz")
         if status != 200 or rtp is None:
@@ -113,7 +157,8 @@ async def main() -> int:
         while not rtp.recv_queue.empty():
             rtp.recv_queue.get_nowait()
 
-        heard = await asyncio.to_thread(gateway.heard, LISTEN_SECONDS)
+        arrivals = []
+        heard = await asyncio.to_thread(gateway.heard, LISTEN_SECONDS, arrivals)
         pcm = np.concatenate(heard) if heard else np.array([], dtype=np.int16)
         state = entry.subscription
         record_result("the negotiation ends in audio flowing",
@@ -124,8 +169,42 @@ async def main() -> int:
             frequency = dominant_frequency(pcm, rtp.sample_rate)
             record_result("the tone reaches the telephone", abs(frequency - TONE_HZ) < 30,
                           f"dominant {frequency:.0f} Hz, peak {peak}")
+            where, gaps = glitches(pcm, rtp.sample_rate, TONE_HZ)
+            record_result("it arrives without interruptions", len(where) == 0,
+                          tone_report(pcm, rtp.sample_rate, TONE_HZ))
+            if OUT_WAV:
+                import wave
+                with wave.open(OUT_WAV, "wb") as out:
+                    out.setnchannels(1)
+                    out.setsampwidth(2)
+                    out.setframerate(rtp.sample_rate)
+                    out.writeframes(pcm.astype(np.int16).tobytes())
+                print(f"  ..    what the telephone received: {OUT_WAV}", flush=True)
+                if len(where):
+                    print("  ..    interruptions at: "
+                          + ", ".join(f"{s:.2f}s" for s in where[:12]), flush=True)
         else:
             record_result("the tone reaches the telephone", False, "the phone received nothing")
+
+        # How steady the sending is, which is what a click actually is:
+        # every packet can be perfect and the call still crack once a
+        # second if the sender stalls that often.
+        gaps = np.diff(np.array(arrivals)) if len(arrivals) > 2 else np.array([])
+        if len(gaps):
+            expected = rtp.samples_per_packet / rtp.sample_rate
+            # 1.5x the packet interval is already a hesitation a jitter
+            # buffer has to absorb; 3x is one it cannot.
+            hesitations = np.flatnonzero(gaps > 1.5 * expected)
+            stalls = np.flatnonzero(gaps > 3 * expected)
+            detail = (f"{len(gaps) + 1} packets, median {np.median(gaps) * 1000:.1f} ms, "
+                      f"worst {gaps.max() * 1000:.0f} ms, "
+                      f"{len(hesitations)} over {1.5 * expected * 1000:.0f} ms, "
+                      f"{len(stalls)} over {3 * expected * 1000:.0f} ms")
+            if len(hesitations) > 1:
+                spacing = np.diff(np.array(arrivals)[hesitations + 1])
+                detail += (f"; the long ones every {spacing.mean():.2f}s "
+                           f"(+-{spacing.std():.2f})")
+            record_result("the packets arrive evenly", len(stalls) == 0, detail)
 
         record_result("the hangup is acknowledged", gateway.bye() == 200)
         scenario.wait_for(lambda: scenario.call_entry(client) is None, 10)

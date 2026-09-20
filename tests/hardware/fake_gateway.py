@@ -30,7 +30,7 @@ import time
 sys.path.insert(0, os.environ.get("BRIDGE_CODE")
                 or str(pathlib.Path(__file__).resolve().parent.parent.parent / "bridge"))
 
-from payload_types import PT_PCMU
+from payload_types import PT_G722, PT_PCMU
 from rtp import RtpSession
 from sip_messages import extract_contact_uri, parse_sip_headers
 from sip_sdp import extract_sip_body, parse_sdp_media_address, parse_telephone_event_type
@@ -111,7 +111,7 @@ class FakeGateway:
     # -- the call --------------------------------------------------------
 
     def invite(self, bridge: tuple, dialled: str, caller: str, caller_name: str = None,
-               timeout: float = 30.0):
+               timeout: float = 30.0, codec: int = PT_PCMU):
         """Calls `dialled` at the bridge and waits for it to be answered.
 
         Returns (status, seconds, rtp) - rtp is an RtpSession pointed at
@@ -121,11 +121,12 @@ class FakeGateway:
         this test asserts about the answer unambiguous."""
         call_id = f"fakegw-{secrets.token_hex(6)}@{self.local_ip}"
         tag = secrets.token_hex(4)
+        name, rate = {PT_PCMU: ("PCMU", 8000), PT_G722: ("G722", 8000)}[codec]
         sdp = "\r\n".join([
             "v=0", f"o=- 0 0 IN IP4 {self.local_ip}", "s=-",
             f"c=IN IP4 {self.local_ip}", "t=0 0",
-            f"m=audio {self.rtp_port} RTP/AVP 0 101",
-            "a=rtpmap:0 PCMU/8000",
+            f"m=audio {self.rtp_port} RTP/AVP {codec} 101",
+            f"a=rtpmap:{codec} {name}/{rate}",
             "a=rtpmap:101 telephone-event/8000",
             "a=fmtp:101 0-15",
             "a=sendrecv", ""])
@@ -161,7 +162,7 @@ class FakeGateway:
         remote = parse_sdp_media_address(body)
         if not remote:
             return status, elapsed, None
-        rtp = RtpSession(self.local_ip, self.rtp_port, remote[0], remote[1], payload_type=PT_PCMU,
+        rtp = RtpSession(self.local_ip, self.rtp_port, remote[0], remote[1], payload_type=codec,
                          dtmf_payload_type=parse_telephone_event_type(body))
         self.call["rtp"] = rtp
         return status, elapsed, rtp
@@ -188,17 +189,25 @@ class FakeGateway:
             rtp.send_dtmf(digit)
             time.sleep(gap)
 
-    def heard(self, seconds: float):
+    def heard(self, seconds: float, arrivals: list = None):
         """What the far end sent in that time, as the caller's own
-        session decoded it."""
+        session decoded it.
+
+        `arrivals` collects the moment each packet was taken off the
+        wire. A caller hears the gaps between packets, not the samples
+        in them: a sender that stalls once a second sounds like a click
+        once a second while every packet is perfect."""
         chunks = []
         deadline = time.monotonic() + seconds
         rtp = self.call["rtp"]
         while time.monotonic() < deadline:
             try:
-                chunks.append(rtp.recv_queue.get(timeout=0.2))
+                chunk = rtp.recv_queue.get(timeout=0.2)
             except queue.Empty:
                 continue
+            chunks.append(chunk)
+            if arrivals is not None:
+                arrivals.append(time.monotonic())
         return chunks
 
     def received(self, method: str) -> bool:
