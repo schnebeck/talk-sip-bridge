@@ -59,7 +59,7 @@ def set_incall(flags: int) -> dict:
 
 
 def add_session(sessionid: str, roomid: str, call_id: str, number: str, displayname: str,
-                with_audio: bool = False) -> dict:
+                with_audio: bool = False, actor: dict = None) -> dict:
     """The phone participant Talk shows in the room.
 
     Normally a name plate only: a virtual session can never carry media,
@@ -81,13 +81,15 @@ def add_session(sessionid: str, roomid: str, call_id: str, number: str, displayn
                 "roomid": roomid,
                 "incall": (FLAG_IN_CALL | FLAG_WITH_PHONE
                            | (FLAG_WITH_AUDIO if with_audio else 0)),
-                # No actor here: the signaling server would register this
-                # session with Nextcloud as that actor, and Nextcloud
-                # rejects one that is not already invited to the room -
-                # failing the whole addsession. displayname is the field
-                # Talk renders participants by.
+                # An actor only when Nextcloud already knows the caller -
+                # direct dial-in makes them a participant, and then the
+                # signaling server can register this session as them.
+                # Naming an actor Nextcloud cannot find fails the whole
+                # addsession: it looks the room up by the actor. displayname
+                # is the field Talk renders participants by.
                 "user": {"type": "phone", "callid": call_id,
                          "number": number, "displayname": displayname},
+                **({"options": actor} if actor else {}),
             },
         },
     }

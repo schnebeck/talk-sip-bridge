@@ -92,11 +92,18 @@ class SessionTest(unittest.TestCase):
                                 number="622", displayname="622")
         self.assertEqual(message["internal"]["addsession"]["user"]["callid"], "call-42")
 
-    def test_no_actor_is_claimed(self):
-        """Nextcloud rejects an actor that is not already invited to the
-        room, and fails the whole addsession with it."""
+    def test_no_actor_is_claimed_for_a_caller_nextcloud_does_not_know(self):
+        """Nextcloud looks the room up by the actor and fails the whole
+        addsession when it finds none - so an actor is named only when
+        direct dial-in has made the caller a participant."""
         message = m.add_session("phone-1", "room-token", call_id="c", number="1", displayname="1")
         self.assertNotIn("options", message["internal"]["addsession"])
+
+    def test_an_actor_is_named_when_there_is_one(self):
+        actor = {"actorType": "guests", "actorId": "abc"}
+        message = m.add_session("phone-1", "room-token", call_id="c", number="1",
+                                displayname="1", actor=actor)
+        self.assertEqual(message["internal"]["addsession"]["options"], actor)
 
     def test_removing_names_the_same_session_and_room(self):
         message = m.remove_session("phone-1", "room-token")

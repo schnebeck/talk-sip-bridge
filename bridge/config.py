@@ -92,6 +92,12 @@ class LineConfig:
         self.notify_user = env("NOTIFY_USER", "")
         self.notify_app_password = env("NOTIFY_APP_PASSWORD", "")
 
+        # The number this line answers, in the form Nextcloud has it in
+        # talk_phone_numbers. Only used with direct dial-in, and only
+        # because a gateway announces an internal extension ("**621") in
+        # the INVITE, which is no phone number to anyone but itself.
+        self.dialin_number = env("DIALIN_NUMBER", "")
+
         # Optional media relay for this line (only needed if its gateway
         # can't reach this host's own address directly for RTP).
         self.relay_lan_host = env("RELAY_LAN_HOST", "")
@@ -176,6 +182,13 @@ class Config:
         # hand. Empty disables persistence entirely (falls back to today's
         # behavior: registration always starts off). deploy/fritzbox-talk-
         # bridge.service provisions this via systemd's StateDirectory=.
+        # Talk's own door for telephony backends (its sip_bridge_shared_secret).
+        # With it the bridge can ask Nextcloud to create a conversation for an
+        # incoming call, in which the caller is a real participant - see
+        # docs/SIGNALING-API.md, "Direct dial-in". Empty disables that and every
+        # inbound call goes to the room its line names.
+        self.sip_shared_secret = os.environ.get("BRIDGE_SIP_SHARED_SECRET", "")
+
         # How the phone shows up in the room, and what it costs:
         #
         #   phone  a virtual session flagged as a phone, without audio.

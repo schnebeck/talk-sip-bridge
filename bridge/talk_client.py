@@ -24,6 +24,7 @@ import traceback
 import websockets
 
 import talk_messages
+import talk_sip_bridge
 import talk_ocs
 from call import DIALOUT, INBOUND, Call
 from call_media import CallMedia
@@ -340,7 +341,8 @@ class TalkClient:
             print(f"[talk] Could not update inCall flags to {flags}: {e!r}")
 
     # -- virtual session management (addsession/removesession) -----------
-    async def _add_virtual_session(self, sip_call_id: str, *, roomid: str, number: str, caller: bool) -> str:
+    async def _add_virtual_session(self, sip_call_id: str, *, roomid: str, number: str,
+                                   caller: bool, actor: dict = None) -> str:
         """Adds the phone participant Talk shows in the room. This is a
         name plate only: in MCU mode a virtual session can never carry
         media, because publishers exist exclusively under a real client
@@ -363,9 +365,11 @@ class TalkClient:
         with_audio = config.phone_participant == "audio"
         await self.ws.send(json.dumps(talk_messages.add_session(
             virtual_sessionid, roomid, call_id=sip_call_id, number=number, displayname=number,
-            with_audio=with_audio)))
+            with_audio=with_audio, actor=actor)))
         print(f"[talk] Phone participant {virtual_sessionid} announced "
-              f"{'with' if with_audio else 'without'} audio")
+              f"{'with' if with_audio else 'without'} audio"
+              + (f", as {actor['actorType']}/{str(actor['actorId'])[:12]}" if actor
+                 else ", known to the signaling server only"))
         return virtual_sessionid
 
     async def _remove_virtual_session(self, virtual_sessionid: str, roomid: str):
@@ -400,7 +404,11 @@ class TalkClient:
             return
 
         display_name = _sip_display_name(number)
-        virtual_sessionid = await self._add_virtual_session(sip_call_id, roomid=roomid, number=display_name, caller=True)
+        with self._call_sessions_lock:
+            waiting = self._call_sessions.get(sip_call_id)
+            actor = waiting.dialin_actor if waiting else None
+        virtual_sessionid = await self._add_virtual_session(
+            sip_call_id, roomid=roomid, number=display_name, caller=True, actor=actor)
 
         media = CallMedia(sip_call_id, rtp_session, on_connection_lost=self._hangup_sip)
         media.open_publisher(self.own_sessionid)
@@ -589,6 +597,33 @@ class TalkClient:
             return
         _run_coro_logged(self._handle_incoming_ring(call_id, caller), self.loop, f"on_incoming_call({call_id})")
 
+    async def _room_for_inbound_call(self, line, caller: str):
+        """Which room an incoming call belongs in, and who the caller is
+        in it.
+
+        Two answers, and they differ in more than the token. The line's
+        configured room is a standing conversation the caller is a guest
+        of nobody in - Nextcloud never learns they exist. Direct dial-in
+        asks Nextcloud instead: it creates a conversation for this one
+        call and makes the caller a participant of it, which is the only
+        way anything but the signaling server knows who is calling.
+
+        Falls back to the configured room whenever dial-in is not set up
+        or has nothing to say - a caller nobody can place is still a
+        caller, and leaving them ringing would be worse."""
+        if not (config.sip_shared_secret and line.dialin_number):
+            return line.default_room_token, None
+        room = await asyncio.to_thread(
+            talk_sip_bridge.direct_dial_in, line.dialin_number, _sip_display_name(caller))
+        if not room:
+            return line.default_room_token, None
+        actor = {"actorType": room.get("actorType"), "actorId": room.get("actorId")}
+        print(f"[talk] Nextcloud made a conversation for this call: {room['token']} "
+              f"with the caller as {actor['actorType']}/{str(actor['actorId'])[:12]}")
+        if not (actor["actorType"] and actor["actorId"]):
+            return room["token"], None
+        return room["token"], actor
+
     async def _handle_incoming_ring(self, call_id: str, caller: str):
         """Rings Talk for an inbound call and waits for somebody to answer.
 
@@ -602,7 +637,13 @@ class TalkClient:
         answered within a second was never noticed and the phone rang
         out."""
         line = self.call_manager.line
-        roomid = line.default_room_token
+        roomid, dialin = await self._room_for_inbound_call(line, caller)
+        if dialin:
+            with self._call_sessions_lock:
+                entry = self._call_sessions.get(call_id)
+                if entry is not None:
+                    entry.roomid = roomid
+                    entry.dialin_actor = dialin
         if not roomid or not line.notify_user or not line.notify_app_password:
             print(f"[talk] Incoming call {call_id} from {caller} on line {line.id} - "
                   f"no notify_user/notify_app_password/default room configured, leaving it ringing")

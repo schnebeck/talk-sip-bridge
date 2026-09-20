@@ -181,11 +181,13 @@ Properties that are not obvious and cost real debugging time:
   virtual sessions.
 - **`user.displayname` is the field Talk renders participants by.** Without it
   the caller shows as "Gast".
-- **`options.actorType` / `options.actorId` do not work for an unknown caller.**
-  The signaling server registers such a session with Nextcloud as that actor,
-  and Nextcloud rejects an actor that is not already an invited participant of
-  the room ("The user is not invited to this room") — failing the whole
-  `addsession`.
+- **`options.actorType` / `options.actorId` need a participant that already
+  exists.** The signaling server registers such a session with Nextcloud as
+  that actor, and Nextcloud looks the room up *by* the actor
+  (`Manager::getRoomByActor`); an actor that is not a participant fails the
+  whole `addsession` with "The user is not invited to this room". The caller
+  therefore has to be made a participant first — see [Direct dial-in](#direct-dial-in),
+  which is how Nextcloud's own SIP bridge does it.
 - **The server assigns its own room session id**, unrelated to the chosen
   `sessionid`. It arrives in a `room`/`join` event and is the id that appears in
   room rosters. Match it back via `user.callid`, which round-trips unchanged.
@@ -374,7 +376,50 @@ belong together.
 
 ## Room association for inbound calls
 
-The protocol carries a room id for dialout only. An inbound SIP call has no
-association to a room anywhere in the protocol, so the mapping from a line or
-dialed number to a room token is the bridge's own configuration
-(`BRIDGE_DEFAULT_ROOM`, see [`CONFIG.md`](./CONFIG.md)).
+The signaling protocol carries a room id for dialout only; an inbound SIP call
+has no association to a room anywhere in it. There are two ways to get one, and
+they lead to different rooms and different participants.
+
+**By configuration.** The line answering the call names a room token
+(`BRIDGE_DEFAULT_ROOM`, see [`CONFIG.md`](./CONFIG.md)). Simple, static, and
+the caller exists only as a virtual session in the signaling server - Nextcloud
+knows nothing about them, which is why `options` cannot name them as an actor.
+
+**Direct dial-in**, which is what Nextcloud's own SIP bridge does. Nextcloud
+creates the room and the participant, and hands both back.
+
+### Direct dial-in
+
+```
+POST /ocs/v2.php/apps/spreed/api/v4/room/direct-dial-in
+     phoneNumber=<the number that was called>&caller=<the number calling>
+```
+
+Authenticated not as a user but **as a SIP bridge**, with two headers:
+
+| Header | Content |
+|---|---|
+| `Talk-SIPBridge-Random` | at least 32 characters of randomness |
+| `Talk-SIPBridge-Checksum` | `HMAC-SHA256(secret, random + data)`, lowercase hex |
+
+`data` is whatever the endpoint validates against - the dialled number here, the
+room token elsewhere. The secret is Talk's `sip_bridge_shared_secret`
+(`occ config:app:get spreed sip_bridge_shared_secret`).
+
+What Nextcloud does with it, from `RoomController::directDialIn`:
+
+1. looks up which account the dialled number belongs to, in the
+   `talk_phone_numbers` table maintained with `occ talk:phone-number:add`
+   (404 when the number is mapped to nobody),
+2. creates a conversation of type group, named after the caller, with SIP
+   enabled without a PIN and object type `phone_temporary` - **one conversation
+   per call**, not a standing room,
+3. joins the caller as a new guest with the caller's number as display name,
+4. returns the room, including the token and that participant's actor.
+
+The caller is then a participant Nextcloud knows, so `addsession` may name them
+in `options` and Talk's clients see a real participant rather than a session
+that exists only in the signaling server.
+
+Requires the `sip-direct-dialin` capability (Talk 21+) and a number mapped to a
+user; without the mapping the endpoint answers 404 and there is no room.
