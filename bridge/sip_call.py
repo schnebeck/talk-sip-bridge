@@ -36,6 +36,13 @@ from sip_sdp import (CODEC_NAMES, SUPPORTED, answer_sdp, choose_payload_type,
 BYE_RESPONSE_TIMEOUT = 3.0
 
 
+def _with_tag(header: str, tag: str) -> str:
+    """A dialog header with our own tag on it, added once."""
+    if not header or not tag or ";tag=" in header:
+        return header
+    return f"{header};tag={tag}"
+
+
 class _OutboundAttempt:
     """What one outbound INVITE keeps across its retries: which CSeq it is
     on, and the branch of the request currently outstanding - a CANCEL has
@@ -239,10 +246,19 @@ class CallManager:
             # correct in-dialog target - not the gateway's registrar address.
             caller_contact = headers.get("contact", "")
             request_uri = extract_contact_uri(caller_contact) if caller_contact else f"sip:{line.gateway_host}"
+            # From carries OUR tag in this dialog and To carries theirs.
+            # Ours was invented when the call was answered and only ever
+            # appeared in the responses; the To header as it arrived in
+            # the INVITE has no tag at all. Sending that back means the
+            # far end cannot match the dialog, answers "481 Call/
+            # Transaction Does Not Exist", and keeps the call up - with a
+            # person holding a handset nobody is on.
             self.transport.send(sip_requests.build_bye(
                 line, request_uri=request_uri, call_id=call["call_id"],
-                from_header=headers.get("to", ""), to_header=headers.get("from", ""),
+                from_header=_with_tag(headers.get("to", ""), call["to_tag"]),
+                to_header=headers.get("from", ""),
                 branch=sip_requests.new_branch()), call["remote_addr"])
+        print(f"[call:{line.id}] Hanging up {call['call_id']} towards {request_uri}")
         self._watch_bye(call["call_id"])
         self.on_call_ended(call_id=call["call_id"], reason="local_hangup")
 
@@ -268,6 +284,18 @@ class CallManager:
             if response is None:
                 print(f"[call:{self.line.id}] No answer to the BYE for {call_id} - "
                       f"the far end may still think this call is up")
+                return
+            status = response.split("\r\n", 1)[0] if isinstance(response, str) else str(response)[:80]
+            # A 2xx means it is over there too. Anything else means the
+            # call is over here and running at the far end - the caller is
+            # left holding a handset nobody is on, which is why the code
+            # is said rather than the answer merely counted.
+            code = status.split(" ")[1] if status.count(" ") >= 2 else ""
+            if code.startswith("2"):
+                print(f"[call:{self.line.id}] Hangup for {call_id} acknowledged: {status}")
+            else:
+                print(f"[call:{self.line.id}] Hangup for {call_id} REFUSED: {status} - "
+                      f"the far end still has this call up")
 
         threading.Thread(target=wait, daemon=True).start()
 
