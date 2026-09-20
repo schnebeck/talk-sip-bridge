@@ -10,19 +10,18 @@ Two independent components run here, one per plane:
 
 | Plane | Component | Why |
 |---|---|---|
-| Signaling | `sip_pipe.py`, or Kamailio | Bridges the two networks; Kamailio additionally converts UDP to TCP |
+| Signaling | `sip_pipe.py` + `sip-pipe.service` | Carries SIP between the two networks |
 | Media | `rtp_relay.py` + `rtp-relay.service` | Forwards RTP; the gateway only ever addresses hosts on its own LAN |
 
-Which signaling component depends on the bridge. A line with
-`BRIDGE_SIP_TRANSPORT=tcp` speaks the gateway's own transport, and then
-nothing has to be converted: `sip_pipe.py` forwards bytes and is done. A
-line on UDP needs Kamailio, which terminates the UDP leg and re-originates
-on TCP.
+Neither understands what it forwards. That is possible because the line
+speaks the gateway's own transport (`BRIDGE_SIP_TRANSPORT`), so nothing
+between them has to convert one into the other - a converting relay would
+have to parse SIP, and would be a SIP proxy rather than eighty lines.
 
-On the bridge side this is pure configuration: `BRIDGE_PROXY_HOST`/`_PORT` point
-at Kamailio's overlay socket, `BRIDGE_CONTACT_HOST`/`_PORT` at its LAN socket
-(the address the gateway sends calls to), and `BRIDGE_RELAY_*` name the media
-pipe. See `../docs/CONFIG.md`.
+On the bridge side this is pure configuration: `BRIDGE_PROXY_HOST`/`_PORT`
+point at the pipe's overlay socket, `BRIDGE_CONTACT_HOST`/`_PORT` at its LAN
+socket (the address the gateway sends calls to), and `BRIDGE_RELAY_*` name
+the media pipe. See `../docs/CONFIG.md`.
 
 ## Gateway behavior this accounts for
 
@@ -33,13 +32,11 @@ Observed on the FritzBox this is deployed against, and both failure modes are
 - **Registration requires the SIP username** (e.g. `sip-phone`) in the
   To/From/Request-URI, not the internal extension number (e.g. `621`).
 
-Whether that conversion is needed depends on the bridge: with
-`BRIDGE_SIP_TRANSPORT=tcp` it speaks TCP itself, and nothing here has to
-translate. Kamailio would then be replaceable by a plain TCP pipe - one
-that forwards bytes without knowing SIP, because a stream keeps the
-message boundaries a datagram-to-stream conversion has to reconstruct.
+The first is why the line runs on `BRIDGE_SIP_TRANSPORT=tcp`: a bridge
+speaking UDP here would need something to convert, and converting means
+parsing.
 
-What does not go away either way: the gateway delivers a call by opening a
+What does not go away: the gateway delivers a call by opening a
 connection to the address in the Contact header, so something has to be
 listening in its LAN. Measured against this deployment's FritzBox - it does
 not answer on the connection the registration arrived on.
@@ -66,27 +63,6 @@ It forwards and nothing more - no Via rewriting, no transaction state. That
 works because the gateway answers on the connection a request arrived on
 rather than at the address in `Via`; measured against this deployment's
 FritzBox, over the pipe, with a registration and a call.
-
-## Kamailio: SIP across the networks, UDP to TCP
-
-Stock Debian `kamailio.service`, no automation of its own. Config:
-[`kamailio.cfg.example`](./kamailio.cfg.example) → `/etc/kamailio/kamailio.cfg`
-(addresses in it are this deployment's; adjust for another).
-
-It is a stateful proxy, not a packet forwarder: it terminates the UDP leg and
-re-originates on TCP, stacking its own `Via` so responses find their way back.
-Requests from the gateway go to the bridge, everything else to the gateway.
-
-Three details that are load-bearing:
-
-- **The LAN-side `listen=tcp:<lan ip>:5070` socket is required.** Without it
-  Kamailio has no matching socket for the outbound TCP connection and the
-  request is lost silently.
-- **The `pv` module must be loaded.** `$du`/`$dst_uri` are core pseudo-variables
-  but ship as a separate module in Kamailio 6.x, and are unusable without it.
-- **The return route is static** (`$du = "sip:<bridge>:<port>"`), so exactly one
-  bridge line can receive inbound calls through this relay. Serving several
-  lines needs routing by request URI or by target port instead.
 
 ## RTP relay: media across the networks
 
@@ -146,7 +122,7 @@ systemctl daemon-reload
 systemctl enable --now rtp-relay
 ```
 
-Signaling, for a bridge speaking the gateway's own transport:
+Signaling:
 
 ```
 install -d /opt/sip-pipe /etc/sip-pipe
@@ -155,15 +131,6 @@ install -m 0600 sip-pipe.env.example /etc/sip-pipe/env     # then edit
 install -m 0644 sip-pipe.service /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now sip-pipe
-```
-
-Signaling, for a bridge on UDP against a TCP-only gateway - instead of the
-pipe, never alongside it, since both want the same port:
-
-```
-apt install kamailio
-install -m 0644 kamailio.cfg.example /etc/kamailio/kamailio.cfg   # then edit
-systemctl enable --now kamailio
 ```
 
 The RTP relay's unit runs under `DynamicUser` with no capabilities and a
