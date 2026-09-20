@@ -80,10 +80,17 @@ def split_messages(buffer: bytes) -> tuple[list, bytes]:
     that assumes otherwise either truncates a message or glues two
     together - both silently.
 
+    Leading CRLFs are keepalives, not messages: a connection with no SIP
+    traffic on it gets closed by the far end, so both ends ping it with
+    bare line breaks (RFC 5626). Treating one as an empty message hands
+    the call layer something with no start line.
+
     Returns (messages, rest). Anything incomplete stays in rest for the
     next read."""
     messages = []
     while True:
+        while buffer[:2] == b"\r\n":
+            buffer = buffer[2:]
         separator = buffer.find(b"\r\n\r\n")
         if separator < 0:
             return messages, buffer

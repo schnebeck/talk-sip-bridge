@@ -125,6 +125,20 @@ class UdpSipTransport(_SipTransportBase):
             self._handle(data.decode(errors="replace"), addr)
 
 
+# A SIP connection with no traffic on it gets closed by the far end after
+# a minute or two. That is fatal rather than untidy: the address a peer
+# gives in its Contact is the source port of ITS connection to us, so once
+# that connection is gone there is nothing left to reconnect to and no way
+# to deliver a BYE. Measured on this deployment's gateway: it closed the
+# connection mid-call, the hangup could not be delivered, and the caller's
+# handset stayed in a call nobody was on any more.
+#
+# Bare line breaks keep it open (RFC 5626); the far end either answers
+# with one or ignores it, and split_messages skips both.
+KEEPALIVE_INTERVAL = 25
+KEEPALIVE = b"\r\n\r\n"
+
+
 class TcpSipTransport(_SipTransportBase):
     """One outgoing connection for this line's own requests, and a listener
     for the ones that come to it.
@@ -140,6 +154,7 @@ class TcpSipTransport(_SipTransportBase):
         self._out = None
         self._out_lock = threading.Lock()
         self._closed = False
+        self._stopping = threading.Event()
         self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.listener.bind((line.local_ip, line.local_sip_port))
@@ -153,6 +168,7 @@ class TcpSipTransport(_SipTransportBase):
         sock.connect((self.line.proxy_host, self.line.proxy_port))
         sock.settimeout(None)
         threading.Thread(target=self._read_loop, args=(sock, "gateway"), daemon=True).start()
+        self._start_keepalive(sock)
         print(f"[sip:{self.line.id}] TCP connection to {self.line.proxy_host}:{self.line.proxy_port} established")
         return sock
 
@@ -197,6 +213,7 @@ class TcpSipTransport(_SipTransportBase):
 
     def close(self):
         self._closed = True
+        self._stopping.set()
         with self._out_lock:
             if self._out is not None:
                 self._out.close()
@@ -217,6 +234,19 @@ class TcpSipTransport(_SipTransportBase):
                 sock.close()
                 continue
             threading.Thread(target=self._read_loop, args=(sock, addr[0]), daemon=True).start()
+            self._start_keepalive(sock)
+
+    def _start_keepalive(self, sock):
+        """Pings one connection until it dies or this transport closes."""
+
+        def ping():
+            while not self._closed and not self._stopping.wait(KEEPALIVE_INTERVAL):
+                try:
+                    sock.sendall(KEEPALIVE)
+                except OSError:
+                    return
+
+        threading.Thread(target=ping, daemon=True).start()
 
     def _read_loop(self, sock, origin):
         """Reassembles the stream into messages. Whatever arrives on this

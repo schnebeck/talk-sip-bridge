@@ -11,10 +11,12 @@ No sockets: what is under test is the choice of where to write, so the
 connections here are objects that record what they were handed.
 """
 import threading
+import time
 import unittest
 
 from tests.support import StubLine   # sets the environment config needs, before it is imported
-from sip_transport import TcpSipTransport
+import sip_transport
+from sip_transport import KEEPALIVE, TcpSipTransport
 
 
 class FakeConnection:
@@ -40,6 +42,7 @@ class Transport(TcpSipTransport):
 
     def __init__(self, line, outgoing):
         self.line = line
+        self._stopping = threading.Event()
         self.call_manager = None
         self._out = None
         self._out_lock = threading.Lock()
@@ -50,6 +53,57 @@ class Transport(TcpSipTransport):
     def _connect(self):
         self.connects += 1
         return self._outgoing
+
+    def close(self):
+        self._closed = True
+        self._stopping.set()
+
+
+class KeepaliveTest(unittest.TestCase):
+    """Why a connection nobody writes to must not be allowed to die.
+
+    A peer's Contact over TCP is the source port of its own connection to
+    us. Once that connection is gone the address exists nowhere, and a BYE
+    for that dialog can never be delivered - measured on a real gateway:
+    it closed the connection 32 seconds into a call, the hangup went
+    nowhere, and the caller's handset stayed in a call for five more
+    minutes."""
+
+    def setUp(self):
+        self.transport = Transport(StubLine(sip_transport="tcp"), FakeConnection())
+        self.interval = sip_transport.KEEPALIVE_INTERVAL
+        sip_transport.KEEPALIVE_INTERVAL = 0.02
+
+    def tearDown(self):
+        sip_transport.KEEPALIVE_INTERVAL = self.interval
+        self.transport.close()
+
+    def test_a_connection_is_pinged(self):
+        connection = FakeConnection()
+        self.transport._start_keepalive(connection)
+        deadline = time.time() + 2
+        while time.time() < deadline and not connection.sent:
+            time.sleep(0.01)
+        self.assertEqual(connection.sent[0], KEEPALIVE)
+
+    def test_pinging_stops_when_the_transport_closes(self):
+        connection = FakeConnection()
+        self.transport._start_keepalive(connection)
+        deadline = time.time() + 2
+        while time.time() < deadline and not connection.sent:
+            time.sleep(0.01)
+        self.transport.close()
+        time.sleep(0.1)
+        before = len(connection.sent)
+        time.sleep(0.1)
+        self.assertEqual(len(connection.sent), before)
+
+    def test_a_dead_connection_ends_its_own_pinging(self):
+        """Nothing else tells the ping thread the socket is gone."""
+        connection = FakeConnection(fails=True)
+        self.transport._start_keepalive(connection)
+        time.sleep(0.1)
+        self.assertEqual(connection.sent, [])
 
 
 class AnsweringTest(unittest.TestCase):

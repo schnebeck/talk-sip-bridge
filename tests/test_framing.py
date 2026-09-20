@@ -119,5 +119,27 @@ class SplitTest(unittest.TestCase):
         self.assertEqual(buffer, b"")
 
 
+class KeepaliveTest(unittest.TestCase):
+    """A connection nobody writes to gets closed by the far end, which for
+    an inbound call means the BYE has nowhere to go - so both ends ping it
+    with bare line breaks. They are not messages."""
+
+    def test_a_ping_before_a_message_is_skipped(self):
+        messages, rest = split_messages(b"\r\n\r\n" + INVITE)
+        self.assertEqual(messages, [INVITE])
+        self.assertEqual(rest, b"")
+
+    def test_pings_between_messages_are_skipped(self):
+        stream = b"\r\n\r\n".join([INVITE, INVITE]) + b"\r\n\r\n"
+        messages, rest = split_messages(stream)
+        self.assertEqual(messages, [INVITE, INVITE])
+        self.assertEqual(rest, b"")
+
+    def test_a_ping_on_its_own_is_not_a_message(self):
+        messages, rest = split_messages(b"\r\n\r\n")
+        self.assertEqual(messages, [])
+        self.assertEqual(rest, b"")
+
+
 if __name__ == "__main__":
     unittest.main()

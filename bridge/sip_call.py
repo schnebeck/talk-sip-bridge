@@ -30,6 +30,12 @@ from sip_sdp import (CODEC_NAMES, SUPPORTED, answer_sdp, choose_payload_type,
                      parse_sdp_media_address, parse_telephone_event_type)
 
 
+# How long a hangup waits to hear that it arrived. Long enough for a
+# gateway on the same LAN, short enough that the thread is gone before
+# anyone looks.
+BYE_RESPONSE_TIMEOUT = 3.0
+
+
 class _OutboundAttempt:
     """What one outbound INVITE keeps across its retries: which CSeq it is
     on, and the branch of the request currently outstanding - a CANCEL has
@@ -237,7 +243,33 @@ class CallManager:
                 line, request_uri=request_uri, call_id=call["call_id"],
                 from_header=headers.get("to", ""), to_header=headers.get("from", ""),
                 branch=sip_requests.new_branch()), call["remote_addr"])
+        self._watch_bye(call["call_id"])
         self.on_call_ended(call_id=call["call_id"], reason="local_hangup")
+
+    def _watch_bye(self, call_id: str):
+        """Says so when a hangup is not acknowledged.
+
+        A BYE goes to the peer's Contact, and for SIP over TCP that address
+        is the source port of the peer's own connection to us. Once that
+        connection is gone the address exists nowhere and the BYE cannot be
+        delivered - the call is over here and still running at the far end,
+        with a person holding a handset nobody is on. Keepalives keep the
+        connection alive so this does not happen; this notices when it did
+        anyway."""
+        waiter = self.transport.open_waiter(call_id)
+
+        def wait():
+            try:
+                response = waiter.get(timeout=BYE_RESPONSE_TIMEOUT)
+            except queue.Empty:
+                response = None
+            finally:
+                self.transport.close_waiter(call_id)
+            if response is None:
+                print(f"[call:{self.line.id}] No answer to the BYE for {call_id} - "
+                      f"the far end may still think this call is up")
+
+        threading.Thread(target=wait, daemon=True).start()
 
     def dial(self, number: str) -> dict:
         """number is already this line's own dial target (stripped/prefixed
