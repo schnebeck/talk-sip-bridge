@@ -227,9 +227,14 @@ def steady_parts(pcm: np.ndarray, rate: int):
     if loud[-1]:
         ends.append(len(loud) - 1)
     for start, end in zip(starts, ends):
-        core = pcm[start + int(rate * TONE_SETTLING):end - int(rate * 0.05)]
+        first = start + int(rate * TONE_SETTLING)
+        last = end - int(rate * 0.05)
+        core = pcm[first:last]
         if core.size > rate * 0.2:
-            yield core.astype(np.float64), envelope[start:end]
+            # The envelope of the same stretch, not of the whole burst:
+            # taking the burst would measure its own ramps and report a
+            # level swing on a tone that is perfectly steady.
+            yield core.astype(np.float64), envelope[first:last]
 
 
 def report_tones(pcm: np.ndarray, rate: int) -> bool:
@@ -243,9 +248,8 @@ def report_tones(pcm: np.ndarray, rate: int) -> bool:
     found = {}
     for core, envelope in steady_parts(pcm, rate):
         peak, distortion = dominant(core, rate)
-        steady = envelope[int(rate * TONE_SETTLING):]
-        swing = (20 * np.log10(steady.max() / max(steady.min(), 1e-9))
-                 if steady.size else 0.0)
+        swing = (20 * np.log10(envelope.max() / max(envelope.min(), 1e-9))
+                 if envelope.size else 0.0)
         for expected in TONES:
             if abs(peak - expected) < 25:
                 found.setdefault(expected, []).append(
