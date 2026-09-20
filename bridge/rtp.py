@@ -2,6 +2,7 @@
 based (matches the existing thread model in bridge/daemon.py - there's a
 small async adapter for the aiortc side in talk_client.py).
 """
+import errno
 import os
 import queue
 import socket
@@ -38,12 +39,39 @@ DTMF_REPEAT_GUARD = 0.4
 # For backwards compatibility with anything still importing the old name.
 SAMPLES_PER_PACKET = _CODEC_INFO[PT_PCMU]["samples_per_packet"]
 
+# How long a new session waits for its port, which the previous call on
+# the same line may still be letting go of: closing a UDP socket does not
+# free the port while a thread is still inside recvfrom on it, so the
+# port stays taken for up to one receive timeout after the call ended.
+# Measured: a rebind 50ms after the close fails, 600ms after it succeeds.
+# Without this, hanging up and being called straight back answers with no
+# audio path at all.
+BIND_RETRY_SECONDS = 2.0
+BIND_RETRY_INTERVAL = 0.05
+
+
+def bind_socket(sock, address, timeout: float = BIND_RETRY_SECONDS, sleep=time.sleep,
+                clock=time.monotonic):
+    """Binds, waiting out a port the previous call has not finished
+    releasing. Any other error, and a port still taken when the time is
+    up, is raised - a line whose port belongs to something else should
+    say so rather than retry forever."""
+    deadline = clock() + timeout
+    while True:
+        try:
+            sock.bind(address)
+            return
+        except OSError as e:
+            if e.errno != errno.EADDRINUSE or clock() >= deadline:
+                raise
+            sleep(BIND_RETRY_INTERVAL)
+
 
 class RtpSession:
     def __init__(self, local_ip: str, local_port: int, remote_ip: str, remote_port: int,
                  payload_type: int = PT_PCMU, dtmf_payload_type: int = None, on_dtmf=None):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind((local_ip, local_port))
+        bind_socket(self.sock, (local_ip, local_port))
         self.sock.settimeout(0.5)
         self.remote_addr = (remote_ip, remote_port)
         self.seq = 0
@@ -213,5 +241,13 @@ class RtpSession:
             print(f"[rtp] DTMF handler for {digit} failed: {e!r}")
 
     def close(self):
+        """Ends the session and does not return until its port is free.
+
+        Closing the socket alone does not free the port: the receive
+        thread may be inside recvfrom, and the port stays taken until
+        that call comes back. Waiting for the thread here is what lets
+        the next call on this line bind the same port."""
         self.stop_event.set()
         self.sock.close()
+        if self.recv_thread is not threading.current_thread():
+            self.recv_thread.join(timeout=2.0)

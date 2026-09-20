@@ -29,6 +29,7 @@ import talk_ocs
 from call import DIALOUT, INBOUND, Call
 from call_media import CallMedia
 from config import config
+from dialin_ivr import DialInIvr
 from room_state import RoomCallState, is_room_wide_call_end
 from talk_messages import FLAG_IN_CALL, FLAG_WITH_AUDIO
 
@@ -559,9 +560,17 @@ class TalkClient:
             entry = self._call_sessions.get(call_id)
             number = entry.number if entry else ""
             human_sessionid_hint = entry.accepted_sessionid if entry else None
+            ask_for_a_room = bool(entry and entry.kind == INBOUND
+                                  and not entry.roomid and entry.dialin_actor is None
+                                  and self._is_conference_call(entry))
         roomid = self._entry_roomid(call_id)
 
         async def _connected():
+            nonlocal roomid
+            if ask_for_a_room:
+                roomid = await self._ask_which_room(call_id, rtp)
+                if not roomid:
+                    return  # the caller has already been hung up on
             await self._publish_call_audio(call_id, rtp, roomid, number, human_sessionid_hint=human_sessionid_hint)
             if direction == "outbound":
                 await self._send_dialout_status(call_id, roomid, "connected")
@@ -569,6 +578,13 @@ class TalkClient:
         _run_coro_logged(_connected(), self.loop, f"on_call_connected({call_id})")
 
     def on_call_ended(self, *, call_id, reason):
+        with self._call_sessions_lock:
+            entry = self._call_sessions.get(call_id)
+            ivr = entry.ivr if entry else None
+        if ivr is not None:
+            # A caller who hangs up mid-prompt: without this the dialogue
+            # keeps playing tones into a closed session until it times out.
+            ivr.stop()
         roomid = self._entry_roomid(call_id)
         _run_coro_logged(self._teardown_call(call_id, roomid), self.loop, f"on_call_ended({call_id})")
 
@@ -590,7 +606,8 @@ class TalkClient:
         # unnoticed by Talk, same as any other registered phone nobody
         # happens to pick up.
         with self._call_sessions_lock:
-            self._call_sessions[call_id] = Call(sip_call_id=call_id, kind=INBOUND, number=caller)
+            self._call_sessions[call_id] = Call(sip_call_id=call_id, kind=INBOUND, number=caller,
+                                                number_dialled=dialled)
         if config.auto_answer_calls:
             print(f"[talk] Incoming call {call_id} from {caller} - answering with real audio")
             self.call_manager.answer()
@@ -633,6 +650,55 @@ class TalkClient:
             return room["token"], None
         return room["token"], actor
 
+    def _is_conference_call(self, entry) -> bool:
+        return entry.number_dialled in self.call_manager.line.conference_numbers
+
+    async def _ask_which_room(self, call_id: str, rtp) -> str:
+        """Runs the dialogue that decides where this call goes.
+
+        Everything about it happens on the call's own audio, before Talk
+        has heard of it - there is no room to publish into until the
+        caller has named one. A caller who names none is hung up on, which
+        is the only honest end: the bridge has nowhere to put them."""
+        ivr = DialInIvr(rtp, prompt_wav=config.ivr_prompt_wav,
+                        pin_prompt_wav=config.ivr_pin_prompt_wav)
+        with self._call_sessions_lock:
+            entry = self._call_sessions.get(call_id)
+            if entry is None:
+                return ""
+            entry.ivr = ivr
+        try:
+            room = await asyncio.to_thread(ivr.run)
+        finally:
+            with self._call_sessions_lock:
+                entry = self._call_sessions.get(call_id)
+                if entry is not None:
+                    entry.ivr = None
+        if not room:
+            print(f"[talk] {call_id} named no conversation - ending the call")
+            await asyncio.to_thread(self.call_manager.hangup)
+            return ""
+        actor = {"actorType": room.get("actorType"), "actorId": room.get("actorId")}
+        with self._call_sessions_lock:
+            entry = self._call_sessions.get(call_id)
+            if entry is None:
+                return ""
+            entry.roomid = room["token"]
+            if actor["actorType"] and actor["actorId"]:
+                entry.dialin_actor = actor
+        print(f"[talk] {call_id} dialled into conversation {room['token']} "
+              f"as {actor['actorType']}/{str(actor['actorId'])[:12]}")
+        return room["token"]
+
+    def on_dtmf(self, *, call_id, digit):
+        """A key press. It belongs to the dialogue if one is running;
+        otherwise nothing in this bridge acts on keys."""
+        with self._call_sessions_lock:
+            entry = self._call_sessions.get(call_id)
+            ivr = entry.ivr if entry else None
+        if ivr is not None:
+            ivr.press(digit)
+
     async def _handle_incoming_ring(self, call_id: str, caller: str, dialled: str = ""):
         """Rings Talk for an inbound call and waits for somebody to answer.
 
@@ -646,6 +712,16 @@ class TalkClient:
         answered within a second was never noticed and the phone rang
         out."""
         line = self.call_manager.line
+        if dialled in line.conference_numbers:
+            # A conference number belongs to the bridge and to nobody in
+            # particular, so there is nothing to ring and nobody to ask:
+            # the call is answered, and which conversation it joins is the
+            # caller's own answer once they hear the prompt (see
+            # _ask_which_room, run when the audio is up).
+            print(f"[talk] Answering {call_id} on conference number {dialled} "
+                  f"- the caller will be asked for a meeting id")
+            self.call_manager.answer()
+            return
         roomid, dialin = await self._room_for_inbound_call(line, caller, dialled)
         if dialin:
             with self._call_sessions_lock:

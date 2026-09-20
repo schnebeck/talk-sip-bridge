@@ -124,6 +124,18 @@ class LineConfig:
         # ever being answered by a machine.
         self.dialin_numbers = _number_map(env("DIALIN_NUMBERS", ""), env_prefix + "DIALIN_NUMBERS")
 
+        # Numbers on this line that are a conference line rather than one
+        # person's: comma separated, as the INVITE announces them. A call
+        # to one of these is answered and asked which conversation it
+        # wants (see dialin_ivr.py), instead of Nextcloud deciding from
+        # the number who is being called.
+        self.conference_numbers = [n.strip() for n in (env("CONFERENCE_NUMBERS", "") or "").split(",")
+                                   if n.strip()]
+        both = sorted(set(self.conference_numbers) & set(self.dialin_numbers))
+        if both:
+            raise RuntimeError(f"{env_prefix}CONFERENCE_NUMBERS and {env_prefix}DIALIN_NUMBERS "
+                               f"both claim {', '.join(both)} - a number is one or the other")
+
         # Optional media relay for this line (only needed if its gateway
         # can't reach this host's own address directly for RTP).
         self.relay_lan_host = env("RELAY_LAN_HOST", "")
@@ -238,6 +250,14 @@ class Config:
         # passing the events on, which this deployment's does; harmless
         # where it does not, since a press reported twice is collapsed.
         self.inband_dtmf = os.environ.get("BRIDGE_INBAND_DTMF", "true").lower() != "false"
+
+        # A recording played to a caller on a conference number instead of
+        # the beeps that otherwise ask for a meeting id - 16-bit WAV, any
+        # sample rate, mono or stereo. Words say what beeps cannot ("enter
+        # the meeting ID, then hash"), and which words depends on the
+        # deployment's language, so there is nothing sensible to ship.
+        self.ivr_prompt_wav = os.environ.get("BRIDGE_IVR_PROMPT_WAV", "")
+        self.ivr_pin_prompt_wav = os.environ.get("BRIDGE_IVR_PIN_PROMPT_WAV", "")
         self.state_dir = os.environ.get("BRIDGE_STATE_DIR", "/var/lib/talk-sip-bridge")
 
 

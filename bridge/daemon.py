@@ -36,6 +36,7 @@ def _start_line(line: LineConfig):
     call_manager.on_call_connected = client.on_call_connected
     call_manager.on_call_ended = client.on_call_ended
     call_manager.on_call_failed = client.on_call_failed
+    call_manager.on_dtmf = client.on_dtmf
 
     transport_holder = {}
 

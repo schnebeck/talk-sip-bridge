@@ -23,6 +23,8 @@ CALLER = "+4930622"
 
 
 class FakeResponse(io.BytesIO):
+    status = 200
+
     def __enter__(self):
         return self
 

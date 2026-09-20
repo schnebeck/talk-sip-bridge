@@ -4,12 +4,14 @@ Both directions of a call pass through here, so an error shows up as
 speech that is too fast, too slow, or distorted - none of which a
 signaling test would notice.
 """
+import errno
 import unittest
 
 from tests.support import needs_media_stack
 
 try:
     import numpy as np
+    from rtp import bind_socket
     from media import (AUDIO_SAMPLE_RATE, StreamResampler, frame_to_mono_pcm,
                        resample_linear)
 except ImportError:  # no media stack; every test here is skipped
@@ -224,6 +226,70 @@ class FrameConversionTest(unittest.TestCase):
         pcm = frame_to_mono_pcm(self.make_frame(interleaved, "stereo"))
         self.assertEqual(pcm.dtype, np.int16)
         self.assertEqual(len(pcm), len(mono))
+
+
+@needs_media_stack
+class BindTest(unittest.TestCase):
+    """Claiming the port a call's audio arrives on.
+
+    Measured on the deployment: closing a UDP socket does not free its
+    port while the receive thread is still inside recvfrom, so for up to
+    one receive timeout after a call ends the port is still taken. A
+    caller who rings back in that window used to be answered with no
+    audio path at all - the answer failed with EADDRINUSE.
+
+    No socket is opened here; what is under test is the waiting, not the
+    operating system.
+    """
+
+    class Socket:
+        def __init__(self, refusals, error=None):
+            self.refusals = refusals
+            self.error = error or OSError(errno.EADDRINUSE, "Address already in use")
+            self.bound = None
+            self.attempts = 0
+
+        def bind(self, address):
+            self.attempts += 1
+            if self.attempts <= self.refusals:
+                raise self.error
+            self.bound = address
+
+    def setUp(self):
+        self.slept = []
+
+    def sleep(self, seconds):
+        self.slept.append(seconds)
+
+    def clock(self):
+        return sum(self.slept)
+
+    def test_a_free_port_is_taken_at_once(self):
+        sock = self.Socket(refusals=0)
+        bind_socket(sock, ("10.0.0.1", 40000), sleep=self.sleep, clock=self.clock)
+        self.assertEqual(sock.bound, ("10.0.0.1", 40000))
+        self.assertEqual(self.slept, [])
+
+    def test_a_port_the_last_call_is_still_releasing_is_waited_for(self):
+        sock = self.Socket(refusals=8)
+        bind_socket(sock, ("10.0.0.1", 40000), sleep=self.sleep, clock=self.clock)
+        self.assertEqual(sock.bound, ("10.0.0.1", 40000))
+        self.assertLess(sum(self.slept), 1.0, "half a second of waiting should be enough")
+
+    def test_a_port_that_stays_taken_is_reported(self):
+        """Something else owns it - retrying forever would leave calls
+        ringing with no explanation."""
+        sock = self.Socket(refusals=10_000)
+        with self.assertRaises(OSError):
+            bind_socket(sock, ("10.0.0.1", 40000), timeout=1.0,
+                        sleep=self.sleep, clock=self.clock)
+
+    def test_any_other_error_is_not_waited_out(self):
+        sock = self.Socket(refusals=1, error=OSError(errno.EACCES, "Permission denied"))
+        with self.assertRaises(OSError) as raised:
+            bind_socket(sock, ("10.0.0.1", 40000), sleep=self.sleep, clock=self.clock)
+        self.assertEqual(raised.exception.errno, errno.EACCES)
+        self.assertEqual(self.slept, [])
 
 
 if __name__ == "__main__":

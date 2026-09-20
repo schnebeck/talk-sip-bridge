@@ -19,6 +19,7 @@ authentication, no retransmissions, no forking.
 """
 import os
 import pathlib
+import queue
 import re
 import secrets
 import socket
@@ -32,7 +33,7 @@ sys.path.insert(0, os.environ.get("BRIDGE_CODE")
 from payload_types import PT_PCMU
 from rtp import RtpSession
 from sip_messages import extract_contact_uri, parse_sip_headers
-from sip_sdp import extract_sip_body, parse_sdp_media_address
+from sip_sdp import extract_sip_body, parse_sdp_media_address, parse_telephone_event_type
 
 
 class FakeGateway:
@@ -156,10 +157,12 @@ class FakeGateway:
         if status != 200:
             return status, elapsed, None
         self._ack()
-        remote = parse_sdp_media_address(extract_sip_body(text))
+        body = extract_sip_body(text)
+        remote = parse_sdp_media_address(body)
         if not remote:
             return status, elapsed, None
-        rtp = RtpSession(self.local_ip, self.rtp_port, remote[0], remote[1], payload_type=PT_PCMU)
+        rtp = RtpSession(self.local_ip, self.rtp_port, remote[0], remote[1], payload_type=PT_PCMU,
+                         dtmf_payload_type=parse_telephone_event_type(body))
         self.call["rtp"] = rtp
         return status, elapsed, rtp
 
@@ -175,6 +178,36 @@ class FakeGateway:
             f"CSeq: {cseq} {method}",
             f'Contact: <sip:{call["caller"]}@{self.local_ip}:{self.sip_port}>',
             "Content-Length: 0", "", ""])
+
+    def keypad(self, digits: str, gap: float = 0.25):
+        """Types on the caller's keypad, as events (RFC 4733). A real
+        handset also leaves the tones in the audio; the bridge reads
+        either, and a press reported twice is collapsed."""
+        rtp = self.call["rtp"]
+        for digit in digits:
+            rtp.send_dtmf(digit)
+            time.sleep(gap)
+
+    def heard(self, seconds: float):
+        """What the far end sent in that time, as the caller's own
+        session decoded it."""
+        chunks = []
+        deadline = time.monotonic() + seconds
+        rtp = self.call["rtp"]
+        while time.monotonic() < deadline:
+            try:
+                chunks.append(rtp.recv_queue.get(timeout=0.2))
+            except queue.Empty:
+                continue
+        return chunks
+
+    def received(self, method: str) -> bool:
+        """Whether the bridge sent this request for the current call -
+        a BYE says it ended the call itself."""
+        with self._lock:
+            requests = list(self.requests)
+        return any(text.startswith(method + " ") and self.call["call_id"] in text
+                   for text in requests)
 
     def _dialog_uri(self) -> str:
         """Where in-dialog requests go: the Contact the answer gave, which

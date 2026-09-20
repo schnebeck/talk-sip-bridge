@@ -32,6 +32,13 @@ class Call:
     # the virtual session can name no actor.
     dialin_actor: dict = None
     number: str = ""   # the far end, as it should appear in the room
+    # Which of this line's numbers was called. One registration carries
+    # several, and what a call may do depends on which was dialled.
+    number_dialled: str = ""
+    # A conference call knows no room when it is answered: the caller is
+    # asked for one. The dialogue lives here while it runs, because the
+    # keys arrive from the SIP side and have to reach it.
+    ivr: object = None
 
     # -- ringing in Talk, before anyone has answered ---------------------
     waiting_for_accept: bool = False

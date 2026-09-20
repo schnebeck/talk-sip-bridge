@@ -73,9 +73,9 @@ class CallManager:
         self.on_call_connected = on_call_connected or (lambda **kw: None)
         self.on_call_ended = on_call_ended or (lambda **kw: None)
         self.on_call_failed = on_call_failed or (lambda **kw: None)
-        # Key presses during a call. Nothing in this bridge acts on them
-        # yet; they are carried out so a caller-driven room choice can be
-        # built on top without touching the SIP layer again.
+        # Key presses during a call, carried out to whoever is listening -
+        # the dial-in dialogue is, for as long as it is asking a caller
+        # which conversation they want (see dialin_ivr.py).
         self.on_dtmf = on_dtmf or (lambda **kw: None)
 
     def status(self) -> dict:
@@ -120,7 +120,8 @@ class CallManager:
             to_tag = f"bridge{secrets.token_hex(3)}"
             self.call = {"call_id": call_id, "headers": headers, "remote_addr": remote_addr,
                          "status": "ringing", "bye_timer": None, "to_tag": to_tag, "rtp": None,
-                         "offered_pts": offered_pts, "dtmf_pt": dtmf_pt}
+                         "offered_pts": offered_pts, "dtmf_pt": dtmf_pt,
+                         "offer_media": parse_sdp_media_address(body)}
         caller = headers.get("from", "unknown")
         dialled = dialled_number(text.split("\r\n", 1)[0], headers)
         print(f"[call:{self.line.id}] Incoming call from {caller}"
@@ -152,6 +153,15 @@ class CallManager:
                 return False
             dtmf_pt = self.call.get("dtmf_pt")
             rtp = self._new_rtp_session(payload_type, dtmf_pt, call_id)
+            if not line.media_relay_enabled and self.call.get("offer_media"):
+                # Where the caller said to send their audio. Without this
+                # it goes to their address on this bridge's own port
+                # number, which is a guess that holds only for a gateway
+                # using the same port - and where it does not hold, the
+                # caller hears nothing at all while everything else about
+                # the call looks correct. With a relay in between, the
+                # relay is the peer and its address stands.
+                rtp.remote_addr = self.call["offer_media"]
             self.call["status"] = "connected"
             self.call["rtp"] = rtp
         sdp, _, _ = answer_sdp(line, line.local_rtp_port, payload_type, dtmf_pt)
