@@ -59,10 +59,10 @@ class Call:
     # what runs between them. Kept behind one field rather than spread over
     # six, because they are created together and die together.
     media: object = None
-    # How often the server has refused an answer for the other side's
-    # audio on this call - bounded, or a server that keeps refusing
-    # would be asked forever.
-    subscribe_retries: int = 0
+    # The negotiation for the other side's audio, as a state machine -
+    # see subscription.py. One per call, because every repair has to know
+    # what the others are doing.
+    subscription: object = None
 
     @property
     def is_publishing(self) -> bool:

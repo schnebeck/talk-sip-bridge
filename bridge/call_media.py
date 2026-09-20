@@ -62,18 +62,27 @@ class CallMedia:
         self.subscriber_receiving = False      # a frame arrived: this one really works
         self._answered_an_offer = False
         self._on_receiving = None
+        # Called once, on the first frame that actually arrives - the
+        # only evidence that Talk's audio reaches the phone.
+        self.on_media_flowing = None
         self.relay_task = None
         self._poll_task = None
         self._lost = False
 
     # -- publisher: phone -> Talk ----------------------------------------
-    def open_publisher(self, peer_sessionid: str):
+    def open_publisher(self, peer_sessionid: str, on_talking=None):
         """Builds the publishing connection and starts watching it. The
         offer is addressed to our own session: a virtual session only
         represents the call in the participant list and has no client that
-        could answer one."""
+        could answer one.
+
+        `on_talking` is called with True or False as the caller starts and
+        stops speaking, measured once a second on the audio arriving from
+        the phone."""
         self.publisher = RTCPeerConnection(NO_ICE_SERVERS)
-        self.publisher.addTrack(SipAudioTrack(self.rtp_session))
+        track = SipAudioTrack(self.rtp_session)
+        track.on_talking = on_talking
+        self.publisher.addTrack(track)
         self.publisher_peer_sessionid = peer_sessionid
         self._watch(self.publisher)
 
@@ -178,7 +187,10 @@ class CallMedia:
                 # soon as the offer is applied, long before anything
                 # flows - and treating that as a working connection is
                 # what let a refused answer go unrepaired.
-                self.subscriber_receiving = True
+                if not self.subscriber_receiving:
+                    self.subscriber_receiving = True
+                    if self.on_media_flowing is not None:
+                        self.on_media_flowing()
                 pcm = frame_to_mono_pcm(frame)
                 stats["frames"] += 1
                 stats["peak"] = max(stats["peak"], int(np.abs(pcm).max()) if len(pcm) else 0)

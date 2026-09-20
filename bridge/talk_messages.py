@@ -58,8 +58,54 @@ def set_incall(flags: int) -> dict:
     return {"type": "internal", "internal": {"type": "incall", "incall": {"incall": flags}}}
 
 
+# What a virtual session says about its microphone, from the signaling
+# server's virtualsession.go. These are the phone's own state, published
+# by the server as a "participants"/"flags" event naming that session -
+# the only channel that can say anything *about the phone*, since a
+# message sent by this bridge is stamped with the bridge's own session
+# id and belongs to no tile a client shows.
+#
+# A session whose flags are zero is also a session the server tells a
+# newcomer nothing about (room.go skips flags == 0), which leaves clients
+# to infer the microphone from the audio - seen as the muted marker
+# appearing and disappearing with the caller's speech.
+FLAG_MUTED_SPEAKING = 1     # the microphone is off
+FLAG_MUTED_LISTENING = 2    # the loudspeaker is off
+FLAG_TALKING = 4            # speaking right now
+
+
+def incall_flags(with_audio: bool = False, actor: dict = None) -> int:
+    """What the phone's session announces about itself."""
+    return (FLAG_IN_CALL
+            | (0 if actor else FLAG_WITH_PHONE)
+            | (FLAG_WITH_AUDIO if with_audio else 0))
+
+
+def update_session(sessionid: str, roomid: str, incall: int = None, flags: int = None) -> dict:
+    """Changes a virtual session's in-call state after it exists.
+
+    Needed for more than bookkeeping. Adding a session hands the server
+    its flags, but `Room.AddSession` never puts a virtual session into
+    the room's in-call set - only a participants update from Nextcloud
+    or a *change* through this message does (hub.go's "updatesession" ->
+    `NotifySessionChanged(SessionChangeInCall)` -> `addSessionToCall`).
+    Until then `isInSameCall` refuses every client that asks for the
+    phone's stream: "Session ... is not in the same call as session ...,
+    not requesting offer". Measured against a live call, and read in the
+    server's source at v2.1.1."""
+    return {
+        "type": "internal",
+        "internal": {
+            "type": "updatesession",
+            "updatesession": {"sessionid": sessionid, "roomid": roomid,
+                              **({"incall": incall} if incall is not None else {}),
+                              **({"flags": flags} if flags is not None else {})},
+        },
+    }
+
+
 def add_session(sessionid: str, roomid: str, call_id: str, number: str, displayname: str,
-                with_audio: bool = False, actor: dict = None) -> dict:
+                with_audio: bool = False, actor: dict = None, incall: int = None) -> dict:
     """The phone participant Talk shows in the room.
 
     Normally a name plate only: a virtual session can never carry media,
@@ -85,9 +131,12 @@ def add_session(sessionid: str, roomid: str, call_id: str, number: str, displayn
                 # participant - that is covered by the actor, and the
                 # flag only adds the state Talk's clients render for a
                 # call still being placed.
-                "incall": (FLAG_IN_CALL
-                           | (0 if actor else FLAG_WITH_PHONE)
-                           | (FLAG_WITH_AUDIO if with_audio else 0)),
+                #
+                # What is announced here is what Nextcloud is told the
+                # participant joined with; the rest follows in an
+                # update_session, which is the only thing that puts the
+                # session into the room's in-call set.
+                "incall": incall if incall is not None else incall_flags(with_audio, actor),
                 # An actor only when Nextcloud already knows the caller -
                 # direct dial-in makes them a participant, and then the
                 # signaling server can register this session as them.

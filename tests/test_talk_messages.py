@@ -204,6 +204,73 @@ class DialoutReplyTest(unittest.TestCase):
         self.assertNotIn("status", dialout)
 
 
+class InCallTest(unittest.TestCase):
+    """Getting the phone into the room's call, not just into the room.
+
+    Read in the signaling server's source (v2.1.1): `Room.AddSession`
+    files a virtual session under the room's sessions and its virtual
+    sessions, and never under `inCallSessions`. Only a participants
+    update from Nextcloud or a *change* via "updatesession" puts it
+    there - and `isInSameCall` refuses every client that asks for the
+    stream of a session that is not in that set.
+    """
+
+    def test_joining_announces_being_in_the_call(self):
+        message = m.add_session("phone-1", "room-token", call_id="c", number="+4930622",
+                                displayname="+4930622", incall=m.FLAG_IN_CALL)
+        self.assertEqual(message["internal"]["addsession"]["incall"], m.FLAG_IN_CALL)
+
+    def test_the_update_carries_the_full_state(self):
+        message = m.update_session("phone-1", "room-token", m.FLAG_IN_CALL | m.FLAG_WITH_AUDIO)
+        update = message["internal"]["updatesession"]
+        self.assertEqual(message["internal"]["type"], "updatesession")
+        self.assertEqual(update["sessionid"], "phone-1")
+        self.assertEqual(update["roomid"], "room-token")
+        self.assertEqual(update["incall"], m.FLAG_IN_CALL | m.FLAG_WITH_AUDIO)
+
+    def test_the_update_differs_from_what_was_announced(self):
+        """A value that does not change is not a change: the server's
+        SetInCall reports nothing, the room is never notified, and the
+        session stays outside the call."""
+        for with_audio, actor in ((True, {"actorType": "guests", "actorId": "x"}),
+                                  (True, None), (False, None)):
+            with self.subTest(with_audio=with_audio, actor=bool(actor)):
+                self.assertNotEqual(m.incall_flags(with_audio, actor), m.FLAG_IN_CALL)
+
+    def test_a_known_caller_is_in_the_call_with_audio_and_no_phone_flag(self):
+        flags = m.incall_flags(True, {"actorType": "guests", "actorId": "x"})
+        self.assertEqual(flags, m.FLAG_IN_CALL | m.FLAG_WITH_AUDIO)
+
+
+class TalkingFlagsTest(unittest.TestCase):
+    """The phone's own state, as the server publishes it.
+
+    These flags are the only channel that says something about the
+    phone: the server turns them into a "participants"/"flags" event
+    naming the phone's session, while a message this bridge sends is
+    stamped with the bridge's session id (hub.go stamps
+    Sender.SessionId) and belongs to no tile a client draws.
+    """
+
+    def test_speaking_is_announced_for_the_phones_own_session(self):
+        message = m.update_session("phone-1", "room-token", flags=m.FLAG_TALKING)
+        update = message["internal"]["updatesession"]
+        self.assertEqual(update["sessionid"], "phone-1")
+        self.assertEqual(update["flags"], m.FLAG_TALKING)
+        self.assertNotIn("incall", update, "the call state is not touched by speaking")
+
+    def test_falling_silent_clears_the_flags_without_muting(self):
+        """Zero is "not speaking", not "microphone off" - that would be
+        FLAG_MUTED_SPEAKING, which a telephone never sets."""
+        update = m.update_session("phone-1", "room-token", flags=0)["internal"]["updatesession"]
+        self.assertEqual(update["flags"], 0)
+        self.assertFalse(update["flags"] & m.FLAG_MUTED_SPEAKING)
+
+    def test_the_two_kinds_of_state_can_be_sent_apart(self):
+        only_call = m.update_session("p", "r", incall=m.FLAG_IN_CALL)["internal"]["updatesession"]
+        self.assertNotIn("flags", only_call)
+
+
 class PeerStateTest(unittest.TestCase):
     """What a client tells the others about itself. Talk's own does this
     on joining and for everyone who joins later; a participant that says

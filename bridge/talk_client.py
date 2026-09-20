@@ -32,6 +32,7 @@ from call_media import CallMedia
 from config import config
 from dialin_ivr import DialInIvr
 from room_state import RoomCallState, is_room_wide_call_end
+from subscription import Action, Subscription
 from talk_messages import FLAG_IN_CALL, FLAG_WITH_AUDIO
 
 # A single requestoffer is not enough: the other side's publisher may not
@@ -40,6 +41,12 @@ from talk_messages import FLAG_IN_CALL, FLAG_WITH_AUDIO
 # every 10s for exactly this reason.
 SUBSCRIBE_RETRY_INTERVAL = 5
 SUBSCRIBE_MAX_ATTEMPTS = 6
+# A refused answer is repaired by building the subscription again, and
+# that has to be rare: each rebuild throws away one that may be seconds
+# from working, and a handful in a row is not a repair but a storm -
+# measured, seven in five seconds, with nothing left standing.
+RESUBSCRIBE_MAX_ATTEMPTS = 2
+RESUBSCRIBE_DELAY = 3
 
 def is_conference_call(line, dialled: str, caller: str) -> bool:
     """Whether this call is one the caller gets to choose a conversation
@@ -243,52 +250,55 @@ class TalkClient:
             # it only ever arrives on the publishing connection.
             await media.accept_publisher_answer(data["payload"]["sdp"])
         elif msg_type == "offer" and is_subscriber:
-            answer_sdp = await media.answer_subscriber_offer(data["payload"]["sdp"])
-            if answer_sdp is None:
-                return  # a late duplicate; answering it would reset a working connection
-            peer = sender_sessionid
-            await self.ws.send(json.dumps(talk_messages.subscribe_answer(
-                peer, data.get("sid"), answer_sdp, sip_call_id=media.sip_call_id)))
+            await self._answer_offer(media, sender_sessionid, data)
         elif msg_type == "candidate":
             await media.add_candidate(pc, data.get("payload"))
 
+    async def _answer_offer(self, media, peer: str, data: dict):
+        """Answers an offer for a subscription, if it is still the one
+        being negotiated.
+
+        The server offers again when it re-attaches its end, and answers
+        naming a handle it has dropped are refused. The call's
+        Subscription decides which offer counts; a second answer for an
+        offer it has moved past is not sent at all."""
+        state = self._subscription_for(media.sip_call_id)
+        if state is None:
+            return
+        step = state.offer(data.get("sid"))
+        if step.action is not Action.ANSWER:
+            return   # audio already flows, or this negotiation is history
+        answer_sdp = await media.answer_subscriber_offer(data["payload"]["sdp"])
+        if answer_sdp is None or state.generation != step.generation:
+            return
+        await self.ws.send(json.dumps(talk_messages.subscribe_answer(
+            peer, step.sid, answer_sdp, sip_call_id=media.sip_call_id)))
+        state.answer_sent(step.generation)
+
     async def _subscription_answer_refused(self, sip_call_id: str, error: dict):
         """The server would not take our answer for the other side's
-        audio.
+        audio: it re-attaches its own end while the publisher is not
+        sending yet, without offering again, and an answer naming the
+        handle it dropped is refused ("answer message sid does not match
+        subscriber sid").
 
-        Measured against a live call: it re-attaches its own end of a
-        subscription while the publisher is not sending yet, without
-        offering again, and every answer after that names a handle it has
-        already dropped ("answer message sid does not match subscriber
-        sid"). Nothing arrives afterwards and the connection goes to
-        failed, with the phone side silent for the rest of the call.
-
-        So the subscription is thrown away and asked for again - by then
-        the publisher is sending, and the offer that comes back names a
-        handle that is current."""
+        What follows from that is the Subscription's decision - repair,
+        or stop trying. Acting on every refusal directly is what produced
+        seven rebuilds in five seconds, none of which survived the
+        next."""
         with self._call_sessions_lock:
             entry = self._call_sessions.get(sip_call_id)
             media = entry.media if entry else None
-            human = entry.media.human_sessionid if entry and entry.media else None
-            attempts = entry.subscribe_retries if entry else 0
-            if entry is not None:
-                entry.subscribe_retries = attempts + 1
-        if media is None or not human:
+            human = media.human_sessionid if media else None
+            state = entry.subscription if entry else None
+        if media is None or not human or state is None:
             return
-        if attempts >= SUBSCRIBE_MAX_ATTEMPTS:
-            print(f"[talk] Talk's audio for {sip_call_id} was refused "
-                  f"{attempts} times - the phone side stays silent")
+        step = state.refused()
+        if not step:
             return
         print(f"[talk] The server refused our answer for {human}'s audio "
-              f"({error.get('code')}) - asking for a fresh offer")
-        if not await media.prepare_for_new_offer():
-            return
-        await asyncio.sleep(1)
-        with self._call_sessions_lock:
-            entry = self._call_sessions.get(sip_call_id)
-            if entry is None or entry.media is not media:
-                return
-        await self.ws.send(json.dumps(talk_messages.request_offer(sip_call_id, human)))
+              f"({error.get('code')})")
+        await self._pursue(sip_call_id, media, human, step)
 
     async def _handle_participants_update(self, update: dict):
         """The room's two answers this bridge acts on: somebody joined the
@@ -416,9 +426,19 @@ class TalkClient:
             return None
         virtual_sessionid = f"phone-{secrets.token_hex(8)}"
         with_audio = config.phone_participant == "audio"
+        flags = talk_messages.incall_flags(with_audio, actor)
+        # Joined first with the bare in-call flag, then updated to the
+        # full set. Adding a session tells Nextcloud what it joined with
+        # but leaves the signaling server's own in-call set untouched
+        # (Room.AddSession), and while the session is not in that set
+        # every client asking for the phone's stream is refused. A change
+        # through update_session is what puts it there.
         await self.ws.send(json.dumps(talk_messages.add_session(
             virtual_sessionid, roomid, call_id=sip_call_id, number=number,
-            displayname=displayname or number, with_audio=with_audio, actor=actor)))
+            displayname=displayname or number, with_audio=with_audio, actor=actor,
+            incall=FLAG_IN_CALL)))
+        await self.ws.send(json.dumps(
+            talk_messages.update_session(virtual_sessionid, roomid, flags)))
         print(f"[talk] Phone participant {virtual_sessionid} announced "
               f"{'with' if with_audio else 'without'} audio"
               + (f", as {actor['actorType']}/{str(actor['actorId'])[:12]}" if actor
@@ -465,7 +485,11 @@ class TalkClient:
             displayname=display_name, caller=True, actor=actor)
 
         media = CallMedia(sip_call_id, rtp_session, on_connection_lost=self._hangup_sip)
-        media.open_publisher(self.own_sessionid)
+        media.open_publisher(
+            self.own_sessionid,
+            on_talking=lambda talking: _run_coro_logged(
+                self._publish_talking(sip_call_id, roomid, talking), self.loop,
+                f"talking({sip_call_id})"))
         with self._call_sessions_lock:
             # get, not setdefault: _teardown_call removing the entry is what
             # says the call is over, and recreating it here would hide that.
@@ -508,6 +532,32 @@ class TalkClient:
             asyncio.ensure_future(self._subscribe_human_audio(sip_call_id, media, human_sessionid))
         else:
             print(f"[talk] No other participant found in room {roomid} - phone side will not hear Talk's audio")
+
+    async def _publish_talking(self, sip_call_id: str, roomid: str, talking: bool):
+        """Tells the room whether the caller is speaking.
+
+        Through the session's own flags, which is the one channel that
+        says something *about the phone*: the server publishes them as a
+        "participants"/"flags" event naming the phone's session, while
+        anything this bridge sends as a message is stamped with the
+        bridge's own session id and belongs to no tile a client draws.
+
+        The absence of FLAG_MUTED_SPEAKING is the statement that matters
+        - it says the microphone is on. A session left at zero flags is
+        one the server mentions to nobody (room.go skips flags == 0), and
+        clients then infer the microphone from the audio, which is the
+        muted marker coming and going with the caller's speech."""
+        with self._call_sessions_lock:
+            entry = self._call_sessions.get(sip_call_id)
+            virtual = entry.virtual_sessionid if entry else None
+        if not virtual or self.ws is None:
+            return
+        flags = talk_messages.FLAG_TALKING if talking else 0
+        try:
+            await self.ws.send(json.dumps(
+                talk_messages.update_session(virtual, roomid, flags=flags)))
+        except Exception as e:
+            print(f"[talk] Could not publish the talking state for {sip_call_id}: {e!r}")
 
     async def _announce_phone_state(self, sip_call_id: str, peers=None):
         """Tells the others what the phone's microphone and camera are
@@ -562,21 +612,63 @@ class TalkClient:
 
     # -- subscribing to the human's audio, to relay it to the phone -------
     async def _subscribe_human_audio(self, sip_call_id: str, media, human_sessionid: str):
-        """Asks for the other side's audio until an offer arrives. One
-        request is not enough: their publisher may not exist yet, and the
-        server rejects such a request with "client_not_found" rather than
-        queuing it."""
+        """Asks for the other side's audio and follows the negotiation to
+        audio or to giving up.
+
+        What to do at each turn is decided by the call's Subscription (see
+        subscription.py); everything here is the doing - sending, waiting,
+        rebuilding. Splitting it that way is what keeps two repairs from
+        running at once, which is what tore the return direction down."""
         def on_receiving(track):
             print(f"[talk] Receiving audio from {human_sessionid} for {sip_call_id}")
 
         media.open_subscriber(human_sessionid, on_receiving=on_receiving)
+        state = self._subscription_for(sip_call_id)
+        if state is None:
+            return
 
-        for attempt in range(SUBSCRIBE_MAX_ATTEMPTS):
-            with self._call_sessions_lock:
-                entry = self._call_sessions.get(sip_call_id)
-                still_current = entry is not None and entry.media is media
-            if not still_current:
-                return  # call ended, or a newer subscription replaced this one
+        def flowing():
+            state.media_arrived()
+            print(f"[talk] Talk's audio reaches the phone for {sip_call_id}")
+
+        media.on_media_flowing = flowing
+        await self._pursue(sip_call_id, media, human_sessionid, state.start())
+
+    def _subscription_for(self, sip_call_id: str):
+        with self._call_sessions_lock:
+            entry = self._call_sessions.get(sip_call_id)
+            if entry is None:
+                return None
+            if entry.subscription is None:
+                entry.subscription = Subscription(
+                    max_attempts=SUBSCRIBE_MAX_ATTEMPTS,
+                    request_delay=SUBSCRIBE_RETRY_INTERVAL,
+                    rebuild_delay=RESUBSCRIBE_DELAY)
+            return entry.subscription
+
+    async def _pursue(self, sip_call_id: str, media, human_sessionid: str, step):
+        """Carries out one step of the negotiation, and the waiting it
+        asks for."""
+        if not step:
+            return
+        if step.delay:
+            await asyncio.sleep(step.delay)
+        with self._call_sessions_lock:
+            entry = self._call_sessions.get(sip_call_id)
+            still_current = entry is not None and entry.media is media
+            state = entry.subscription if entry else None
+        if not still_current or state is None:
+            return  # the call ended, or a newer subscription replaced this one
+
+        if step.action is Action.GIVE_UP:
+            print(f"[talk] No audio from {human_sessionid} for {sip_call_id} after "
+                  f"{state.attempts} attempts - the phone side stays silent for this call")
+            return
+        if step.action is Action.REBUILD:
+            if not await media.prepare_for_new_offer():
+                return
+            print(f"[talk] Subscribing to {human_sessionid} again for {sip_call_id}")
+        if step.action in (Action.REQUEST, Action.REBUILD):
             try:
                 await self.ws.send(json.dumps(
                     talk_messages.request_offer(sip_call_id, human_sessionid)))
@@ -584,14 +676,22 @@ class TalkClient:
                 print(f"[talk] Could not request audio from {human_sessionid}: {e!r}")
                 return
             print(f"[talk] Requested audio from {human_sessionid} for {sip_call_id} "
-                  f"(attempt {attempt + 1}/{SUBSCRIBE_MAX_ATTEMPTS})")
-            try:
-                await asyncio.wait_for(media.offer_arrived.wait(), timeout=SUBSCRIBE_RETRY_INTERVAL)
-                return
-            except asyncio.TimeoutError:
-                continue
-        print(f"[talk] No audio offer from {human_sessionid} for {sip_call_id} - "
-              f"phone side stays silent for this call")
+                  f"(attempt {state.attempts}/{SUBSCRIBE_MAX_ATTEMPTS})")
+            # Nothing may arrive at all: the server answers a request for
+            # a publisher that does not exist yet with an error, and
+            # sometimes with silence.
+            asyncio.ensure_future(self._watch_for_offer(sip_call_id, media, human_sessionid,
+                                                        state.generation))
+
+    async def _watch_for_offer(self, sip_call_id: str, media, human_sessionid: str,
+                               generation: int):
+        await asyncio.sleep(SUBSCRIBE_RETRY_INTERVAL)
+        with self._call_sessions_lock:
+            entry = self._call_sessions.get(sip_call_id)
+            state = entry.subscription if entry and entry.media is media else None
+        if state is None or state.generation != generation:
+            return  # something else happened in the meantime; not our turn
+        await self._pursue(sip_call_id, media, human_sessionid, state.no_publisher())
 
     async def _teardown_call(self, sip_call_id: str, roomid: str):
         with self._call_sessions_lock:

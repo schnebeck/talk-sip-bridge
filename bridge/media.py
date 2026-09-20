@@ -105,6 +105,19 @@ class SipAudioTrack(AudioStreamTrack):
         self._agc = Agc(target_peak=config.agc_target_peak, max_gain=config.agc_max_gain,
                         silence_threshold=config.agc_silence_threshold) if config.agc_enabled else None
         self._resampler = StreamResampler(rtp_session.sample_rate, AUDIO_SAMPLE_RATE)
+        # Called when the caller starts or stops speaking, once per
+        # measured second rather than per packet.
+        self.on_talking = None
+        self._talking = None
+
+    def _report_talking(self, talking: bool):
+        if talking == self._talking or self.on_talking is None:
+            return
+        self._talking = talking
+        try:
+            self.on_talking(talking)
+        except Exception as e:
+            print(f"[talk] Talking state handler failed: {e!r}")
 
     async def recv(self):
         """Hands out exactly one packet per packet interval of wall clock.
@@ -149,6 +162,10 @@ class SipAudioTrack(AudioStreamTrack):
             # worth their own number rather than being invisible.
             print(f"[talk] Phone audio: {s['from_phone']} packets, {s['silence']} silence-filled, "
                   f"{s['dropped']} dropped, peak {s['peak']} (before agc){gain}")
+            # Whether the caller is speaking, to whoever wants to show it.
+            # The same threshold the gain control uses to tell speech from
+            # the line's own noise floor, measured on this deployment.
+            self._report_talking(s["peak"] >= config.agc_silence_threshold)
             self._stats = {"from_phone": 0, "silence": 0, "dropped": 0, "peak": 0, "since": loop.time()}
 
         now = loop.time()

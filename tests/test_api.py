@@ -222,6 +222,35 @@ class HardwareScriptTest(unittest.TestCase):
                 self.assertIn("BRIDGE_CODE", script.read_text())
 
 
+class SubscriptionWiringTest(unittest.TestCase):
+    """The negotiation's decisions live in subscription.py and its doing
+    in talk_client.py. A repair that acts without asking the machine is
+    how two of them ran at once."""
+
+    def test_the_client_asks_the_machine_before_repairing(self):
+        source = (BRIDGE / "talk_client.py").read_text()
+        for decision in ("state.start()", "state.offer(", "state.refused()",
+                         "state.no_publisher()", "state.media_arrived()"):
+            with self.subTest(decision=decision):
+                self.assertIn(decision, source)
+
+    def test_no_second_retry_loop_survives_beside_it(self):
+        """The old loop counted its own attempts; two counters mean two
+        budgets and neither knows when to stop."""
+        source = (BRIDGE / "talk_client.py").read_text()
+        self.assertNotIn("for attempt in range(SUBSCRIBE_MAX_ATTEMPTS)", source)
+        self.assertNotIn("subscribe_retries", source)
+
+    def test_the_machine_needs_nothing_from_the_bridge(self):
+        """It is pure so it can be tested without a call: no sockets, no
+        signaling, no media stack."""
+        source = (BRIDGE / "subscription.py").read_text()
+        for forbidden in ("import asyncio", "import socket", "websockets",
+                          "talk_messages", "numpy"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, source)
+
+
 class StubLineTest(unittest.TestCase):
     """tests/support.py's StubLine stands in for a LineConfig. A field
     added to the real one and not to the stub fails only in whichever test
