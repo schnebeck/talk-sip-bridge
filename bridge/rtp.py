@@ -8,11 +8,11 @@ import socket
 import struct
 import threading
 
-from g711 import linear_to_ulaw, ulaw_to_linear
+from g711 import alaw_to_linear, linear_to_alaw, linear_to_ulaw, ulaw_to_linear
 from g722 import G722Decoder, G722Encoder
 import numpy as np
 
-from payload_types import PT_G722, PT_PCMU  # re-exported: rtp.PT_* stays valid
+from payload_types import PT_G722, PT_PCMA, PT_PCMU  # re-exported: rtp.PT_* stays valid
 
 RTP_VERSION = 2
 
@@ -21,6 +21,7 @@ RTP_VERSION = 2
 # the PCMU-equivalent amount - see g722.py's module docstring.
 _CODEC_INFO = {
     PT_PCMU: {"sample_rate": 8000, "samples_per_packet": 160},
+    PT_PCMA: {"sample_rate": 8000, "samples_per_packet": 160},
     PT_G722: {"sample_rate": 16000, "samples_per_packet": 320},
 }
 RTP_CLOCK_INCREMENT = 160
@@ -63,6 +64,8 @@ class RtpSession:
     def _encode(self, chunk: np.ndarray) -> bytes:
         if self.payload_type == PT_G722:
             return self._encoder.encode(chunk)
+        if self.payload_type == PT_PCMA:
+            return linear_to_alaw(chunk).tobytes()
         return linear_to_ulaw(chunk).tobytes()
 
     def _decode(self, payload: bytes, payload_type: int = None):
@@ -80,6 +83,8 @@ class RtpSession:
             return self._decoder.decode(payload)
         if payload_type == PT_PCMU:
             return ulaw_to_linear(np.frombuffer(payload, dtype=np.uint8))
+        if payload_type == PT_PCMA:
+            return alaw_to_linear(np.frombuffer(payload, dtype=np.uint8))
         return None
 
     def send_pcm(self, pcm: np.ndarray):

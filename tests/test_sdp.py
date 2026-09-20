@@ -1,7 +1,7 @@
 """What the SDP layer offers, answers and reads back."""
 import unittest
 
-from payload_types import PT_G722, PT_PCMU
+from payload_types import PT_G722, PT_PCMA, PT_PCMU
 from sip_sdp import (answer_sdp, choose_payload_type, extract_sip_body,
                      offer_sdp, parse_offered_payload_types,
                      parse_sdp_media_address)
@@ -9,11 +9,14 @@ from tests.support import RELAY_LAN_HOST, StubLine
 
 
 class OfferTest(unittest.TestCase):
-    def test_offers_both_codecs_with_g722_first(self):
+    def test_offers_every_codec_with_g722_first(self):
+        """Both halves of G.711 are offered, not just one: which of them a
+        registrar speaks is regional, and some speak only one."""
         sdp, host, port = offer_sdp(StubLine(), 40000)
         media = [l for l in sdp.split("\r\n") if l.startswith("m=audio")][0]
-        self.assertEqual(media, f"m=audio 40000 RTP/AVP {PT_G722} {PT_PCMU}")
+        self.assertEqual(media, f"m=audio 40000 RTP/AVP {PT_G722} {PT_PCMA} {PT_PCMU}")
         self.assertIn(f"a=rtpmap:{PT_G722} G722/8000", sdp)
+        self.assertIn(f"a=rtpmap:{PT_PCMA} PCMA/8000", sdp)
         self.assertIn(f"a=rtpmap:{PT_PCMU} PCMU/8000", sdp)
 
     def test_advertises_this_host_without_a_relay(self):
@@ -46,6 +49,11 @@ class AnswerTest(unittest.TestCase):
         self.assertIn(f"a=rtpmap:{PT_PCMU} PCMU/8000", sdp)
         self.assertNotIn("G722", sdp)
 
+    def test_pcma_answer(self):
+        sdp, _, _ = answer_sdp(StubLine(), 40000, PT_PCMA)
+        self.assertIn(f"a=rtpmap:{PT_PCMA} PCMA/8000", sdp)
+        self.assertNotIn("PCMU", sdp)
+
 
 class CodecChoiceTest(unittest.TestCase):
     def test_g722_wins_when_offered(self):
@@ -55,11 +63,28 @@ class CodecChoiceTest(unittest.TestCase):
     def test_falls_back_to_pcmu(self):
         self.assertEqual(choose_payload_type([PT_PCMU]), PT_PCMU)
 
-    def test_unknown_codecs_do_not_win(self):
-        """Only two codecs are implemented; anything else offered has to
-        end up as PCMU rather than being echoed back."""
-        self.assertEqual(choose_payload_type([8, 97, 101]), PT_PCMU)
-        self.assertEqual(choose_payload_type([]), PT_PCMU)
+    def test_a_law_is_chosen_when_it_is_what_is_offered(self):
+        """The European half of G.711, and what some registrars offer
+        instead of mu-law rather than alongside it."""
+        self.assertEqual(choose_payload_type([PT_PCMA]), PT_PCMA)
+        self.assertEqual(choose_payload_type([PT_PCMA, PT_PCMU]), PT_PCMA)
+
+    def test_between_equals_the_callers_own_order_decides(self):
+        """Their list is their preference; there is no reason to overrule
+        it where both are the same quality."""
+        self.assertEqual(choose_payload_type([PT_PCMU, PT_PCMA]), PT_PCMU)
+        self.assertEqual(choose_payload_type([PT_PCMA, PT_PCMU]), PT_PCMA)
+
+    def test_codecs_we_cannot_speak_are_not_echoed_back(self):
+        """G.726, iLBC and telephone-event are in the offer this bridge's
+        own gateway sends; answering with one would produce a call that
+        connects and carries nothing."""
+        self.assertIsNone(choose_payload_type([2, 97, 101, 120]))
+
+    def test_nothing_in_common_is_said_rather_than_guessed(self):
+        """None is what makes the caller get a 488 instead of a silent
+        call - see CallManager.answer."""
+        self.assertIsNone(choose_payload_type([]))
 
 
 class ParseTest(unittest.TestCase):

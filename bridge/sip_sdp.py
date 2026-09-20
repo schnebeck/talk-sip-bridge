@@ -1,10 +1,16 @@
-"""SDP for the two codecs this bridge implements: building an offer or an
+"""SDP for the codecs this bridge implements: building an offer or an
 answer, and reading back what the far end offered or answered.
 
-G.722 is preferred over PCMU wherever there is a choice - real 16kHz audio,
-despite SDP historically labeling it G722/8000.
+G.722 is preferred wherever there is a choice - real 16kHz audio, despite
+SDP historically labeling it G722/8000. Below it sit both halves of G.711,
+because which one a registrar speaks is regional: A-law across most of the
+world, mu-law in North America and Japan, and some offer only one.
 """
-from payload_types import PT_G722, PT_PCMU
+from payload_types import PT_G722, PT_PCMA, PT_PCMU
+
+# What this bridge can encode and decode, best first.
+SUPPORTED = (PT_G722, PT_PCMA, PT_PCMU)
+CODEC_NAMES = {PT_G722: "G722", PT_PCMA: "PCMA", PT_PCMU: "PCMU"}
 
 
 def _sdp_host_port(line, local_port: int) -> tuple[str, int]:
@@ -18,14 +24,16 @@ def _sdp_host_port(line, local_port: int) -> tuple[str, int]:
 
 
 def offer_sdp(line, local_port: int) -> tuple[str, str, int]:
-    """Returns (sdp, advertised_host, advertised_port). Offers G.722
-    ("HD-Telefonie") first, PCMU as a fallback for gateways that don't
-    support it - the far end picks one in its answer."""
+    """Returns (sdp, advertised_host, advertised_port). Offers everything
+    this bridge speaks, best first ("HD-Telefonie" is G.722); the far end
+    picks one in its answer."""
     host, port = _sdp_host_port(line, local_port)
+    formats = " ".join(str(pt) for pt in SUPPORTED)
+    rtpmaps = "".join(f"a=rtpmap:{pt} {CODEC_NAMES[pt]}/8000\r\n" for pt in SUPPORTED)
     sdp = (
         f"v=0\r\no=- 0 0 IN IP4 {host}\r\ns=-\r\n"
-        f"c=IN IP4 {host}\r\nt=0 0\r\nm=audio {port} RTP/AVP {PT_G722} {PT_PCMU}\r\n"
-        f"a=rtpmap:{PT_G722} G722/8000\r\na=rtpmap:{PT_PCMU} PCMU/8000\r\n"
+        f"c=IN IP4 {host}\r\nt=0 0\r\nm=audio {port} RTP/AVP {formats}\r\n"
+        f"{rtpmaps}"
     )
     return sdp, host, port
 
@@ -34,7 +42,7 @@ def answer_sdp(line, local_port: int, payload_type: int) -> tuple[str, str, int]
     """Returns (sdp, advertised_host, advertised_port) for a single, already
     chosen codec - used when this line is the UAS answering an INVITE."""
     host, port = _sdp_host_port(line, local_port)
-    name = "G722" if payload_type == PT_G722 else "PCMU"
+    name = CODEC_NAMES[payload_type]
     sdp = (
         f"v=0\r\no=- 0 0 IN IP4 {host}\r\ns=-\r\n"
         f"c=IN IP4 {host}\r\nt=0 0\r\nm=audio {port} RTP/AVP {payload_type}\r\n"
@@ -75,8 +83,15 @@ def parse_sdp_media_address(sdp_body: str):
     return (host, port) if host and port else None
 
 
-def choose_payload_type(offered: list[int]) -> int:
-    """We're the UAS (answering an INVITE) - pick G.722 if the caller
-    offered it, otherwise fall back to PCMU regardless of what else was
-    offered (the only two codecs this bridge implements)."""
-    return PT_G722 if PT_G722 in offered else PT_PCMU
+def choose_payload_type(offered: list[int]):
+    """Which codec to answer an INVITE with, or None if the caller offered
+    none this bridge speaks.
+
+    None matters: answering with a codec the caller never offered produces
+    a call that connects and carries noise, or nothing, with no error
+    anywhere - the caller is entitled to a 488 instead. Among the ones we
+    both speak, G.722 wins for being wideband; below that the caller's own
+    order decides, since that is the preference they expressed."""
+    if PT_G722 in offered:
+        return PT_G722
+    return next((pt for pt in offered if pt in SUPPORTED), None)

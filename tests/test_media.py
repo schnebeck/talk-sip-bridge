@@ -83,6 +83,64 @@ class ResampleTest(unittest.TestCase):
 
 
 @needs_media_stack
+class G711Test(unittest.TestCase):
+    """Both halves of G.711. A-law is the one most registrars outside North
+    America offer, and several offer nothing else."""
+
+    def codecs(self):
+        from g711 import alaw_to_linear, linear_to_alaw, linear_to_ulaw, ulaw_to_linear
+        return linear_to_alaw, alaw_to_linear, linear_to_ulaw, ulaw_to_linear
+
+    def test_a_law_survives_a_round_trip(self):
+        to_alaw, from_alaw, _, _ = self.codecs()
+        out = from_alaw(to_alaw(tone(440, 8000)))
+        self.assertAlmostEqual(dominant_frequency(out, 8000), 440, delta=5)
+
+    def test_a_law_is_accurate_enough_to_be_transparent(self):
+        """Quantisation noise only: a companding codec that is wired up
+        wrongly - sign bit, segment, XOR mask - still round-trips loud
+        tones, and shows up as error on quiet ones."""
+        to_alaw, from_alaw, _, _ = self.codecs()
+        for amplitude in (30000, 8000, 500):
+            with self.subTest(amplitude=amplitude):
+                original = tone(440, 8000, amplitude=amplitude).astype(np.float64)
+                out = from_alaw(to_alaw(original.astype(np.int16))).astype(np.float64)
+                error = np.sqrt(np.mean((out - original) ** 2))
+                self.assertLess(error / amplitude, 0.05)
+
+    def test_the_two_halves_are_not_the_same_bytes(self):
+        """Answering A-law with mu-law bytes is the failure this exists to
+        prevent: same length, same shape, unintelligible."""
+        to_alaw, _, to_ulaw, _ = self.codecs()
+        pcm = tone(440, 8000, seconds=0.02)
+        self.assertNotEqual(to_alaw(pcm).tobytes(), to_ulaw(pcm).tobytes())
+
+    def test_both_encoders_match_the_standard_byte_for_byte(self):
+        """Reference values for G.711, the only way to tell a codec that
+        is right from one that merely sounds like speech: the previous
+        mu-law encoder differed from these in 5% of samples, added half
+        again as much quantisation noise, and turned digital silence into
+        a constant 260."""
+        to_alaw, _, to_ulaw, _ = self.codecs()
+        samples = np.array([0, 1, -1, 8, -8, 100, -100, 1000, -1000,
+                            8000, -8000, 20000, -20000, 32767, -32768], dtype=np.int16)
+        expected_ulaw = [0xff, 0xff, 0x7e, 0xfe, 0x7e, 0xf2, 0x72, 0xce, 0x4e,
+                         0xa0, 0x20, 0x8c, 0x0c, 0x80, 0x00]
+        expected_alaw = [0xd5, 0xd5, 0x55, 0xd5, 0x55, 0xd3, 0x53, 0xfa, 0x7a,
+                         0x8a, 0x0a, 0xa6, 0x26, 0xaa, 0x2a]
+        self.assertEqual(list(to_ulaw(samples)), expected_ulaw)
+        self.assertEqual(list(to_alaw(samples)), expected_alaw)
+
+    def test_silence_stays_silent(self):
+        """A codec that encodes zero as anything but its own idea of zero
+        sends a constant offset down the line for every quiet moment."""
+        to_alaw, from_alaw, to_ulaw, from_ulaw = self.codecs()
+        silence = np.zeros(160, dtype=np.int16)
+        self.assertEqual(int(np.abs(from_ulaw(to_ulaw(silence))).max()), 0)
+        self.assertLessEqual(int(np.abs(from_alaw(to_alaw(silence))).max()), 8)
+
+
+@needs_media_stack
 class StreamResamplerTest(unittest.TestCase):
     """A call does not arrive as one array but as a packet every 20ms, and
     resampling each packet on its own is not the same operation as

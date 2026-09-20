@@ -25,8 +25,8 @@ from payload_types import PT_PCMU
 from rtp import RtpSession
 from sip_messages import (VALID_NUMBER, digest_response, extract_contact_uri,
                           parse_auth_challenge, parse_sip_headers)
-from sip_sdp import (answer_sdp, choose_payload_type, extract_sip_body,
-                     offer_sdp, parse_offered_payload_types,
+from sip_sdp import (SUPPORTED, answer_sdp, choose_payload_type,
+                     extract_sip_body, offer_sdp, parse_offered_payload_types,
                      parse_sdp_media_address)
 
 
@@ -107,6 +107,17 @@ class CallManager:
             to_tag = self.call["to_tag"]
             call_id = self.call["call_id"]
             payload_type = choose_payload_type(self.call.get("offered_pts") or [])
+            if payload_type is None:
+                # Answering with a codec the caller never offered gives a
+                # call that connects and carries nothing, with no error to
+                # see. Refusing says what happened, to them and to us.
+                offered = self.call.get("offered_pts") or []
+                print(f"[call:{line.id}] No codec in common for {call_id} - "
+                      f"caller offered {offered}, this bridge speaks {list(SUPPORTED)}")
+                self._send_response("488 Not Acceptable Here", headers, remote_addr,
+                                    to_tag=to_tag)
+                self.call = None
+                return False
             rtp = self._new_rtp_session(payload_type)
             self.call["status"] = "connected"
             self.call["rtp"] = rtp
