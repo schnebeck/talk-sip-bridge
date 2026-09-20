@@ -217,9 +217,17 @@ class HardwareScriptTest(unittest.TestCase):
                 self.assertNotIn("/opt/talk-sip-bridge", script.read_text())
 
     def test_each_of_them_honours_bridge_code(self):
+        """Whoever loads the bridge's modules has to be told which copy.
+        A script that loads none - a probe that speaks nothing but UDP,
+        and runs on a host where the bridge is not installed - has
+        nothing to point at, and saying so is the condition here: put a
+        path on sys.path, and it comes from BRIDGE_CODE."""
         for script in self.scripts():
+            source = script.read_text()
+            if "sys.path.insert" not in source:
+                continue
             with self.subTest(script=script.name):
-                self.assertIn("BRIDGE_CODE", script.read_text())
+                self.assertIn("BRIDGE_CODE", source)
 
 
 class SubscriptionWiringTest(unittest.TestCase):

@@ -100,18 +100,21 @@ class CallMedia:
         """Builds the subscribing connection. Audio only starts flowing when
         a track arrives, which is the first positive evidence that anything
         reaches the phone at all - everything before it is negotiation."""
-        self.subscriber = RTCPeerConnection(NO_ICE_SERVERS)
+        subscriber = RTCPeerConnection(NO_ICE_SERVERS)
+        self.subscriber = subscriber
         self.human_sessionid = human_sessionid
         self.offer_arrived = self.offer_arrived or asyncio.Event()
         self.subscriber_receiving = False
         self._answered_an_offer = False
         self._on_receiving = on_receiving
 
-        @self.subscriber.on("connectionstatechange")
+        @subscriber.on("connectionstatechange")
         async def on_subscriber_state():
-            # Only the publisher was watched, which is the direction that
-            # has never been the problem.
-            print(f"[talk] Subscriber connection state: {self.subscriber.connectionState}")
+            # The connection this handler belongs to, not whichever one
+            # is current: a subscription that is replaced or closed still
+            # reports its last states, and reading them off the call
+            # would ask a connection that is already gone.
+            print(f"[talk] Subscriber connection state: {subscriber.connectionState}")
 
         @self.subscriber.on("track")
         def on_track(track):
