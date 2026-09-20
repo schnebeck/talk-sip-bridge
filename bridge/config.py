@@ -131,6 +131,17 @@ class LineConfig:
         # the number who is being called.
         self.conference_numbers = [n.strip() for n in (env("CONFERENCE_NUMBERS", "") or "").split(",")
                                    if n.strip()]
+        # Who may reach the conference numbers: a regex the caller's own
+        # number must fully match, empty for anybody. On a line whose
+        # number also rings a person's phone this is what keeps the two
+        # apart - "^\*\*[0-9]+$" admits the gateway's own extensions and
+        # leaves every external call ringing as before.
+        self.conference_callers = env("CONFERENCE_CALLERS", "")
+        try:
+            re.compile(self.conference_callers)
+        except re.error as e:
+            raise RuntimeError(f"{env_prefix}CONFERENCE_CALLERS is not a valid regex: {e}")
+
         both = sorted(set(self.conference_numbers) & set(self.dialin_numbers))
         if both:
             raise RuntimeError(f"{env_prefix}CONFERENCE_NUMBERS and {env_prefix}DIALIN_NUMBERS "

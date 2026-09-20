@@ -36,8 +36,12 @@ class Call:
     # several, and what a call may do depends on which was dialled.
     number_dialled: str = ""
     # A conference call knows no room when it is answered: the caller is
-    # asked for one. The dialogue lives here while it runs, because the
-    # keys arrive from the SIP side and have to reach it.
+    # asked for one. Decided when the call arrives and kept here, because
+    # answering reaches the connected callback before the decision could
+    # be made a second time.
+    awaits_meeting_id: bool = False
+    # The dialogue itself while it runs - the keys arrive from the SIP
+    # side and have to reach it.
     ivr: object = None
 
     # -- ringing in Talk, before anyone has answered ---------------------

@@ -57,6 +57,7 @@ class StubLine:
         self.relay_overlay_port = 40001
         self.dialin_numbers = {}
         self.conference_numbers = []
+        self.conference_callers = ""
         self.dialout_number_allowlist = ""
         self.dialout_strip_prefix = ""
         self.dialout_internal_dial_prefix = ""

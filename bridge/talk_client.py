@@ -53,6 +53,31 @@ def _sip_display_name(from_header: str) -> str:
     return from_header.split(";")[0].strip()
 
 
+def _sip_caller_number(from_header: str) -> str:
+    """The number a call came from, taken from the SIP URI rather than
+    the display name in front of it: a gateway's own handset announces
+    itself as "FritzFon", which is nobody's number."""
+    uri_user = re.search(r"sips?:([^@;>]+)@", from_header)
+    return uri_user.group(1) if uri_user else _sip_display_name(from_header)
+
+
+def is_conference_call(line, dialled: str, caller: str) -> bool:
+    """Whether this call is one the caller gets to choose a conversation
+    for - which is also a call the bridge answers by itself.
+
+    Two conditions, and the second exists for a line that carries one
+    number for everything. A conference number there is also the number
+    somebody's own phone rings on, and answering every call to it would
+    take their calls away; restricting it by who is calling leaves
+    external calls ringing exactly as before while the gateway's own
+    extensions reach the dialogue."""
+    if dialled not in line.conference_numbers:
+        return False
+    if not line.conference_callers:
+        return True
+    return bool(re.fullmatch(line.conference_callers, _sip_caller_number(caller)))
+
+
 def _run_coro_logged(coro, loop, label: str):
     """asyncio.run_coroutine_threadsafe() returns a concurrent.futures.Future
     whose exception is silently dropped unless something calls .result() on
@@ -560,9 +585,7 @@ class TalkClient:
             entry = self._call_sessions.get(call_id)
             number = entry.number if entry else ""
             human_sessionid_hint = entry.accepted_sessionid if entry else None
-            ask_for_a_room = bool(entry and entry.kind == INBOUND
-                                  and not entry.roomid and entry.dialin_actor is None
-                                  and self._is_conference_call(entry))
+            ask_for_a_room = bool(entry and entry.awaits_meeting_id and not entry.roomid)
         roomid = self._entry_roomid(call_id)
 
         async def _connected():
@@ -605,9 +628,22 @@ class TalkClient:
         # group, racing the physical phones. A line with neither just rings
         # unnoticed by Talk, same as any other registered phone nobody
         # happens to pick up.
+        conference = is_conference_call(self.call_manager.line, dialled, caller)
         with self._call_sessions_lock:
             self._call_sessions[call_id] = Call(sip_call_id=call_id, kind=INBOUND, number=caller,
-                                                number_dialled=dialled)
+                                                number_dialled=dialled,
+                                                awaits_meeting_id=conference)
+        if conference:
+            # Nothing to ring and nobody to ask: the number belongs to the
+            # bridge and to no one person, so the call is answered and the
+            # caller is asked which conversation they want once the audio
+            # is up (see _ask_which_room). This is decided here rather
+            # than twice, because answering below reaches the connected
+            # callback before this method returns.
+            print(f"[talk] Answering {call_id} on conference number {dialled} "
+                  f"- the caller will be asked for a meeting id")
+            self.call_manager.answer()
+            return
         if config.auto_answer_calls:
             print(f"[talk] Incoming call {call_id} from {caller} - answering with real audio")
             self.call_manager.answer()
@@ -649,9 +685,6 @@ class TalkClient:
         if not (actor["actorType"] and actor["actorId"]):
             return room["token"], None
         return room["token"], actor
-
-    def _is_conference_call(self, entry) -> bool:
-        return entry.number_dialled in self.call_manager.line.conference_numbers
 
     async def _ask_which_room(self, call_id: str, rtp) -> str:
         """Runs the dialogue that decides where this call goes.
@@ -712,16 +745,6 @@ class TalkClient:
         answered within a second was never noticed and the phone rang
         out."""
         line = self.call_manager.line
-        if dialled in line.conference_numbers:
-            # A conference number belongs to the bridge and to nobody in
-            # particular, so there is nothing to ring and nobody to ask:
-            # the call is answered, and which conversation it joins is the
-            # caller's own answer once they hear the prompt (see
-            # _ask_which_room, run when the audio is up).
-            print(f"[talk] Answering {call_id} on conference number {dialled} "
-                  f"- the caller will be asked for a meeting id")
-            self.call_manager.answer()
-            return
         roomid, dialin = await self._room_for_inbound_call(line, caller, dialled)
         if dialin:
             with self._call_sessions_lock:

@@ -153,6 +153,64 @@ class MappingTest(unittest.TestCase):
 
 
 @needs_media_stack
+class ConferenceNumberTest(unittest.TestCase):
+    """Which calls are asked for a meeting id - and, on a line whose
+    number also rings a person's phone, which are not."""
+
+    def is_conference(self, caller, dialled="**621", **line_settings):
+        import talk_client
+        line = StubLine(conference_numbers=["**621"], **line_settings)
+        return talk_client.is_conference_call(line, dialled, caller)
+
+    def test_a_conference_number_is_one_without_a_restriction(self):
+        self.assertTrue(self.is_conference('"A Caller" <sip:+4930999@gw>'))
+
+    def test_another_number_on_the_same_line_never_is(self):
+        self.assertFalse(self.is_conference('<sip:+4930999@gw>', dialled="**622"))
+
+    def test_a_restriction_keeps_outside_callers_out(self):
+        """The reason it exists: this gateway delivers one number to
+        everything, so a conference number is also the number somebody's
+        own phone rings on. An outside call has to keep ringing."""
+        self.assertFalse(self.is_conference('"Somebody" <sip:+4930999@gw>',
+                                            conference_callers=r"\*\*[0-9]+"))
+
+    def test_and_lets_the_gateways_own_extensions_in(self):
+        self.assertTrue(self.is_conference('"FritzFon" <sip:**611@fritz.box>;tag=x',
+                                           conference_callers=r"\*\*[0-9]+"))
+
+    def test_the_number_decides_not_the_name_the_gateway_puts_on_it(self):
+        """A handset announces itself as "FritzFon", which is nobody's
+        number - matching against that would let any caller whose display
+        name happens to fit straight in."""
+        self.assertFalse(self.is_conference('"**611" <sip:+4930999@gw>',
+                                            conference_callers=r"\*\*[0-9]+"))
+
+    def test_a_partial_match_is_not_a_match(self):
+        self.assertFalse(self.is_conference('<sip:**611999@gw>',
+                                            conference_callers=r"\*\*[0-9]{3}"))
+
+
+class ConferenceConfigTest(unittest.TestCase):
+    def test_a_number_cannot_be_both_kinds_at_once(self):
+        with self.assertRaises(RuntimeError):
+            with env(BRIDGE_CONFERENCE_NUMBERS="**621",
+                     BRIDGE_DIALIN_NUMBERS="**621=4930621"):
+                pass
+
+    def test_an_unusable_restriction_is_refused_at_startup(self):
+        """Rather than at the first call, where it would look like the
+        caller's fault."""
+        with self.assertRaises(RuntimeError):
+            with env(BRIDGE_CONFERENCE_NUMBERS="**621", BRIDGE_CONFERENCE_CALLERS="[unclosed"):
+                pass
+
+    def test_the_numbers_are_a_plain_list(self):
+        with env(BRIDGE_CONFERENCE_NUMBERS=" **900, **901 ") as configured:
+            self.assertEqual(configured.lines[0].conference_numbers, ["**900", "**901"])
+
+
+@needs_media_stack
 class InboundRoutingTest(unittest.TestCase):
     """Where an incoming call goes, decided by the number it was placed
     to. The line in this deployment carries a person's own number as well
