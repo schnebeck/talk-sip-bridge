@@ -1,35 +1,78 @@
-# RTP relay
+# Relay host
 
-Runs on a host with a foot in two networks - the phone gateway's LAN and
-the network the bridge runs in - and forwards media packets between them.
+Needed only when the phone gateway cannot reach the bridge directly — for
+example a FritzBox behind CGNAT, reachable from the bridge host only across a
+VPN overlay. The relay host has a foot in both networks: the gateway's LAN and
+the network the bridge runs in. If the gateway is directly reachable, none of
+this is needed and the bridge registers against it without a second host.
 
-The gateway only ever addresses hosts on its own LAN. When the bridge lives
-elsewhere (in this deployment: across an OpenVPN overlay, where the gateway
-is reachable only through this same host), the gateway cannot send RTP to
-the bridge directly. SIP signaling has the same problem and is solved by a
-SIP proxy on this host; this relay is the equivalent for the media.
+Two independent components run here, one per plane:
 
-Packets are forwarded verbatim. Each side's endpoint is learned from the
-first packet seen from that side, so no SDP is parsed and no call state is
-tracked.
+| Plane | Component | Why |
+|---|---|---|
+| Signaling | Kamailio, `kamailio.cfg.example` | Bridges the two networks **and** converts UDP to TCP |
+| Media | `rtp_relay.py` + `rtp-relay.service` | Forwards RTP; the gateway only ever addresses hosts on its own LAN |
 
-## Pipes, and why their number is the limit on concurrent calls
+On the bridge side this is pure configuration: `BRIDGE_PROXY_HOST`/`_PORT` point
+at Kamailio's overlay socket, `BRIDGE_CONTACT_HOST`/`_PORT` at its LAN socket
+(the address the gateway sends calls to), and `BRIDGE_RELAY_*` name the media
+pipe. See `../docs/CONFIG.md`.
 
-A *pipe* is a pair of ports, one on each side, and holds exactly one
-endpoint per side. Two calls sharing a pipe would overwrite each other's
-endpoint, and each side would receive the other call's audio. One pipe
-therefore carries one call: configure as many as should be possible at
-once, and give each SIP line its own.
+## Gateway behavior this accounts for
 
-A pipe forgets its endpoints after `RTP_RELAY_IDLE_SECONDS` without
-traffic, which is what frees it for the next call.
+Observed on the FritzBox this is deployed against, and both failure modes are
+**silent** — no response, no SIP error code:
+
+- **The internal SIP registrar accepts TCP only.** UDP requests are dropped.
+- **Registration requires the SIP username** (e.g. `sip-phone`) in the
+  To/From/Request-URI, not the internal extension number (e.g. `621`).
+
+The bridge's own SIP stack speaks UDP, which is what makes the transport
+conversion below necessary rather than a plain packet forwarder.
+
+## Kamailio: SIP across the networks, UDP to TCP
+
+Stock Debian `kamailio.service`, no automation of its own. Config:
+[`kamailio.cfg.example`](./kamailio.cfg.example) → `/etc/kamailio/kamailio.cfg`
+(addresses in it are this deployment's; adjust for another).
+
+It is a stateful proxy, not a packet forwarder: it terminates the UDP leg and
+re-originates on TCP, stacking its own `Via` so responses find their way back.
+Requests from the gateway go to the bridge, everything else to the gateway.
+
+Three details that are load-bearing:
+
+- **The LAN-side `listen=tcp:<lan ip>:5070` socket is required.** Without it
+  Kamailio has no matching socket for the outbound TCP connection and the
+  request is lost silently.
+- **The `pv` module must be loaded.** `$du`/`$dst_uri` are core pseudo-variables
+  but ship as a separate module in Kamailio 6.x, and are unusable without it.
+- **The return route is static** (`$du = "sip:<bridge>:<port>"`), so exactly one
+  bridge line can receive inbound calls through this relay. Serving several
+  lines needs routing by request URI or by target port instead.
+
+## RTP relay: media across the networks
+
+Packets are forwarded verbatim. Each side's endpoint is learned from the first
+packet seen from that side, so no SDP is parsed and no call state is tracked.
+
+### Pipes, and why their number is the limit on concurrent calls
+
+A *pipe* is a pair of ports, one on each side, and holds exactly one endpoint
+per side. Two calls sharing a pipe would overwrite each other's endpoint, and
+each side would receive the other call's audio. One pipe therefore carries one
+call: configure as many as should be possible at once, and give each SIP line
+its own.
+
+A pipe forgets its endpoints after `RTP_RELAY_IDLE_SECONDS` without traffic,
+which is what frees it for the next call.
 
 Which pipe a line uses is decided on the bridge side: a line's
-`RELAY_LAN_HOST`/`RELAY_LAN_PORT` is the LAN end of its pipe (this is what
-goes into the SDP the gateway sees), and `RELAY_OVERLAY_HOST`/
-`RELAY_OVERLAY_PORT` is the other end (where that line's RTP is sent).
+`RELAY_LAN_HOST`/`RELAY_LAN_PORT` is the LAN end of its pipe (this is what goes
+into the SDP the gateway sees), and `RELAY_OVERLAY_HOST`/`RELAY_OVERLAY_PORT`
+is the other end (where that line's RTP is sent).
 
-## Configuration
+### Configuration
 
 Environment file, see `env.example`:
 
@@ -42,6 +85,17 @@ Environment file, see `env.example`:
 | `RTP_RELAY_OVERLAY_PEERS` | The same for the overlay side. |
 | `RTP_RELAY_IDLE_SECONDS` | How long a pipe keeps learned endpoints before it is free again. |
 
+## Routing prerequisites
+
+IP reachability between the bridge host and the gateway is not part of either
+component:
+
+- A host route to the gateway via this relay on the bridge host, persisted with
+  the VPN configuration (an OpenVPN `route` directive, for instance).
+- On an OpenVPN server, the relay client's `client-config-dir` entry needs a
+  matching `iroute` — without it OpenVPN does not know the subnet is reachable
+  through that client even when the kernel route is correct.
+
 ## Install
 
 ```
@@ -51,10 +105,14 @@ install -m 0600 env.example /etc/rtp-relay/env      # then edit
 install -m 0644 rtp-relay.service /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now rtp-relay
+
+apt install kamailio
+install -m 0644 kamailio.cfg.example /etc/kamailio/kamailio.cfg   # then edit
+systemctl enable --now kamailio
 ```
 
-The unit runs under `DynamicUser` with no capabilities and a read-only
-system; it only needs UDP sockets. Without it running, calls still ring and
-are answered - they are simply silent in both directions, with nothing in
-the bridge's own log to say why, which is why it belongs in a service unit
+The RTP relay's unit runs under `DynamicUser` with no capabilities and a
+read-only system; it only needs UDP sockets. Without it running, calls still
+ring and are answered - they are simply silent in both directions, with nothing
+in the bridge's own log to say why, which is why it belongs in a service unit
 rather than being started by hand.

@@ -9,6 +9,10 @@ bridge protocol.
 
 ## Reference
 
+[`SIGNALING-API.md`](./SIGNALING-API.md) describes the interface itself - message
+shapes, flags, events, the OCS endpoints, and which parts are undocumented
+upstream. This document covers what this bridge does with it and why.
+
 Protocol: https://nextcloud-spreed-signaling.readthedocs.io/en/latest/standalone-signaling-api-v1/
 ("Internal clients", "Dialout session", "Start dialout from a room",
 "Add/update/remove virtual session" sections).
@@ -80,7 +84,7 @@ production `spreed` app config only, not written down here). The native
      for how a real, syntactically valid number gets mapped back to the
      gateway's own internal-extension dial notation.
 3. **Virtual sessions for calls.** Each phone call is represented as its own
-   session via `addsession`/`updatesession`/`removesession`, with
+   session via `addsession`/`removesession`, with
    `user.type = "phone"`, `callid`, and `number` - so a caller shows up as a
    real, named participant, and dialout status/hangup can be correlated by
    call id. It is a name plate only: in MCU mode a virtual session can never
