@@ -18,6 +18,7 @@ import sys
 sys.path.insert(0, os.environ.get("BRIDGE_CODE")
                 or str(pathlib.Path(__file__).resolve().parent.parent.parent / "bridge"))
 
+from call import INBOUND, Call
 import asyncio
 import hashlib
 import hmac
@@ -216,7 +217,7 @@ async def main():
         # Register the call the way on_incoming_call does: publishing stops
         # as soon as this entry is gone, which is how a torn-down call
         # aborts a publish that is still gathering ICE.
-        client._call_sessions["test-call-1"] = {"kind": "test", "number": "loopback-test"}
+        client._call_sessions["test-call-1"] = Call(sip_call_id="test-call-1", kind=INBOUND, number="loopback-test")
         publish_task = asyncio.ensure_future(client._publish_call_audio("test-call-1", receiver, roomid, "loopback-test"))
         await asyncio.sleep(1.5)  # a head start; verify() keeps re-requesting until the publisher exists
 

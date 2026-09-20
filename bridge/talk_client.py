@@ -28,6 +28,7 @@ import websockets
 from aiortc import RTCConfiguration, RTCIceCandidate, RTCPeerConnection, RTCSessionDescription
 
 import talk_ocs
+from call import DIALOUT, INBOUND, Call
 from config import config
 from media import SipAudioTrack, frame_to_mono_pcm, resample_linear
 from room_state import FLAG_IN_CALL, RoomCallState, is_room_wide_call_end
@@ -104,7 +105,7 @@ class TalkClient:
         self.ws = None
         self.own_sessionid = None
         self.loop = None
-        self._call_sessions = {}  # sip call_id -> {"virtual_sessionid", "pc"}
+        self._call_sessions = {}  # sip call_id -> Call
         self._call_sessions_lock = threading.Lock()  # entries are written from both the asyncio loop and SIP worker threads
         self._room_joined_event = asyncio.Event()
         self._room_roster = {}  # room sessionid -> {"is_human": bool} - who else is in the room, for subscribing to their audio
@@ -221,7 +222,7 @@ class TalkClient:
                     with self._call_sessions_lock:
                         entry = self._call_sessions.get(call_id)
                         if entry is not None:
-                            entry["virtual_room_sessionid"] = sessionid
+                            entry.virtual_room_sessionid = sessionid
 
     async def _handle_dialout(self, msg: dict):
         """Talk's native "call a phone number" UI triggers this. The
@@ -241,7 +242,8 @@ class TalkClient:
             return
         call_id = result["call_id"]
         with self._call_sessions_lock:
-            self._call_sessions[call_id] = {"kind": "dialout", "number": number, "roomid": roomid}
+            self._call_sessions[call_id] = Call(sip_call_id=call_id, kind=DIALOUT,
+                                                number=number, roomid=roomid)
         # The signaling server expects an "accepted" status synchronously
         # (within a fixed timeout) - actual ring/connect progress is
         # reported later via separate, unsolicited status updates.
@@ -270,11 +272,11 @@ class TalkClient:
         sender_sessionid = message.get("sender", {}).get("sessionid")
         with self._call_sessions_lock:
             for matched_entry in self._call_sessions.values():
-                if matched_entry.get("ws_peer_sessionid") == sender_sessionid and "pc" in matched_entry:
-                    pc, peer, is_subscriber = matched_entry["pc"], self.own_sessionid, False
+                if matched_entry.publisher_peer_sessionid == sender_sessionid and matched_entry.publisher:
+                    pc, peer, is_subscriber = matched_entry.publisher, self.own_sessionid, False
                     break
-                if matched_entry.get("human_sessionid") == sender_sessionid and "sub_pc" in matched_entry:
-                    pc, peer, is_subscriber = matched_entry["sub_pc"], sender_sessionid, True
+                if matched_entry.human_sessionid == sender_sessionid and matched_entry.subscriber:
+                    pc, peer, is_subscriber = matched_entry.subscriber, sender_sessionid, True
                     break
             else:
                 print(f"[talk] DEBUG unmatched webrtc message from sender={sender_sessionid} data.type={data.get('type')}")
@@ -290,7 +292,7 @@ class TalkClient:
             # requestoffer (see _subscribe_human_audio) - we answer it, and
             # stop the retry loop that was covering the case where the other
             # side had no publisher yet.
-            offer_event = matched_entry.get("sub_offer_event")
+            offer_event = matched_entry.subscriber_offer
             if offer_event is not None:
                 if offer_event.is_set():
                     return  # already negotiated; a late duplicate offer would reset the connection
@@ -334,12 +336,10 @@ class TalkClient:
             waiting_call_id = None
             waiting_entry = None
             for call_id, entry in self._call_sessions.items():
-                for key in ("virtual_sessionid", "virtual_room_sessionid", "talk_ring_sessionid"):
-                    if entry.get(key):
-                        ours.add(entry[key])
-                if "pc" in entry:
+                ours |= entry.own_session_ids()
+                if entry.is_publishing:
                     active_call_id = call_id
-                elif entry.get("waiting_for_accept"):
+                elif entry.waiting_for_accept:
                     waiting_call_id = call_id
                     waiting_entry = entry
         if active_call_id is None and waiting_call_id is None:
@@ -353,13 +353,13 @@ class TalkClient:
             with self._call_sessions_lock:
                 entry = self._call_sessions.get(waiting_call_id)
                 if entry is not None:
-                    entry["waiting_for_accept"] = False  # avoid double-triggering answer()
+                    entry.waiting_for_accept = False  # avoid double-triggering answer()
                     # Whose audio to subscribe to: the session that just
                     # joined, rather than whatever the room roster offers -
                     # that can still hold sessions which dropped without a
                     # "leave", and asking one of those for its audio fails
                     # with client_not_found.
-                    entry["accepted_sessionid"] = accepted_sessionid
+                    entry.accepted_sessionid = accepted_sessionid
             # Answer first: everything the caller hears from here on waits
             # on this, and stopping the ring costs two OCS round trips that
             # have nothing to do with the phone line. A failure here must
@@ -371,7 +371,7 @@ class TalkClient:
             except Exception as e:
                 print(f"[talk] Answering {waiting_call_id} failed: {e!r}")
                 traceback.print_exc()
-            opener = waiting_entry.get("talk_ring_opener")
+            opener = waiting_entry.talk_ring_opener
             if opener is not None:
                 _run_coro_logged(
                     self._stop_talk_ring(self._entry_roomid(waiting_call_id), opener, self.call_manager.line),
@@ -542,14 +542,14 @@ class TalkClient:
             # says the call is over, and recreating it here would hide that.
             entry = self._call_sessions.get(sip_call_id)
             if entry is not None:
-                entry["virtual_sessionid"] = virtual_sessionid
-                entry["pc"] = pc
+                entry.virtual_sessionid = virtual_sessionid
+                entry.publisher = pc
             # The offer is addressed to our OWN session, not the virtual
             # one - a virtual session (addsession) only represents the call
             # in the participant list, it has no real client attached that
             # could answer a WebRTC offer. Publishing as ourselves is what
             # makes the signaling server/Janus generate the SDP answer.
-            entry["ws_peer_sessionid"] = self.own_sessionid
+            entry.publisher_peer_sessionid = self.own_sessionid
 
         offer = await pc.createOffer()
         await pc.setLocalDescription(offer)
@@ -629,20 +629,21 @@ class TalkClient:
             with self._call_sessions_lock:
                 entry = self._call_sessions.get(sip_call_id)
                 if entry is not None:
-                    entry["relay_task"] = task
+                    entry.relay_task = task
 
         offer_received = asyncio.Event()
         with self._call_sessions_lock:
             entry = self._call_sessions.get(sip_call_id)
             if entry is None:
                 return  # call already ended
-            entry["sub_pc"] = sub_pc
-            entry["human_sessionid"] = human_sessionid
-            entry["sub_offer_event"] = offer_received
+            entry.subscriber = sub_pc
+            entry.human_sessionid = human_sessionid
+            entry.subscriber_offer = offer_received
 
         for attempt in range(SUBSCRIBE_MAX_ATTEMPTS):
             with self._call_sessions_lock:
-                still_current = self._call_sessions.get(sip_call_id, {}).get("sub_pc") is sub_pc
+                current = self._call_sessions.get(sip_call_id)
+                still_current = current is not None and current.subscriber is sub_pc
             if not still_current:
                 return  # call ended, or a newer subscription replaced this one
             try:
@@ -685,29 +686,29 @@ class TalkClient:
             entry = self._call_sessions.pop(sip_call_id, None)
         if not entry:
             return
-        if entry.get("waiting_for_accept") and entry.get("talk_ring_opener") is not None:
+        if entry.waiting_for_accept and entry.talk_ring_opener is not None:
             # The call ended (cancelled - a physical phone in the same
             # parallel ring group answered first, or the caller hung up)
             # before a human joined it in Talk - leave the ring-trigger call/
             # room session, nothing else to publish/remove.
-            await self._stop_talk_ring(roomid, entry["talk_ring_opener"], self.call_manager.line)
-        if "relay_task" in entry:
-            entry["relay_task"].cancel()
-        if "sub_pc" in entry:
-            await entry["sub_pc"].close()
-        if "pc" in entry:
-            await entry["pc"].close()
-        if "virtual_sessionid" in entry:
-            await self._remove_virtual_session(entry["virtual_sessionid"], roomid)
-        if "pc" in entry:
+            await self._stop_talk_ring(roomid, entry.talk_ring_opener, self.call_manager.line)
+        if entry.relay_task:
+            entry.relay_task.cancel()
+        if entry.subscriber:
+            await entry.subscriber.close()
+        if entry.publisher:
+            await entry.publisher.close()
+        if entry.virtual_sessionid:
+            await self._remove_virtual_session(entry.virtual_sessionid, roomid)
+        if entry.is_publishing:
             # The publisher is gone, so stop advertising audio - otherwise
             # Talk clients keep asking this session for a stream that no
             # longer exists.
             await self._set_incall(0)
-        if entry.get("kind") == "dialout":
+        if entry.kind == DIALOUT:
             await self._send_dialout_status(sip_call_id, roomid, "cleared")
         print(f"[talk] Call {sip_call_id} ended, virtual session removed")
-        if entry.get("talk_ring_opener") is not None and not entry.get("waiting_for_accept"):
+        if entry.talk_ring_opener is not None and not entry.waiting_for_accept:
             # This bridge started the room's call for this phone call and
             # somebody answered it, so it ends with the phone call too -
             # see talk_ocs.end_room_call for what being left in it does.
@@ -716,7 +717,7 @@ class TalkClient:
             line = self.call_manager.line
             await asyncio.to_thread(talk_ocs.end_room_call, roomid,
                                     line.notify_user, line.notify_app_password)
-        if "pc" in entry or entry.get("waiting_for_accept"):
+        if entry.is_publishing or entry.waiting_for_accept:
             # The signaling server permanently drops a "start-dialout"
             # session from its dialout candidates the moment it joins any
             # room (confirmed in its own source - there is no code path
@@ -733,14 +734,15 @@ class TalkClient:
         # protocol - this line's own configured default room is the only
         # option there.
         with self._call_sessions_lock:
-            return self._call_sessions.get(call_id, {}).get("roomid") or self.call_manager.line.default_room_token
+            entry = self._call_sessions.get(call_id)
+            return (entry.roomid if entry else "") or self.call_manager.line.default_room_token
 
     # -- thread-safe entry points for sip_call.CallManager callbacks ------
     def on_call_connected(self, *, call_id, direction, rtp):
         with self._call_sessions_lock:
-            entry = self._call_sessions.get(call_id, {})
-            number = entry.get("number", "")
-            human_sessionid_hint = entry.get("accepted_sessionid")
+            entry = self._call_sessions.get(call_id)
+            number = entry.number if entry else ""
+            human_sessionid_hint = entry.accepted_sessionid if entry else None
         roomid = self._entry_roomid(call_id)
 
         async def _connected():
@@ -772,7 +774,7 @@ class TalkClient:
         # unnoticed by Talk, same as any other registered phone nobody
         # happens to pick up.
         with self._call_sessions_lock:
-            self._call_sessions[call_id] = {"kind": "inbound", "number": caller}
+            self._call_sessions[call_id] = Call(sip_call_id=call_id, kind=INBOUND, number=caller)
         if config.auto_answer_calls:
             print(f"[talk] Incoming call {call_id} from {caller} - answering with real audio")
             self.call_manager.answer()
@@ -813,7 +815,7 @@ class TalkClient:
             entry = self._call_sessions.get(call_id)
             if entry is None:
                 return  # the caller gave up while the room was being joined
-            entry["waiting_for_accept"] = True
+            entry.waiting_for_accept = True
 
         opener, ring_sessionid = await asyncio.to_thread(
             talk_ocs.start_ring, roomid, line.notify_user, line.notify_app_password)
@@ -821,14 +823,14 @@ class TalkClient:
             with self._call_sessions_lock:
                 entry = self._call_sessions.get(call_id)
                 if entry is not None:
-                    entry["waiting_for_accept"] = False
+                    entry.waiting_for_accept = False
             return
 
         with self._call_sessions_lock:
             entry = self._call_sessions.get(call_id)
             if entry is not None:
-                entry["talk_ring_opener"] = opener
-                entry["talk_ring_sessionid"] = ring_sessionid
+                entry.talk_ring_opener = opener
+                entry.talk_ring_sessionid = ring_sessionid
         print(f"[talk] Ringing {line.notify_user} for call {call_id} from {caller}, watching room {roomid} for accept")
 
     async def _stop_talk_ring(self, roomid: str, opener, line):

@@ -31,6 +31,7 @@ import sys
 sys.path.insert(0, os.environ.get("BRIDGE_CODE")
                 or str(pathlib.Path(__file__).resolve().parent.parent.parent / "bridge"))
 
+from call import INBOUND, Call
 import asyncio
 import json
 import sys
@@ -200,7 +201,7 @@ async def main():
         client.loop = asyncio.get_event_loop()
         await client._hello()
         loop_task = asyncio.ensure_future(client._message_loop())
-        client._call_sessions["quality-test"] = {"kind": "test", "number": "quality-test"}
+        client._call_sessions["quality-test"] = Call(sip_call_id="quality-test", kind=INBOUND, number="quality-test")
         publish = asyncio.ensure_future(
             client._publish_call_audio("quality-test", receiver, roomid, "quality-test"))
         await asyncio.sleep(2)
