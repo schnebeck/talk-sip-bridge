@@ -135,6 +135,8 @@ component:
 
 ## Install
 
+Media, always:
+
 ```
 install -d /opt/rtp-relay /etc/rtp-relay
 install -m 0644 rtp_relay.py /opt/rtp-relay/
@@ -142,7 +144,23 @@ install -m 0600 env.example /etc/rtp-relay/env      # then edit
 install -m 0644 rtp-relay.service /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now rtp-relay
+```
 
+Signaling, for a bridge speaking the gateway's own transport:
+
+```
+install -d /opt/sip-pipe /etc/sip-pipe
+install -m 0644 sip_pipe.py /opt/sip-pipe/
+install -m 0600 sip-pipe.env.example /etc/sip-pipe/env     # then edit
+install -m 0644 sip-pipe.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now sip-pipe
+```
+
+Signaling, for a bridge on UDP against a TCP-only gateway - instead of the
+pipe, never alongside it, since both want the same port:
+
+```
 apt install kamailio
 install -m 0644 kamailio.cfg.example /etc/kamailio/kamailio.cfg   # then edit
 systemctl enable --now kamailio

@@ -255,7 +255,7 @@ def run_call(watcher: Ocs, password: str, bystanders: bool, sip_port: int, rtp_p
         registrar.turn_off()
         # SipTransport holds the line's SIP port for as long as it lives, and
         # the next run needs it back.
-        transport.sock.close()
+        transport.close()
         time.sleep(2)
     return ok
 

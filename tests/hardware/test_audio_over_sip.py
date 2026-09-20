@@ -158,7 +158,7 @@ async def main():
         except Exception:
             pass
         registrar.turn_off()
-        transport.sock.close()
+        transport.close()
 
 
 def find_bridge_session():

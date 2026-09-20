@@ -63,5 +63,8 @@ should stay below the cost of the change it guards.
   (`bridge/test_publish_and_verify.py`).
 - `nextcloud-app/fritzboxbridge/` - admin settings page (status/toggle),
   installed and verified on the production Nextcloud instance.
+- `relay/` - for a gateway the bridge cannot reach directly: `sip_pipe.py`
+  carries SIP between the two networks and `rtp_relay.py` the media. Only
+  needed for that case; a directly reachable gateway needs neither.
 - Deployed as the primary bridge (`deploy/`), running as the
   `fritzbox-talk-bridge` systemd service.
