@@ -21,7 +21,8 @@ same tests would run over both.
 import pathlib
 import unittest
 
-from sip_messages import (content_length_of, dialled_number, extract_contact_uri,
+from sip_messages import (caller_display_name, caller_number, content_length_of,
+                          dialled_number, extract_contact_uri,
                           parse_auth_challenge, parse_sip_headers,
                           split_messages)
 from sip_sdp import (choose_payload_type, extract_sip_body,
@@ -52,6 +53,19 @@ class InboundInviteTest(unittest.TestCase):
     def test_the_caller_is_readable_from_the_from_header(self):
         self.assertIn("Handset", self.headers["from"])
         self.assertIn("sip:**611@fritz.box", self.headers["from"])
+
+    def test_the_callers_number_and_the_callers_name_are_not_the_same_string(self):
+        """A real gateway sends both, and they differ: the name is what
+        the owner typed into the box. Everything that asks for a number -
+        Nextcloud's dial-in endpoint, the phone participant's number
+        field, the rule saying who may use a conference number - has to
+        get **611, and only what is shown to people gets "Handset"."""
+        self.assertEqual(caller_number(self.headers["from"]), "**611")
+        self.assertEqual(caller_display_name(self.headers["from"]), "Handset")
+
+    def test_a_caller_without_a_display_name_still_has_a_number(self):
+        self.assertEqual(caller_number("<sip:+493012345@fritz.box>;tag=x"), "+493012345")
+        self.assertEqual(caller_display_name("<sip:+493012345@fritz.box>;tag=x"), "+493012345")
 
     def test_the_number_dialled_is_in_neither_the_request_uri_nor_to(self):
         """What the bridge is addressed as, twice: this gateway delivers

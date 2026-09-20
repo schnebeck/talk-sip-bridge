@@ -23,6 +23,7 @@ import traceback
 
 import websockets
 
+from sip_messages import caller_display_name, caller_number
 import talk_messages
 import talk_sip_bridge
 import talk_ocs
@@ -40,27 +41,6 @@ from talk_messages import FLAG_IN_CALL, FLAG_WITH_AUDIO
 SUBSCRIBE_RETRY_INTERVAL = 5
 SUBSCRIBE_MAX_ATTEMPTS = 6
 
-def _sip_display_name(from_header: str) -> str:
-    """Reduces a SIP From header to something usable as a participant name
-    in Talk - the caller's display name if it sent one, else the user part
-    of the SIP URI. A plain dialled number passes through unchanged."""
-    quoted = re.match(r'\s*"([^"]+)"', from_header)
-    if quoted:
-        return quoted.group(1)
-    uri_user = re.search(r"sip:([^@;>]+)", from_header)
-    if uri_user:
-        return uri_user.group(1)
-    return from_header.split(";")[0].strip()
-
-
-def _sip_caller_number(from_header: str) -> str:
-    """The number a call came from, taken from the SIP URI rather than
-    the display name in front of it: a gateway's own handset announces
-    itself as "FritzFon", which is nobody's number."""
-    uri_user = re.search(r"sips?:([^@;>]+)@", from_header)
-    return uri_user.group(1) if uri_user else _sip_display_name(from_header)
-
-
 def is_conference_call(line, dialled: str, caller: str) -> bool:
     """Whether this call is one the caller gets to choose a conversation
     for - which is also a call the bridge answers by itself.
@@ -75,7 +55,7 @@ def is_conference_call(line, dialled: str, caller: str) -> bool:
         return False
     if not line.conference_callers:
         return True
-    return bool(re.fullmatch(line.conference_callers, _sip_caller_number(caller)))
+    return bool(re.fullmatch(line.conference_callers, caller_number(caller)))
 
 
 def _run_coro_logged(coro, loop, label: str):
@@ -368,7 +348,8 @@ class TalkClient:
 
     # -- virtual session management (addsession/removesession) -----------
     async def _add_virtual_session(self, sip_call_id: str, *, roomid: str, number: str,
-                                   caller: bool, actor: dict = None) -> str:
+                                   displayname: str = "", caller: bool = True,
+                                   actor: dict = None) -> str:
         """Adds the phone participant Talk shows in the room. This is a
         name plate only: in MCU mode a virtual session can never carry
         media, because publishers exist exclusively under a real client
@@ -390,8 +371,8 @@ class TalkClient:
         virtual_sessionid = f"phone-{secrets.token_hex(8)}"
         with_audio = config.phone_participant == "audio"
         await self.ws.send(json.dumps(talk_messages.add_session(
-            virtual_sessionid, roomid, call_id=sip_call_id, number=number, displayname=number,
-            with_audio=with_audio, actor=actor)))
+            virtual_sessionid, roomid, call_id=sip_call_id, number=number,
+            displayname=displayname or number, with_audio=with_audio, actor=actor)))
         print(f"[talk] Phone participant {virtual_sessionid} announced "
               f"{'with' if with_audio else 'without'} audio"
               + (f", as {actor['actorType']}/{str(actor['actorId'])[:12]}" if actor
@@ -429,12 +410,13 @@ class TalkClient:
             print(f"[talk] {sip_call_id} ended before publishing started - nothing to publish")
             return
 
-        display_name = _sip_display_name(number)
+        display_name = caller_display_name(number)
         with self._call_sessions_lock:
             waiting = self._call_sessions.get(sip_call_id)
             actor = waiting.dialin_actor if waiting else None
         virtual_sessionid = await self._add_virtual_session(
-            sip_call_id, roomid=roomid, number=display_name, caller=True, actor=actor)
+            sip_call_id, roomid=roomid, number=caller_number(number),
+            displayname=display_name, caller=True, actor=actor)
 
         media = CallMedia(sip_call_id, rtp_session, on_connection_lost=self._hangup_sip)
         media.open_publisher(self.own_sessionid)
@@ -676,7 +658,10 @@ class TalkClient:
         if not (config.sip_shared_secret and number):
             return line.default_room_token, None
         room = await asyncio.to_thread(
-            talk_sip_bridge.direct_dial_in, number, _sip_display_name(caller))
+            # The endpoint's "caller" is a phone number: Nextcloud names
+            # the conversation after it and gives the guest that name. A
+            # handset's display name would put "FritzFon schwarz" there.
+            talk_sip_bridge.direct_dial_in, number, caller_number(caller))
         if not room:
             return line.default_room_token, None
         actor = {"actorType": room.get("actorType"), "actorId": room.get("actorId")}

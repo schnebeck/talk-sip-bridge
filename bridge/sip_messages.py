@@ -57,6 +57,31 @@ def extract_contact_uri(contact_header: str) -> str:
     return contact_header.split(';')[0].strip()
 
 
+def caller_number(from_header: str) -> str:
+    """The number a call came from: the user part of the SIP URI.
+
+    Never the display name in front of it. A FRITZ!Box handset announces
+    itself as `"FritzFon schwarz" <sip:**611@fritz.box>` - the name is
+    what its owner typed into the box, and using it where a number
+    belongs means Nextcloud is told a caller rang from "FritzFon
+    schwarz"."""
+    uri_user = re.search(r"sips?:([^@;>\s]+)@", from_header)
+    return uri_user.group(1) if uri_user else caller_display_name(from_header)
+
+
+def caller_display_name(from_header: str) -> str:
+    """What to call the caller on screen - the display name if the
+    gateway sent one, else the number. For showing, not for matching or
+    for handing to an API that asks for a number."""
+    quoted = re.match(r'\s*"([^"]+)"', from_header)
+    if quoted:
+        return quoted.group(1)
+    uri_user = re.search(r"sips?:([^@;>]+)", from_header)
+    if uri_user:
+        return uri_user.group(1)
+    return from_header.split(";")[0].strip()
+
+
 def dialled_number(first_line: str, headers: dict) -> str:
     """Which number an incoming call was placed to.
 
