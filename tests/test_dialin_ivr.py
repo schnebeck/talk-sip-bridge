@@ -98,6 +98,16 @@ class MeetingIdTest(unittest.TestCase):
         self.assertEqual(ivr.run()["token"], "7052318694")
         self.assertEqual(nextcloud.asked, [("7052318694", None)])
 
+    def test_a_hash_with_nothing_in_front_of_it_is_not_an_answer(self):
+        """It is what arrives when a caller finishes one attempt just as
+        the next prompt starts - spending an attempt on it would cut the
+        call short for a caller who is still typing."""
+        nextcloud = Nextcloud()
+        ivr = ivr_for(nextcloud, attempts=1)
+        keys(ivr, "#7052318694#")
+        self.assertEqual(ivr.run()["token"], "7052318694")
+        self.assertEqual(nextcloud.asked, [("7052318694", None)])
+
     def test_pressing_nothing_at_all_ends_the_call(self):
         nextcloud = Nextcloud()
         self.assertIsNone(ivr_for(nextcloud).run())

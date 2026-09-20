@@ -9,7 +9,7 @@ is what these pin.
 import struct
 import unittest
 
-from dtmf import DtmfEvents, parse_event
+from dtmf import DigitGuard, DtmfEvents, parse_event
 
 
 def event(digit: int, duration: int = 160, end: bool = False, volume: int = 10) -> bytes:
@@ -72,6 +72,42 @@ class OnePressTest(unittest.TestCase):
         for index, key in enumerate(pressed):
             digits += self.press("0123456789*#ABCD".index(key), timestamp=1000 + index * 1600)
         self.assertEqual("".join(digits), pressed)
+
+
+class GuardTest(unittest.TestCase):
+    """One press can arrive as an event, as the tone the gateway also
+    plays, and as a SIP INFO. That is one press - but only when it is the
+    same key."""
+
+    def setUp(self):
+        self.guard = DigitGuard(window=0.4)
+
+    def test_the_same_press_arriving_twice_is_one_press(self):
+        self.assertTrue(self.guard.accepts("5", 10.0))
+        self.assertFalse(self.guard.accepts("5", 10.05))
+
+    def test_a_different_key_is_never_collapsed(self):
+        """The one that cost a caller their meeting id: typed 7052318694,
+        the bridge read 7052318, because anything within the window was
+        taken for a repeat whatever key it was."""
+        typed = "7052318694"
+        heard = "".join(d for i, d in enumerate(typed)
+                        if self.guard.accepts(d, 10.0 + i * 0.05))
+        self.assertEqual(heard, typed)
+
+    def test_the_same_key_twice_with_a_gap_counts_twice(self):
+        self.assertTrue(self.guard.accepts("1", 10.0))
+        self.assertTrue(self.guard.accepts("1", 10.5))
+
+    def test_a_repeat_after_another_key_counts(self):
+        """1-1 is two presses; 1-2-1 is three, and the last one is not a
+        repeat of anything inside the window it can see."""
+        self.assertTrue(self.guard.accepts("1", 10.0))
+        self.assertTrue(self.guard.accepts("2", 10.1))
+        self.assertTrue(self.guard.accepts("1", 10.2))
+
+    def test_the_first_press_of_a_call_is_never_a_repeat(self):
+        self.assertTrue(DigitGuard().accepts("0", 0.0))
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ import struct
 import threading
 import time
 
-from dtmf import EVENT_DIGITS, DtmfEvents
+from dtmf import EVENT_DIGITS, DigitGuard, DtmfEvents
 from dtmf_inband import InbandDtmf
 from g711 import alaw_to_linear, linear_to_alaw, linear_to_ulaw, ulaw_to_linear
 from g722 import G722Decoder, G722Encoder
@@ -30,11 +30,6 @@ _CODEC_INFO = {
     PT_G722: {"sample_rate": 16000, "samples_per_packet": 320},
 }
 RTP_CLOCK_INCREMENT = 160
-
-# A press reported twice - once as an event, once as the tone the same
-# gateway also plays - is one press. Shorter than the gap between two
-# deliberate presses, longer than the two paths can drift apart.
-DTMF_REPEAT_GUARD = 0.4
 
 # For backwards compatibility with anything still importing the old name.
 SAMPLES_PER_PACKET = _CODEC_INFO[PT_PCMU]["samples_per_packet"]
@@ -91,7 +86,7 @@ class RtpSession:
         # handset makes. Listening as well costs eight dot products per
         # packet and is the only way to read a key on such a gateway.
         self._inband = None
-        self._last_digit_at = 0.0
+        self._guard = DigitGuard()
         self.set_payload_type(payload_type)
         self.recv_thread = threading.Thread(target=self._recv_loop, daemon=True)
         self.recv_thread.start()
@@ -229,14 +224,11 @@ class RtpSession:
 
     def report_digit(self, digit: str):
         """One key press, however it arrived - as an RTP event, as a tone
-        in the audio, or as a SIP INFO from outside this session. A
-        gateway that sends the same press two of those ways would
-        otherwise be read as two, so a digit is reported at most once per
-        window."""
-        now = time.monotonic()
-        if now - self._last_digit_at < DTMF_REPEAT_GUARD:
+        in the audio, or as a SIP INFO from outside this session. The
+        same press arriving by two of those roads is one press; see
+        dtmf.DigitGuard."""
+        if not self._guard.accepts(digit, time.monotonic()):
             return
-        self._last_digit_at = now
         try:
             self.on_dtmf(digit)
         except Exception as e:

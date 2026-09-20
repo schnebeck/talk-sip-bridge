@@ -30,6 +30,35 @@ def parse_event(payload: bytes):
     return EVENT_DIGITS[event], bool(flags & 0x80), duration
 
 
+# A press reported twice - as an event, as the tone the same gateway also
+# plays, and sometimes as a SIP INFO as well - is one press. Shorter than
+# the gap between two deliberate presses of the same key, longer than the
+# roads can drift apart.
+REPEAT_GUARD = 0.4
+
+
+class DigitGuard:
+    """Collapses one key press that arrives by more than one road.
+
+    Only the same digit is ever collapsed. A different key is a different
+    press however fast it follows - measured on a real keypad, a guard
+    that ignored which key it was swallowed three digits out of a
+    ten-digit meeting id, and the caller could not get in.
+    """
+
+    def __init__(self, window: float = REPEAT_GUARD):
+        self.window = window
+        self._digit = None
+        self._at = None
+
+    def accepts(self, digit: str, now: float) -> bool:
+        if digit == self._digit and self._at is not None and now - self._at < self.window:
+            return False
+        self._digit = digit
+        self._at = now
+        return True
+
+
 class DtmfEvents:
     """Turns that packet storm into one digit per key press.
 

@@ -210,6 +210,12 @@ class DialInIvr:
             if digit is None:            # stop() was called
                 return ""
             if digit == TERMINATOR:
+                if not typed:
+                    # A hash with nothing in front of it says nothing.
+                    # It is also what arrives when a caller finishes one
+                    # attempt just as the next prompt starts - counting
+                    # it as an empty answer would spend an attempt on it.
+                    continue
                 return typed
             if digit == CLEAR:
                 typed = ""
