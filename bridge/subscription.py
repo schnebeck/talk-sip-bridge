@@ -157,6 +157,18 @@ class Subscription:
         self.generation += 1      # anything still in flight is now history
         return Step(action, delay=delay, generation=self.generation)
 
+    def still_current(self, step) -> bool:
+        """Whether a step decided earlier is still the one to take.
+
+        Every step carries the generation it was decided in, and a step
+        with a delay is acted on later - by which time an offer may have
+        arrived, audio may be flowing, or the call may be over. Asking
+        this after the wait is what keeps a timer that was armed while
+        nothing worked from firing into a connection that does."""
+        if self.state in (State.FLOWING, State.CLOSED, State.GIVEN_UP):
+            return False
+        return step.generation == self.generation
+
     @property
     def working(self) -> bool:
         return self.state is State.FLOWING

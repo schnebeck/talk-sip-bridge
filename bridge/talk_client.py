@@ -655,10 +655,16 @@ class TalkClient:
             await asyncio.sleep(step.delay)
         with self._call_sessions_lock:
             entry = self._call_sessions.get(sip_call_id)
-            still_current = entry is not None and entry.media is media
+            still_the_call = entry is not None and entry.media is media
             state = entry.subscription if entry else None
-        if not still_current or state is None:
+        if not still_the_call or state is None:
             return  # the call ended, or a newer subscription replaced this one
+        if not state.still_current(step):
+            # Decided before the wait, overtaken during it: an offer
+            # arrived, audio started flowing, or the attempts ran out.
+            # Acting anyway is how a repair reaches into a working
+            # connection and closes it.
+            return
 
         if step.action is Action.GIVE_UP:
             print(f"[talk] No audio from {human_sessionid} for {sip_call_id} after "
@@ -689,7 +695,7 @@ class TalkClient:
         with self._call_sessions_lock:
             entry = self._call_sessions.get(sip_call_id)
             state = entry.subscription if entry and entry.media is media else None
-        if state is None or state.generation != generation:
+        if state is None or state.working or state.generation != generation:
             return  # something else happened in the meantime; not our turn
         await self._pursue(sip_call_id, media, human_sessionid, state.no_publisher())
 

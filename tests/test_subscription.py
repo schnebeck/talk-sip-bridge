@@ -142,6 +142,39 @@ class OneNegotiationAtATimeTest(unittest.TestCase):
         self.assertEqual(sub.sid, "sid-2")
 
 
+class DelayedStepTest(unittest.TestCase):
+    """A step with a delay is decided now and taken later, and the
+    machine has to be asked again in between. This is the live failure
+    it exists for: a retry armed while nothing worked woke up three
+    seconds after audio had started and tore the connection down."""
+
+    def test_a_step_is_still_current_until_something_happens(self):
+        sub = subscription()
+        step = sub.start()
+        self.assertTrue(sub.still_current(step))
+
+    def test_audio_flowing_overtakes_a_pending_retry(self):
+        sub = subscription()
+        step = sub.no_publisher() or sub.start()
+        step = sub.no_publisher()          # armed while nothing worked
+        sub.offer("sid-1")
+        sub.media_arrived()
+        self.assertFalse(sub.still_current(step))
+
+    def test_an_offer_overtakes_a_pending_retry(self):
+        sub = subscription()
+        sub.start()
+        step = sub.no_publisher()
+        sub.offer("sid-1")
+        self.assertFalse(sub.still_current(step))
+
+    def test_the_end_of_the_call_overtakes_everything(self):
+        sub = subscription()
+        step = sub.start()
+        sub.close()
+        self.assertFalse(sub.still_current(step))
+
+
 class WorkingConnectionTest(unittest.TestCase):
     """Audio flowing is what no repair may disturb - the server keeps
     offering after a connection works, and answering those resets it."""
