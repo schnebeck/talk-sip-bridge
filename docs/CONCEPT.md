@@ -91,7 +91,7 @@ the daemon side is verified.
    offers both (`sip_sdp.py`'s `offer_sdp`/`answer_sdp`), preferring
    G.722 - real 16kHz audio despite SDP historically labeling it
    `G722/8000` (see `g722.py`). `rtp.py`'s `RtpSession` is codec-agnostic
-   past construction (`set_payload_type`), and `talk_client.py`'s
+   past construction (`set_payload_type`), and `media.py`'s
    `SipAudioTrack` resamples from whatever rate was actually negotiated.
 9. **Bidirectional audio.** `_publish_call_audio` covers the phone-to-Talk
    direction. The opposite direction subscribes to the human participant's
@@ -104,7 +104,7 @@ the daemon side is verified.
    calls: it can hold sessions that dropped without the server ever announcing
    it, and asking one of those for audio fails.
 10. **Automatic gain control.** Phone-side audio only (`agc.py`, applied in
-    `SipAudioTrack`) - some handsets (e.g. a DECT cordless) have a much
+    `media.py`'s `SipAudioTrack`) - some handsets (e.g. a DECT cordless) have a much
     quieter microphone than a laptop/headset, with no way to adjust that
     from this end of the call. The human-to-phone direction is left alone:
     browsers already apply their own mic AGC by default, and a second one

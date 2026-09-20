@@ -42,7 +42,8 @@ should stay below the cost of the change it guards.
 | A module boundary: new module, moved code, changed signature | `tests/` - `test_build` and `test_api` are what catch it |
 | `sip_call`, `sip_registrar`, `sip_transport` | `tests/`, then `test_peer_outbound.py` / `test_peer_inbound.py` against the test peer |
 | `rtp`, `g711`, `g722`, `agc` | `test_audio_quality.py`, and `test_audio_over_sip.py` for the real phone path |
-| `talk_client` | `test_publish_and_verify.py`, `test_call_lifecycle.py` - the unit suite says nothing about the Talk side |
+| `room_state`, `talk_ocs`, `media` | `tests/` - covered offline, including against recorded signaling traffic |
+| `talk_client` | `test_publish_and_verify.py`, `test_call_lifecycle.py` - the unit suite covers what was lifted out of it, not the WebRTC and lifecycle code that remains |
 | Deployment, config, the relay host | A real call; nothing offline covers that path |
 
 ## Status

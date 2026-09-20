@@ -72,6 +72,16 @@ def bridge_env(**overrides) -> dict:
     return env
 
 
+# Several modules build their configuration as they are imported, so a test
+# module cannot import them without one. Providing defaults here - and only
+# where the environment does not already carry a value - lets a test file
+# import what it tests at the top, the way any other module does. That a
+# module really can be imported with nothing but its own environment is
+# checked separately, in test_build.py, using subprocesses.
+for _key, _value in bridge_env().items():
+    os.environ.setdefault(_key, _value)
+
+
 @contextlib.contextmanager
 def env(**overrides):
     """Applies bridge_env() for the duration of the block and reloads

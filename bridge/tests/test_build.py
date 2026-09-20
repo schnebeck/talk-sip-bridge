@@ -5,9 +5,9 @@ import unittest
 
 from tests.support import bridge_env, env, needs_media_stack
 
-PURE_MODULES = ["payload_types", "sip_messages", "sip_sdp", "sip_requests"]
-CONFIG_MODULES = ["config", "sip_transport", "sip_registrar"]
-MEDIA_MODULES = ["g711", "g722", "agc", "rtp", "sip_call", "talk_client",
+PURE_MODULES = ["payload_types", "sip_messages", "sip_sdp", "sip_requests", "room_state"]
+CONFIG_MODULES = ["config", "sip_transport", "sip_registrar", "talk_ocs"]
+MEDIA_MODULES = ["g711", "g722", "agc", "rtp", "media", "sip_call", "talk_client",
                  "control_api", "daemon"]
 
 
@@ -50,7 +50,7 @@ class BuildTest(unittest.TestCase):
         machine they run on, which is what payload_types.py exists to
         avoid."""
         probe = (
-            "import sys, sip_requests, sip_sdp, sip_messages;"
+            "import sys, sip_requests, sip_sdp, sip_messages, room_state;"
             "heavy = [m for m in ('av', 'numpy', 'aiortc', 'rtp', 'g722') if m in sys.modules];"
             "print(','.join(heavy))"
         )

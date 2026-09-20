@@ -15,39 +15,27 @@ daemon.py) and bridges to sip_call.CallManager, whose callbacks fire from
 plain worker threads via asyncio.run_coroutine_threadsafe.
 """
 import asyncio
-import base64
-import fractions
 import hashlib
 import hmac
-import http.cookiejar
 import json
 import re
 import secrets
 import threading
 import time
 import traceback
-import urllib.error
-import urllib.request
 
-import numpy as np
 import websockets
 from aiortc import RTCConfiguration, RTCIceCandidate, RTCPeerConnection, RTCSessionDescription
-from aiortc.mediastreams import AudioStreamTrack
-from av import AudioFrame
 
-from agc import Agc
+import talk_ocs
 from config import config
-from room_state import RoomCallState, is_room_wide_call_end
-
-AUDIO_SAMPLE_RATE = 48000
-RTP_QUEUE_POLL_INTERVAL = 0.02  # one 20ms RTP packet - how long a frame waits for late audio
-MAX_QUEUED_PACKETS = 5  # 100ms of jitter cushion; older packets are only latency
+from media import SipAudioTrack, frame_to_mono_pcm, resample_linear
+from room_state import FLAG_IN_CALL, RoomCallState, is_room_wide_call_end
 
 # Call flags, shared by Talk's clients and the signaling server. Talk's own
 # clients only ever subscribe to a participant carrying AUDIO or VIDEO
 # (spreed's webrtc.js: userHasStreams()), which is what makes the
 # distinction below matter rather than being cosmetic.
-from room_state import FLAG_IN_CALL  # noqa: E402  (the in-call bit the model reads)
 FLAG_WITH_AUDIO = 2
 FLAG_WITH_PHONE = 8
 
@@ -66,36 +54,6 @@ SUBSCRIBE_MAX_ATTEMPTS = 6
 # for are useless here, and asking for them tells a third party about every
 # call placed.
 NO_ICE_SERVERS = RTCConfiguration(iceServers=[])
-
-
-def _resample_linear(pcm: np.ndarray, in_rate: int, out_rate: int) -> np.ndarray:
-    """Linear interpolation, not sample repetition/decimation - repetition
-    produces a staircase waveform (harsh, aliased); this is a large audible
-    improvement for a small amount of code, without adding a dependency for
-    full sinc-based resampling. Used in both directions: SIP audio (8/16kHz)
-    up to Talk's 48kHz, and Talk's audio back down to the SIP call's rate."""
-    if in_rate == out_rate:
-        return pcm
-    n_in = len(pcm)
-    if n_in == 0:
-        return pcm
-    n_out = max(1, round(n_in * out_rate / in_rate))
-    x_out = np.linspace(0, n_in - 1, n_out)
-    return np.interp(x_out, np.arange(n_in), pcm).astype(np.int16)
-
-
-def _frame_to_mono_pcm(frame: AudioFrame) -> np.ndarray:
-    """aiortc audio frames may be stereo - the SIP side only ever carries
-    mono, so any inbound-from-Talk audio is downmixed here before it can be
-    resampled/sent."""
-    arr = frame.to_ndarray()
-    channels = len(frame.layout.channels) if frame.layout else 1
-    if arr.ndim == 2 and arr.shape[0] > 1:
-        mono = arr.astype(np.float64).mean(axis=0)
-    else:
-        row = arr.flatten()
-        mono = row.reshape(-1, channels).astype(np.float64).mean(axis=1) if channels > 1 else row.astype(np.float64)
-    return np.clip(mono, -32768, 32767).astype(np.int16)
 
 
 def _sip_display_name(from_header: str) -> str:
@@ -120,137 +78,6 @@ def _parse_ice_candidate(cand_str: str, sdp_mid=None, sdp_mline_index=0) -> RTCI
     )
 
 
-def _talk_ocs_request(opener, base: str, auth_header: str, method: str, path: str, body: dict = None):
-    data = json.dumps(body).encode() if body is not None else None
-    headers = {"OCS-APIREQUEST": "true", "Accept": "application/json", "Authorization": auth_header}
-    if data is not None:
-        headers["Content-Type"] = "application/json"
-    req = urllib.request.Request(f"{base}{path}", data=data, method=method, headers=headers)
-    with opener.open(req, timeout=5) as resp:
-        return resp.read()
-
-
-def _talk_ring_start_sync(roomid: str, nc_user: str, nc_app_password: str):
-    """Uses Talk's own OCS call-signaling API (POST .../call/{token}) to
-    make the bridge's Nextcloud account one more device joining the room's
-    call - confirmed live that this is what actually triggers real ringing
-    (push notification, full-screen call UI) on every other device logged
-    into that account or already in the room, not just a chat message or a
-    custom notification.
-
-    Joining the call requires an existing room session first - confirmed
-    live that calling the call endpoint directly, without having joined the
-    room, fails with 404 (Talk's RequireParticipant check rejects it). The
-    room join is cookie/session-based (like a browser), so the returned
-    opener/cookie jar has to be kept and reused for the matching
-    _talk_ring_stop_sync call - joining a fresh session there and leaving
-    immediately would end the call before anyone had a chance to answer it.
-
-    Returns (opener, session_id) on success, or (None, None) if the feature
-    isn't configured or the calls failed. session_id is the room session id
-    Talk assigned to this triggering join (from the join-room response) -
-    the signaling server broadcasts this same account joining the call to
-    every room member including our own internal client, so it has to be
-    recognized and excluded from "a human accepted" detection, or the
-    bridge would immediately mistake its own ring-trigger for an accept."""
-    if not nc_user or not nc_app_password:
-        return None, None
-    base = config.backend_url.rstrip('/')
-    auth_header = "Basic " + base64.b64encode(f"{nc_user}:{nc_app_password}".encode()).decode()
-    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
-    try:
-        join_resp = _talk_ocs_request(opener, base, auth_header, "POST", f"/ocs/v2.php/apps/spreed/api/v4/room/{roomid}/participants/active", {})
-        session_id = json.loads(join_resp)["ocs"]["data"].get("sessionId")
-        started = time.monotonic()
-        _talk_ocs_request(opener, base, auth_header, "POST", f"/ocs/v2.php/apps/spreed/api/v4/call/{roomid}", {"flags": 1})
-        # This is the moment Talk clients start showing an incoming call.
-        # A caller waits about twenty seconds, so how much of that this
-        # takes is worth knowing on every call rather than guessing later.
-        print(f"[talk] Talk is ringing for room {roomid} ({time.monotonic() - started:.1f}s to join the call)")
-        _talk_ring_attendees_sync(opener, base, auth_header, roomid, nc_user)
-        return opener, session_id
-    except (urllib.error.URLError, OSError, KeyError, ValueError) as e:
-        print(f"[talk] Starting Talk call ring for room {roomid} failed: {e!r}")
-        return None, None
-
-
-def _talk_ring_attendees_sync(opener, base: str, auth_header: str, roomid: str, nc_user: str):
-    """Asks Talk to ring every real user in the room for the call that was
-    just started. Joining the call alone does make Talk show an incoming
-    call, but confirmed live: a client whose signaling session has gone
-    stale still paints that screen and then does nothing when it is tapped -
-    no session ever joins the call. This is Talk's own "ring a participant
-    for the ongoing call" path and delivers a fresh call notification, which
-    is what gets the app to open a live session again. Best effort: the
-    join-driven ring stays in place regardless of what happens here."""
-    try:
-        raw = _talk_ocs_request(opener, base, auth_header, "GET",
-                                f"/ocs/v2.php/apps/spreed/api/v4/room/{roomid}/participants")
-        participants = json.loads(raw)["ocs"]["data"]
-    except (urllib.error.URLError, OSError, KeyError, ValueError) as e:
-        print(f"[talk] Could not list participants of room {roomid} to ring them: {e!r}")
-        return
-    for participant in participants:
-        if participant.get("actorType") != "users" or participant.get("actorId") == nc_user:
-            continue
-        attendee_id = participant.get("attendeeId")
-        if attendee_id is None:
-            continue
-        try:
-            _talk_ocs_request(opener, base, auth_header, "POST",
-                              f"/ocs/v2.php/apps/spreed/api/v4/call/{roomid}/ring/{attendee_id}", {})
-            print(f"[talk] Rang {participant.get('actorId')} for the call in room {roomid}")
-        except urllib.error.HTTPError as e:
-            # Talk refuses with "status" for do-not-disturb and stays silent
-            # for someone already in the call - neither is a bridge fault.
-            print(f"[talk] Could not ring {participant.get('actorId')}: HTTP {e.code} {e.read()[:200]!r}")
-        except (urllib.error.URLError, OSError) as e:
-            print(f"[talk] Could not ring {participant.get('actorId')}: {e!r}")
-
-
-def _talk_end_room_call_sync(roomid: str, nc_user: str, nc_app_password: str):
-    """Ends the room's call once the phone call behind it is over.
-
-    The room's call only exists because this bridge started it for an
-    inbound call, so it has to end with that call. Without this the person
-    who answered is left alone in a call that no longer has a phone on the
-    other end - Talk then plays its "waiting for someone" tone, which is
-    heard as a call that never stops ringing, and any call notification
-    stays alive with it.
-
-    Ending it for everyone needs moderator rights in the room; a bridge
-    account without them gets 403 here and the call has to be left to time
-    out instead."""
-    base = config.backend_url.rstrip('/')
-    auth_header = "Basic " + base64.b64encode(f"{nc_user}:{nc_app_password}".encode()).decode()
-    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
-    try:
-        _talk_ocs_request(opener, base, auth_header, "POST",
-                          f"/ocs/v2.php/apps/spreed/api/v4/room/{roomid}/participants/active", {})
-        _talk_ocs_request(opener, base, auth_header, "DELETE",
-                          f"/ocs/v2.php/apps/spreed/api/v4/call/{roomid}?all=true")
-        _talk_ocs_request(opener, base, auth_header, "DELETE",
-                          f"/ocs/v2.php/apps/spreed/api/v4/room/{roomid}/participants/active")
-        print(f"[talk] Ended the call in room {roomid} - the phone call behind it is over")
-    except urllib.error.HTTPError as e:
-        print(f"[talk] Could not end the call in room {roomid}: HTTP {e.code} {e.read()[:200]!r}")
-    except (urllib.error.URLError, OSError) as e:
-        print(f"[talk] Could not end the call in room {roomid}: {e!r}")
-
-
-def _talk_ring_stop_sync(opener, roomid: str, nc_user: str, nc_app_password: str):
-    """Ends what _talk_ring_start_sync started - leaves the call, then the
-    room, using the same session (opener) so Talk attributes it to the
-    right participant."""
-    base = config.backend_url.rstrip('/')
-    auth_header = "Basic " + base64.b64encode(f"{nc_user}:{nc_app_password}".encode()).decode()
-    try:
-        _talk_ocs_request(opener, base, auth_header, "DELETE", f"/ocs/v2.php/apps/spreed/api/v4/call/{roomid}?all=false")
-        _talk_ocs_request(opener, base, auth_header, "DELETE", f"/ocs/v2.php/apps/spreed/api/v4/room/{roomid}/participants/active")
-    except (urllib.error.URLError, OSError) as e:
-        print(f"[talk] Stopping Talk call ring for room {roomid} failed: {e!r}")
-
-
 def _run_coro_logged(coro, loop, label: str):
     """asyncio.run_coroutine_threadsafe() returns a concurrent.futures.Future
     whose exception is silently dropped unless something calls .result() on
@@ -269,78 +96,6 @@ def _run_coro_logged(coro, loop, label: str):
 
     future.add_done_callback(_log_if_failed)
     return future
-
-
-class SipAudioTrack(AudioStreamTrack):
-    """Reads decoded PCM (mono, at the RtpSession's negotiated sample rate -
-    8kHz for PCMU, 16kHz for G.722) from an RtpSession's receive queue,
-    upsampled to AUDIO_SAMPLE_RATE."""
-
-    def __init__(self, rtp_session):
-        super().__init__()
-        self.rtp_session = rtp_session
-        self._pts = 0
-        self._next_frame_at = None
-        self._stats = {"from_phone": 0, "silence": 0, "peak": 0, "since": None}
-        self._silence = np.zeros(rtp_session.samples_per_packet, dtype=np.int16)
-        self._agc = Agc(target_peak=config.agc_target_peak, max_gain=config.agc_max_gain,
-                        silence_threshold=config.agc_silence_threshold) if config.agc_enabled else None
-
-    async def recv(self):
-        """Hands out exactly one packet per packet interval of wall clock.
-        The base class paces its frames that way and this override has to do
-        the same: taking the timing from the receive queue instead means a
-        queued packet returns instantly while an empty queue costs a full
-        poll interval, so the track runs faster than real time and pads the
-        timeline with inserted silence - heard as badly distorted audio."""
-        loop = asyncio.get_running_loop()
-        rtp = self.rtp_session
-        frame_duration = rtp.samples_per_packet / rtp.sample_rate
-
-        # Once frames are paced, a backlog is pure added latency, so keep
-        # only a small jitter cushion and drop what is older than that.
-        while rtp.recv_queue.qsize() > MAX_QUEUED_PACKETS:
-            try:
-                rtp.recv_queue.get_nowait()
-            except Exception:
-                break
-
-        try:
-            pcm_in = await asyncio.to_thread(rtp.recv_queue.get, True, RTP_QUEUE_POLL_INTERVAL)
-            self._stats["from_phone"] += 1
-            self._stats["peak"] = max(self._stats["peak"], int(np.abs(pcm_in.astype(np.int32)).max()) if len(pcm_in) else 0)
-        except Exception:
-            pcm_in = self._silence
-            self._stats["silence"] += 1
-
-        # A second's worth of "what actually arrived from the phone" - the
-        # difference between audio that is missing and audio that is
-        # mangled is not audible from the far end, but it is visible here.
-        if self._stats["since"] is None:
-            self._stats["since"] = loop.time()
-        elif loop.time() - self._stats["since"] >= 1.0:
-            s = self._stats
-            gain = f", agc gain {self._agc.gain:.1f}x" if self._agc is not None else ""
-            print(f"[talk] Phone audio: {s['from_phone']} packets, {s['silence']} silence-filled, "
-                  f"peak {s['peak']} (before agc){gain}")
-            self._stats = {"from_phone": 0, "silence": 0, "peak": 0, "since": loop.time()}
-
-        now = loop.time()
-        if self._next_frame_at is None or self._next_frame_at < now - frame_duration:
-            self._next_frame_at = now  # first frame, or lost the thread of real time
-        elif self._next_frame_at > now:
-            await asyncio.sleep(self._next_frame_at - now)
-        self._next_frame_at += frame_duration
-
-        if self._agc is not None:
-            pcm_in = self._agc.process(pcm_in)
-        pcm_48k = _resample_linear(pcm_in, self.rtp_session.sample_rate, AUDIO_SAMPLE_RATE)
-        frame = AudioFrame.from_ndarray(pcm_48k.reshape(1, -1), format="s16", layout="mono")
-        frame.sample_rate = AUDIO_SAMPLE_RATE
-        frame.pts = self._pts
-        frame.time_base = fractions.Fraction(1, AUDIO_SAMPLE_RATE)
-        self._pts += len(pcm_48k)
-        return frame
 
 
 class TalkClient:
@@ -919,8 +674,8 @@ class TalkClient:
         try:
             while True:
                 frame = await track.recv()
-                pcm = _frame_to_mono_pcm(frame)
-                pcm_out = _resample_linear(pcm, frame.sample_rate, rtp_session.sample_rate)
+                pcm = frame_to_mono_pcm(frame)
+                pcm_out = resample_linear(pcm, frame.sample_rate, rtp_session.sample_rate)
                 await asyncio.to_thread(rtp_session.send_pcm, pcm_out)
         except Exception as e:
             print(f"[talk] Human audio relay for {sip_call_id} ended ({e!r})")
@@ -955,11 +710,11 @@ class TalkClient:
         if entry.get("talk_ring_opener") is not None and not entry.get("waiting_for_accept"):
             # This bridge started the room's call for this phone call and
             # somebody answered it, so it ends with the phone call too -
-            # see _talk_end_room_call_sync for what being left in it does.
+            # see talk_ocs.end_room_call for what being left in it does.
             # A call nobody answered is not ended here: it was already
             # given up by _stop_talk_ring above.
             line = self.call_manager.line
-            await asyncio.to_thread(_talk_end_room_call_sync, roomid,
+            await asyncio.to_thread(talk_ocs.end_room_call, roomid,
                                     line.notify_user, line.notify_app_password)
         if "pc" in entry or entry.get("waiting_for_accept"):
             # The signaling server permanently drops a "start-dialout"
@@ -1061,7 +816,7 @@ class TalkClient:
             entry["waiting_for_accept"] = True
 
         opener, ring_sessionid = await asyncio.to_thread(
-            _talk_ring_start_sync, roomid, line.notify_user, line.notify_app_password)
+            talk_ocs.start_ring, roomid, line.notify_user, line.notify_app_password)
         if opener is None:
             with self._call_sessions_lock:
                 entry = self._call_sessions.get(call_id)
@@ -1077,7 +832,7 @@ class TalkClient:
         print(f"[talk] Ringing {line.notify_user} for call {call_id} from {caller}, watching room {roomid} for accept")
 
     async def _stop_talk_ring(self, roomid: str, opener, line):
-        await asyncio.to_thread(_talk_ring_stop_sync, opener, roomid, line.notify_user, line.notify_app_password)
+        await asyncio.to_thread(talk_ocs.stop_ring, opener, roomid, line.notify_user, line.notify_app_password)
 
 
 def start_in_background(call_manager) -> TalkClient:
