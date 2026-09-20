@@ -111,9 +111,15 @@ def end_room_call(roomid: str, nc_user: str, nc_app_password: str):
     heard as a call that never stops ringing, and any call notification
     stays alive with it.
 
-    Ending it for everyone needs moderator rights in the room; a bridge
-    account without them gets 403 here and the call has to be left to time
-    out instead."""
+    `all` goes in the body, which is where Talk's own client puts it and
+    where its controller reads it from; as a query parameter it is ignored.
+
+    Ending it for everyone also requires moderator rights in the room. An
+    account without them is not refused - Talk's leaveCall falls through to
+    disconnecting just this participant and answers 200, so the bridge's
+    own participant leaves and the person who answered stays in a call
+    with nobody on the other end. That is why the room is asked afterwards
+    whether a call is still running rather than the 200 being believed."""
     base = config.backend_url.rstrip('/')
     auth_header = "Basic " + base64.b64encode(f"{nc_user}:{nc_app_password}".encode()).decode()
     opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
@@ -121,22 +127,42 @@ def end_room_call(roomid: str, nc_user: str, nc_app_password: str):
         request(opener, base, auth_header, "POST",
                           f"/ocs/v2.php/apps/spreed/api/v4/room/{roomid}/participants/active", {})
         request(opener, base, auth_header, "DELETE",
-                          f"/ocs/v2.php/apps/spreed/api/v4/call/{roomid}?all=true")
+                          f"/ocs/v2.php/apps/spreed/api/v4/call/{roomid}", {"all": True})
+        still_running = room_has_call(opener, base, auth_header, roomid)
         request(opener, base, auth_header, "DELETE",
                           f"/ocs/v2.php/apps/spreed/api/v4/room/{roomid}/participants/active")
-        print(f"[talk] Ended the call in room {roomid} - the phone call behind it is over")
+        if still_running:
+            print(f"[talk] Left the call in room {roomid}, but it is still running - "
+                  f"ending it for everyone needs moderator rights for {nc_user} in that room "
+                  f"(occ talk:room:promote)")
+        else:
+            print(f"[talk] Ended the call in room {roomid} - the phone call behind it is over")
     except urllib.error.HTTPError as e:
         print(f"[talk] Could not end the call in room {roomid}: HTTP {e.code} {e.read()[:200]!r}")
     except (urllib.error.URLError, OSError) as e:
         print(f"[talk] Could not end the call in room {roomid}: {e!r}")
+
+
+def room_has_call(opener, base: str, auth_header: str, roomid: str):
+    """Whether the room still has a call running, or None if the room did
+    not say. Read back rather than assumed: the request to end the call
+    answers 200 whether it ended it or only left it."""
+    try:
+        room = json.loads(request(opener, base, auth_header, "GET",
+                                  f"/ocs/v2.php/apps/spreed/api/v4/room/{roomid}"))
+        return room["ocs"]["data"].get("hasCall")
+    except (urllib.error.URLError, OSError, ValueError, KeyError, TypeError):
+        return None
 def stop_ring(opener, roomid: str, nc_user: str, nc_app_password: str):
     """Ends what start_ring started - leaves the call, then the
     room, using the same session (opener) so Talk attributes it to the
-    right participant."""
+    right participant. This one only ever leaves: the call belongs to
+    whoever answered it, not to the account that made it ring."""
     base = config.backend_url.rstrip('/')
     auth_header = "Basic " + base64.b64encode(f"{nc_user}:{nc_app_password}".encode()).decode()
     try:
-        request(opener, base, auth_header, "DELETE", f"/ocs/v2.php/apps/spreed/api/v4/call/{roomid}?all=false")
+        request(opener, base, auth_header, "DELETE",
+                f"/ocs/v2.php/apps/spreed/api/v4/call/{roomid}", {"all": False})
         request(opener, base, auth_header, "DELETE", f"/ocs/v2.php/apps/spreed/api/v4/room/{roomid}/participants/active")
     except (urllib.error.URLError, OSError) as e:
         print(f"[talk] Stopping Talk call ring for room {roomid} failed: {e!r}")

@@ -147,7 +147,7 @@ class StopRingTest(unittest.TestCase):
         with env():
             talk_ocs.stop_ring(opener, ROOM, USER, PASSWORD)
         self.assertEqual(opener.calls, [
-            ("DELETE", f"/call/{ROOM}?all=false"),
+            ("DELETE", f"/call/{ROOM}"),
             ("DELETE", f"/room/{ROOM}/participants/active"),
         ])
 
@@ -155,24 +155,65 @@ class StopRingTest(unittest.TestCase):
         opener = RecordingOpener()
         with env():
             talk_ocs.stop_ring(opener, ROOM, USER, PASSWORD)
-        self.assertIn("all=false", opener.paths[0])
+        self.assertEqual(opener.requests[0]["body"], {"all": False})
+
+
+def room_reply(has_call):
+    return {"ocs": {"data": {"token": ROOM, "hasCall": has_call}}}
 
 
 class EndRoomCallTest(unittest.TestCase):
+    def end(self, opener):
+        with env(), mock.patch("urllib.request.build_opener", return_value=opener):
+            talk_ocs.end_room_call(ROOM, USER, PASSWORD)
+
     def test_the_call_is_ended_for_everyone(self):
         """Left running, the person who answered sits in a call whose phone
         is gone, and Talk plays its waiting tone at them."""
-        opener = RecordingOpener()
-        with env(), mock.patch("urllib.request.build_opener", return_value=opener):
-            talk_ocs.end_room_call(ROOM, USER, PASSWORD)
+        opener = RecordingOpener(replies=[{}, {}, room_reply(False), {}])
+        self.end(opener)
         self.assertEqual(opener.calls, [
             ("POST", f"/room/{ROOM}/participants/active"),
-            ("DELETE", f"/call/{ROOM}?all=true"),
+            ("DELETE", f"/call/{ROOM}"),
+            ("GET", f"/room/{ROOM}"),
             ("DELETE", f"/room/{ROOM}/participants/active"),
         ])
 
+    def test_all_travels_in_the_body_where_talk_reads_it(self):
+        """As a query parameter it is ignored, and ignoring it means only
+        this participant leaves - which looks exactly like success."""
+        opener = RecordingOpener(replies=[{}, {}, room_reply(False), {}])
+        self.end(opener)
+        leave = opener.requests[1]
+        self.assertEqual(leave["body"], {"all": True})
+        self.assertNotIn("all=", leave["url"])
+
+    def test_a_call_that_is_still_running_is_reported_as_such(self):
+        """Talk answers 200 whether it ended the call or only left it, so
+        the room is asked afterwards. Without moderator rights this is the
+        normal outcome, and it has to be visible."""
+        opener = RecordingOpener(replies=[{}, {}, room_reply(True), {}])
+        with mock.patch("builtins.print") as printed:
+            self.end(opener)
+        said = " ".join(str(c.args[0]) for c in printed.call_args_list)
+        self.assertIn("still running", said)
+        self.assertIn("moderator", said)
+
+    def test_the_session_is_left_even_when_the_call_could_not_be_ended(self):
+        """Staying joined would leave the bridge account in the room."""
+        opener = RecordingOpener(replies=[{}, {}, room_reply(True), {}])
+        self.end(opener)
+        self.assertEqual(opener.calls[-1], ("DELETE", f"/room/{ROOM}/participants/active"))
+
+    def test_a_room_that_does_not_say_is_not_reported_as_a_failure(self):
+        opener = RecordingOpener(replies=[{}, {}, {"ocs": {"data": {}}}, {}])
+        with mock.patch("builtins.print") as printed:
+            self.end(opener)
+        said = " ".join(str(c.args[0]) for c in printed.call_args_list)
+        self.assertIn("Ended the call", said)
+
     def test_missing_moderator_rights_are_survived(self):
-        """A bridge account without them gets 403 here."""
+        """Older servers refuse with 403 instead of falling through."""
         opener = RecordingOpener(
             fail_at=2, error=urllib.error.HTTPError("u", 403, "Forbidden", {}, io.BytesIO(b"no")))
         with env(), mock.patch("urllib.request.build_opener", return_value=opener):
