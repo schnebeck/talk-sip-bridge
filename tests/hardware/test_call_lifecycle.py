@@ -25,6 +25,15 @@ updates, so the bridge cannot see it at all.
 Needs the bridge service running and a second SIP account to call from.
 Usage: test_call_lifecycle.py <sip-phone2-password> [extension]
 """
+
+import os
+import pathlib
+import sys
+
+# The daemon's modules are installed separately from these scripts.
+sys.path.insert(0, os.environ.get("BRIDGE_CODE")
+                or str(pathlib.Path(__file__).resolve().parent.parent.parent / "bridge"))
+
 import asyncio
 import base64
 import hashlib

@@ -3,6 +3,7 @@ import subprocess
 import sys
 import unittest
 
+from tests import CODE_DIR
 from tests.support import bridge_env, env, needs_media_stack
 
 PURE_MODULES = ["payload_types", "sip_messages", "sip_sdp", "sip_requests", "room_state"]
@@ -24,11 +25,11 @@ class BuildTest(unittest.TestCase):
     def test_pure_modules_import_without_anything(self):
         for module in PURE_MODULES:
             with self.subTest(module=module):
-                result = import_in_subprocess(module, {"PATH": "/usr/bin:/bin", "PYTHONPATH": "."})
+                result = import_in_subprocess(module, {"PATH": "/usr/bin:/bin", "PYTHONPATH": str(CODE_DIR)})
                 self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_config_modules_import_with_environment(self):
-        environment = {"PATH": "/usr/bin:/bin", "PYTHONPATH": "."}
+        environment = {"PATH": "/usr/bin:/bin", "PYTHONPATH": str(CODE_DIR)}
         environment.update(bridge_env())
         for module in CONFIG_MODULES:
             with self.subTest(module=module):
@@ -37,7 +38,7 @@ class BuildTest(unittest.TestCase):
 
     @needs_media_stack
     def test_media_modules_import(self):
-        environment = {"PATH": "/usr/bin:/bin", "PYTHONPATH": "."}
+        environment = {"PATH": "/usr/bin:/bin", "PYTHONPATH": str(CODE_DIR)}
         environment.update(bridge_env())
         for module in MEDIA_MODULES:
             with self.subTest(module=module):
@@ -55,7 +56,7 @@ class BuildTest(unittest.TestCase):
             "print(','.join(heavy))"
         )
         result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
-                                env={"PATH": "/usr/bin:/bin", "PYTHONPATH": "."})
+                                env={"PATH": "/usr/bin:/bin", "PYTHONPATH": str(CODE_DIR)})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "", "unexpectedly imported: " + result.stdout)
 

@@ -10,10 +10,10 @@ configuration, and `deploy/README.md` for installation.
 
 ## Tests
 
-`bridge/tests/` needs no phone gateway, no signaling server and no network:
+`tests/` needs no phone gateway, no signaling server and no network:
 
 ```
-cd bridge && python3 -m unittest discover -s tests -t .
+python3 -m unittest discover -s tests -t .
 ```
 
 It covers that every module imports on its own (`test_build.py`), that the
@@ -23,9 +23,13 @@ and what the message, SDP and request-building functions compute. Tests
 needing the media stack (numpy, av, aiortc) skip themselves where it is not
 installed; run the suite in the deployment venv for the full set.
 
-`bridge/test_*.py` are something else: manual verification scripts that place
-real calls and measure real audio against a live gateway and signaling
-server. See their module docstrings.
+`tests/hardware/` is the other kind: scripts that place real calls against a
+gateway, a signaling server, or the Asterisk test peer. They are run by hand
+and are not part of the suite above.
+
+Tests live outside `bridge/` and are installed - or removed - separately from
+the daemon; `bridge/` carries the runtime and nothing else. See
+[`tests/README.md`](./tests/README.md).
 
 `test-peer/` is an Asterisk in a container to point the bridge at instead of
 the FritzBox, so that "works with the FritzBox" and "speaks SIP" stay

@@ -9,6 +9,15 @@ driving this as two separately started scripts gives a false negative.
 
 Usage: python3 test_publish_and_verify.py <roomid> [tone-hz] [duration-s]
 """
+
+import os
+import pathlib
+import sys
+
+# The daemon's modules are installed separately from these scripts.
+sys.path.insert(0, os.environ.get("BRIDGE_CODE")
+                or str(pathlib.Path(__file__).resolve().parent.parent.parent / "bridge"))
+
 import asyncio
 import hashlib
 import hmac

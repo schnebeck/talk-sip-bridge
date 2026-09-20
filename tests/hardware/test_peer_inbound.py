@@ -10,6 +10,15 @@ for the line READY, then from the test peer:
 Environment as in test_peer_outbound.py's docstring. Exits non-zero if any
 check fails.
 """
+
+import os
+import pathlib
+import sys
+
+# The daemon's modules are installed separately from these scripts.
+sys.path.insert(0, os.environ.get("BRIDGE_CODE")
+                or str(pathlib.Path(__file__).resolve().parent.parent.parent / "bridge"))
+
 import queue
 import sys
 import threading

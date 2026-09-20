@@ -16,6 +16,15 @@ runs on the machine this runs on (see ../test-peer/README.md):
 Exits non-zero if any check fails. test_peer_inbound.py is the other
 direction.
 """
+
+import os
+import pathlib
+import sys
+
+# The daemon's modules are installed separately from these scripts.
+sys.path.insert(0, os.environ.get("BRIDGE_CODE")
+                or str(pathlib.Path(__file__).resolve().parent.parent.parent / "bridge"))
+
 import queue
 import sys
 import threading

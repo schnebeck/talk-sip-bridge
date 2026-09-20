@@ -1,5 +1,8 @@
 """Shared helpers, and the dependency tiers these tests are built around.
 
+The import path to the code under test is set up in this package's
+__init__, which runs before any test module.
+
 Three tiers, by what a module needs to be imported at all:
 
 1. Nothing at all - `sip_messages`, `sip_sdp`, `sip_requests`,
@@ -18,6 +21,8 @@ import contextlib
 import importlib
 import os
 import unittest
+
+from tests import CODE_DIR  # noqa: F401  (importing the package puts the code on the path)
 
 # Documentation addresses (RFC 5737), so a mistake that does send something
 # cannot reach a real host.

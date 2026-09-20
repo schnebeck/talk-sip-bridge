@@ -13,6 +13,15 @@ call, and the bridge's own line is using the other one for this very call.
 
 Usage: test_audio_over_sip.py <sip-phone2-password> [extension]
 """
+
+import os
+import pathlib
+import sys
+
+# The daemon's modules are installed separately from these scripts.
+sys.path.insert(0, os.environ.get("BRIDGE_CODE")
+                or str(pathlib.Path(__file__).resolve().parent.parent.parent / "bridge"))
+
 import asyncio
 import sys
 import threading

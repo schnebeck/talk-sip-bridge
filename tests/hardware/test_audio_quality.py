@@ -22,6 +22,15 @@ publish, and recorded back from a subscriber. Reported per burst:
 
 Usage: test_audio_quality.py <roomid> [g722|pcmu] [bursts]
 """
+
+import os
+import pathlib
+import sys
+
+# The daemon's modules are installed separately from these scripts.
+sys.path.insert(0, os.environ.get("BRIDGE_CODE")
+                or str(pathlib.Path(__file__).resolve().parent.parent.parent / "bridge"))
+
 import asyncio
 import json
 import sys

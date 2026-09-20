@@ -8,6 +8,8 @@ systemd - no ad-hoc scripts.
 1. Create a dedicated system user: `useradd --system --no-create-home fritzbox-talk-bridge`.
 2. Create a Python venv at `/opt/fritzbox-talk-bridge-venv` (`bridge/requirements.txt`)
    and copy `bridge/*.py` to `/opt/fritzbox-talk-bridge/`, owned by that user.
+   `bridge/` holds the daemon and nothing else - the tests are installed
+   separately or not at all, see [`../tests/README.md`](../tests/README.md).
 3. Copy [`env.example`](./env.example) to `/etc/fritzbox-talk-bridge/env`, fill
    in the required values (see `../docs/CONFIG.md`), `chmod 600`, owned by
    the service user.

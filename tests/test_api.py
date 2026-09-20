@@ -11,10 +11,12 @@ import inspect
 import pathlib
 import unittest
 
-import sip_requests
+from tests import CODE_DIR
 from tests.support import env, needs_media_stack
 
-BRIDGE = pathlib.Path(__file__).resolve().parent.parent
+import sip_requests
+
+BRIDGE = CODE_DIR
 
 
 def tree_of(filename: str) -> ast.AST:
