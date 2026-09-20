@@ -14,7 +14,8 @@ see the known gaps in `docs/CONCEPT.md`.
 
 See `docs/SIGNALING-API.md` for the Talk signaling and OCS interface this
 builds on, `docs/CONCEPT.md` for the architecture, `docs/CONFIG.md` for
-configuration, and `deploy/README.md` for installation.
+configuration, `docs/REFERENCE-CALL.md` for what a healthy call logs and
+measures, and `deploy/README.md` for installation.
 
 ## Tests
 
