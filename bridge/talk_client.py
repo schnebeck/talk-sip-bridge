@@ -37,6 +37,7 @@ from av import AudioFrame
 
 from agc import Agc
 from config import config
+from room_state import RoomCallState, is_room_wide_call_end
 
 AUDIO_SAMPLE_RATE = 48000
 RTP_QUEUE_POLL_INTERVAL = 0.02  # one 20ms RTP packet - how long a frame waits for late audio
@@ -46,7 +47,7 @@ MAX_QUEUED_PACKETS = 5  # 100ms of jitter cushion; older packets are only latenc
 # clients only ever subscribe to a participant carrying AUDIO or VIDEO
 # (spreed's webrtc.js: userHasStreams()), which is what makes the
 # distinction below matter rather than being cosmetic.
-FLAG_IN_CALL = 1
+from room_state import FLAG_IN_CALL  # noqa: E402  (the in-call bit the model reads)
 FLAG_WITH_AUDIO = 2
 FLAG_WITH_PHONE = 8
 
@@ -95,13 +96,6 @@ def _frame_to_mono_pcm(frame: AudioFrame) -> np.ndarray:
         row = arr.flatten()
         mono = row.reshape(-1, channels).astype(np.float64).mean(axis=1) if channels > 1 else row.astype(np.float64)
     return np.clip(mono, -32768, 32767).astype(np.int16)
-
-
-def _has_in_call_flag(raw) -> bool:
-    try:
-        return bool(int(raw) & FLAG_IN_CALL)
-    except (TypeError, ValueError):
-        return False
 
 
 def _sip_display_name(from_header: str) -> str:
@@ -359,7 +353,7 @@ class TalkClient:
         self._call_sessions_lock = threading.Lock()  # entries are written from both the asyncio loop and SIP worker threads
         self._room_joined_event = asyncio.Event()
         self._room_roster = {}  # room sessionid -> {"is_human": bool} - who else is in the room, for subscribing to their audio
-        self._room_incall = None  # room sessionid -> in call? None until the first update seeds it
+        self._room_call = RoomCallState()
 
     # -- lifecycle, run from a background thread -----------------------
     def run_forever(self):
@@ -405,7 +399,7 @@ class TalkClient:
         await self.ws.recv()  # welcome banner
         resp = json.loads(await self.ws.recv())
         self.own_sessionid = resp["hello"]["sessionid"]
-        self._room_incall = None  # a new connection knows nothing about any room yet
+        self._room_call = RoomCallState()  # a new connection knows nothing about any room yet
         print(f"[talk] Connected as internal client, session {self.own_sessionid}")
 
     # -- incoming messages from the signaling server ---------------------
@@ -570,51 +564,6 @@ class TalkClient:
             except Exception as e:
                 print(f"[talk] Could not add ICE candidate: {e!r}")
 
-    def _apply_incall_update(self, update: dict):
-        """Keeps this room's in-call membership up to date and reports what
-        moved, as (joined, left) sets of session ids.
-
-        Every decision this bridge makes - somebody answered, the call is
-        over - is a transition, never a state. Reading state instead is
-        what made a session the signaling server still listed as in-call,
-        long after its client was gone, look exactly like a person
-        answering: inbound calls were picked up instantly against a dead
-        peer. It also means several sessions of the same person (Talk open
-        in a browser and on a phone at once) are unremarkable - only the
-        one that moves counts.
-
-        The first update after connecting carries the room's membership
-        rather than a change, so it seeds the model and reports nothing."""
-        def in_call(raw) -> bool:
-            try:
-                return bool(int(raw) & 1)
-            except (TypeError, ValueError):
-                return False
-
-        previous = self._room_incall
-        current = dict(previous or {})
-        users = update.get("users")
-        if users is not None:
-            # A snapshot replaces what we know: a session missing from it is
-            # gone. This is the only way the model learns about sessions
-            # that dropped without the server ever sending a "leave".
-            current = {}
-            for user in users:
-                session_id = user.get("sessionId") or user.get("sessionid")
-                if session_id:
-                    current[session_id] = in_call(user.get("inCall"))
-        for item in update.get("changed") or []:
-            session_id = item.get("sessionId") or item.get("sessionid")
-            if session_id and "inCall" in item:
-                current[session_id] = in_call(item["inCall"])
-
-        self._room_incall = current
-        if previous is None:
-            return set(), set()
-        joined = {s for s, now_in_call in current.items() if now_in_call and not previous.get(s)}
-        left = {s for s, was_in_call in previous.items() if was_in_call and not current.get(s)}
-        return joined, left
-
     async def _handle_participants_update(self, update: dict):
         """The room's two answers this bridge acts on: somebody joined the
         call it is ringing for, or the call it is in has ended.
@@ -622,7 +571,7 @@ class TalkClient:
         Besides per-session updates the server also broadcasts a room-wide
         "the call itself ended" (an "all" entry with a lowercase "incall"),
         which is what Talk's own "end call" button produces."""
-        joined, left = self._apply_incall_update(update)
+        entered, left = self._room_call.apply(update)
 
         with self._call_sessions_lock:
             ours = {self.own_sessionid}
@@ -642,7 +591,7 @@ class TalkClient:
             return
 
         if waiting_call_id is not None:
-            accepted_sessionid = next((s for s in sorted(joined) if s not in ours), None)
+            accepted_sessionid = self._room_call.accepted_by(entered, ours)
             if accepted_sessionid is None:
                 return
             print(f"[talk] Human joined the call - accepting {waiting_call_id}")
@@ -675,15 +624,13 @@ class TalkClient:
             return
 
         if update.get("all"):
-            in_call_raw = update.get("incall", update.get("inCall"))
-            if in_call_raw is not None and not _has_in_call_flag(in_call_raw):
+            if is_room_wide_call_end(update):
                 self._hangup_sip("Room call ended - ending SIP side")
             return
 
         if not left:
             return
-        still_there = any(flag for session_id, flag in self._room_incall.items() if session_id not in ours)
-        if not still_there:
+        if not self._room_call.anyone_in_call_besides(ours):
             self._hangup_sip(f"Everyone but this bridge left the call ({len(left)} session(s)) - ending SIP side")
 
     def _call_still_running(self, sip_call_id: str) -> bool:
@@ -1082,7 +1029,7 @@ class TalkClient:
 
         The order matters. Joining the room first establishes what the
         room's call looks like before this call exists, because answering
-        is recognised as a change to that (see _apply_incall_update), and
+        is recognised as a change to that (see room_state.RoomCallState), and
         arming the call before ringing closes the window in between.
         Ringing first lets a fast answer land in the very snapshot that
         establishes the starting state, where it is indistinguishable from

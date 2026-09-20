@@ -1,0 +1,71 @@
+[
+  {
+    "target": "room",
+    "type": "message",
+    "message": {
+      "roomid": "room-token",
+      "data": {
+        "type": "chat",
+        "chat": {
+          "refresh": true
+        }
+      }
+    }
+  },
+  {
+    "target": "room",
+    "type": "message",
+    "message": {
+      "roomid": "room-token",
+      "data": {
+        "type": "chat",
+        "chat": {
+          "refresh": true
+        }
+      }
+    }
+  },
+  {
+    "target": "room",
+    "type": "join",
+    "join": [
+      {
+        "sessionid": "human",
+        "userid": "user-a",
+        "features": [
+          "chat-relay"
+        ],
+        "user": {
+          "displayname": "User A"
+        },
+        "roomsessionid": "other-2"
+      }
+    ]
+  },
+  {
+    "target": "room",
+    "type": "message",
+    "message": {
+      "roomid": "room-token",
+      "data": {
+        "type": "chat",
+        "chat": {
+          "refresh": true
+        }
+      }
+    }
+  },
+  {
+    "target": "room",
+    "type": "message",
+    "message": {
+      "roomid": "room-token",
+      "data": {
+        "type": "chat",
+        "chat": {
+          "refresh": true
+        }
+      }
+    }
+  }
+]

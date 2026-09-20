@@ -1,0 +1,117 @@
+[
+  {
+    "target": "room",
+    "type": "join",
+    "join": [
+      {
+        "sessionid": "bridge-internal",
+        "userid": "",
+        "features": [
+          "start-dialout",
+          "internal-incall"
+        ]
+      }
+    ]
+  },
+  {
+    "target": "participants",
+    "type": "update",
+    "update": {
+      "roomid": "room-token",
+      "users": [
+        {
+          "inCall": 0,
+          "sessionId": "bridge-internal",
+          "lastPing": 1789908952,
+          "internal": true,
+          "features": [
+            "start-dialout",
+            "internal-incall"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "target": "room",
+    "type": "message",
+    "message": {
+      "roomid": "room-token",
+      "data": {
+        "type": "chat",
+        "chat": {
+          "refresh": true
+        }
+      }
+    }
+  },
+  {
+    "target": "room",
+    "type": "message",
+    "message": {
+      "roomid": "room-token",
+      "data": {
+        "type": "chat",
+        "chat": {
+          "refresh": true
+        }
+      }
+    }
+  },
+  {
+    "target": "room",
+    "type": "message",
+    "message": {
+      "roomid": "room-token",
+      "data": {
+        "type": "chat",
+        "chat": {
+          "refresh": true
+        }
+      }
+    }
+  },
+  {
+    "target": "room",
+    "type": "join",
+    "join": [
+      {
+        "sessionid": "human",
+        "userid": "user-a",
+        "features": [
+          "chat-relay"
+        ],
+        "user": {
+          "displayname": "User A"
+        },
+        "roomsessionid": "other-3"
+      }
+    ]
+  },
+  {
+    "target": "room",
+    "type": "message",
+    "message": {
+      "roomid": "room-token",
+      "data": {
+        "type": "chat",
+        "chat": {
+          "refresh": true
+        }
+      }
+    }
+  },
+  {
+    "target": "room",
+    "type": "message",
+    "message": {
+      "roomid": "room-token",
+      "data": {
+        "type": "chat",
+        "chat": {
+          "refresh": true
+        }
+      }
+    }
+  }
+]

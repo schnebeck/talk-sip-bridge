@@ -1,0 +1,312 @@
+[
+  {
+    "target": "room",
+    "type": "join",
+    "join": [
+      {
+        "sessionid": "bridge-internal",
+        "userid": "",
+        "features": [
+          "start-dialout",
+          "internal-incall"
+        ]
+      }
+    ]
+  },
+  {
+    "target": "room",
+    "type": "join",
+    "join": [
+      {
+        "sessionid": "human",
+        "userid": "user-a",
+        "features": [
+          "chat-relay"
+        ],
+        "user": {
+          "displayname": "User A"
+        },
+        "roomsessionid": "other-1"
+      }
+    ]
+  },
+  {
+    "target": "participants",
+    "type": "update",
+    "update": {
+      "roomid": "room-token",
+      "users": [
+        {
+          "internal": true,
+          "features": [
+            "start-dialout",
+            "internal-incall"
+          ],
+          "inCall": 0,
+          "sessionId": "bridge-internal",
+          "lastPing": 1789911005
+        }
+      ]
+    }
+  },
+  {
+    "target": "room",
+    "type": "message",
+    "message": {
+      "roomid": "room-token",
+      "data": {
+        "type": "chat",
+        "chat": {
+          "refresh": true
+        }
+      }
+    }
+  },
+  {
+    "target": "room",
+    "type": "message",
+    "message": {
+      "roomid": "room-token",
+      "data": {
+        "type": "chat",
+        "chat": {
+          "refresh": true
+        }
+      }
+    }
+  },
+  {
+    "target": "participants",
+    "type": "update",
+    "update": {
+      "roomid": "room-token",
+      "users": [
+        {
+          "sessionId": "human",
+          "actorId": "user-a",
+          "inCall": 7,
+          "actorType": "users",
+          "participantType": 1,
+          "lastPing": 1789911017,
+          "userId": "user-a",
+          "nextcloudSessionId": "other-1",
+          "participantPermissions": 510
+        },
+        {
+          "lastPing": 1789911022,
+          "internal": true,
+          "features": [
+            "start-dialout",
+            "internal-incall"
+          ],
+          "inCall": 0,
+          "sessionId": "bridge-internal"
+        }
+      ]
+    }
+  },
+  {
+    "target": "room",
+    "type": "join",
+    "join": [
+      {
+        "sessionid": "phone-virtual",
+        "userid": "",
+        "user": {
+          "type": "phone",
+          "callid": "call-1",
+          "number": "FritzFon schwarz",
+          "displayname": "User A"
+        }
+      }
+    ]
+  },
+  {
+    "target": "participants",
+    "type": "update",
+    "update": {
+      "roomid": "room-token",
+      "users": [
+        {
+          "lastPing": 1789911017,
+          "sessionId": "human",
+          "userId": "user-a",
+          "actorId": "user-a",
+          "inCall": 7,
+          "participantPermissions": 510,
+          "participantType": 1,
+          "nextcloudSessionId": "other-1",
+          "actorType": "users"
+        },
+        {
+          "lastPing": 1789911023,
+          "internal": true,
+          "features": [
+            "start-dialout",
+            "internal-incall"
+          ],
+          "inCall": 0,
+          "sessionId": "bridge-internal"
+        },
+        {
+          "virtual": true,
+          "inCall": 9,
+          "sessionId": "phone-virtual",
+          "lastPing": 1789911023
+        }
+      ]
+    }
+  },
+  {
+    "target": "participants",
+    "type": "update",
+    "update": {
+      "roomid": "room-token",
+      "users": [
+        {
+          "inCall": 7,
+          "participantPermissions": 510,
+          "participantType": 1,
+          "sessionId": "human",
+          "userId": "user-a",
+          "actorType": "users",
+          "lastPing": 1789911017,
+          "nextcloudSessionId": "other-1",
+          "actorId": "user-a"
+        },
+        {
+          "lastPing": 1789911024,
+          "internal": true,
+          "features": [
+            "start-dialout",
+            "internal-incall"
+          ],
+          "inCall": 3,
+          "sessionId": "bridge-internal"
+        },
+        {
+          "lastPing": 1789911024,
+          "virtual": true,
+          "inCall": 9,
+          "sessionId": "phone-virtual"
+        }
+      ]
+    }
+  },
+  {
+    "target": "room",
+    "type": "message",
+    "message": {
+      "roomid": "room-token",
+      "data": {
+        "type": "chat",
+        "chat": {
+          "refresh": true
+        }
+      }
+    }
+  },
+  {
+    "target": "participants",
+    "type": "update",
+    "update": {
+      "roomid": "room-token",
+      "users": [
+        {
+          "actorId": "user-a",
+          "nextcloudSessionId": "other-1",
+          "userId": "user-a",
+          "inCall": 7,
+          "lastPing": 1789911017,
+          "sessionId": "human",
+          "participantType": 1,
+          "participantPermissions": 510,
+          "actorType": "users"
+        },
+        {
+          "inCall": 3,
+          "sessionId": "bridge-internal",
+          "lastPing": 1789911024,
+          "internal": true,
+          "features": [
+            "start-dialout",
+            "internal-incall"
+          ]
+        },
+        {
+          "virtual": true,
+          "inCall": 9,
+          "sessionId": "phone-virtual",
+          "lastPing": 1789911024
+        }
+      ]
+    }
+  },
+  {
+    "target": "room",
+    "type": "leave",
+    "leave": [
+      "phone-virtual"
+    ]
+  },
+  {
+    "target": "participants",
+    "type": "update",
+    "update": {
+      "roomid": "room-token",
+      "users": [
+        {
+          "actorId": "user-a",
+          "nextcloudSessionId": "other-1",
+          "sessionId": "human",
+          "participantType": 1,
+          "participantPermissions": 510,
+          "lastPing": 1789911017,
+          "userId": "user-a",
+          "inCall": 7,
+          "actorType": "users"
+        },
+        {
+          "inCall": 0,
+          "sessionId": "bridge-internal",
+          "lastPing": 1789911056,
+          "internal": true,
+          "features": [
+            "start-dialout",
+            "internal-incall"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "target": "participants",
+    "type": "update",
+    "update": {
+      "roomid": "room-token",
+      "users": [
+        {
+          "actorType": "users",
+          "nextcloudSessionId": "other-1",
+          "inCall": 7,
+          "sessionId": "human",
+          "userId": "user-a",
+          "lastPing": 1789911047,
+          "participantType": 1,
+          "participantPermissions": 510,
+          "actorId": "user-a"
+        },
+        {
+          "sessionId": "bridge-internal",
+          "lastPing": 1789911057,
+          "internal": true,
+          "features": [
+            "start-dialout",
+            "internal-incall"
+          ],
+          "inCall": 0
+        }
+      ]
+    }
+  }
+]
