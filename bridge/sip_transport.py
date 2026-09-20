@@ -82,6 +82,10 @@ class _SipTransportBase:
             "BYE": self.call_manager.handle_bye,
             "CANCEL": self.call_manager.handle_cancel,
             "OPTIONS": self.call_manager.handle_options,
+            # A key press can arrive as its own request rather than in
+            # the audio stream; an unanswered one is retransmitted and
+            # then read as a dead dialog.
+            "INFO": self.call_manager.handle_info,
         }.get(method)
         if handler is None:
             return

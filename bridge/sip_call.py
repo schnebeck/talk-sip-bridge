@@ -24,7 +24,8 @@ from config import config
 from payload_types import PT_PCMU
 from rtp import RtpSession
 from sip_messages import (VALID_NUMBER, dialled_number, digest_response,
-                          extract_contact_uri, parse_auth_challenge, parse_sip_headers)
+                          dtmf_from_info, extract_contact_uri, parse_auth_challenge,
+                          parse_sip_headers)
 from sip_sdp import (CODEC_NAMES, SUPPORTED, answer_sdp, choose_payload_type,
                      extract_sip_body, offer_sdp, parse_offered_payload_types,
                      parse_sdp_media_address, parse_telephone_event_type)
@@ -115,6 +116,14 @@ class CallManager:
         dtmf_pt = parse_telephone_event_type(body)
         with self.lock:
             if self.call is not None:
+                if self.call["call_id"] == call_id and self.call["status"] == "connected":
+                    # Not a second call: the far end is re-offering inside
+                    # the one that is already up - a session-timer
+                    # refresh, a hold, or a media address that moved.
+                    # Answering "486 Busy Here" to that says the dialog
+                    # does not exist, and the gateway tears the call down.
+                    self._reanswer(headers, remote_addr, body, offered_pts)
+                    return
                 self._send_response("486 Busy Here", headers, remote_addr, to_tag=f"bridge{secrets.token_hex(3)}")
                 return
             to_tag = f"bridge{secrets.token_hex(3)}"
@@ -128,6 +137,56 @@ class CallManager:
               + (f" to {dialled}" if dialled else ""))
         self._send_response("180 Ringing", headers, remote_addr, to_tag=to_tag)
         self.on_incoming_call(call_id=call_id, caller=caller, dialled=dialled)
+
+    def _reanswer(self, headers, remote_addr, body, offered_pts):
+        """Answers a re-INVITE inside the running call.
+
+        Called with the lock held. The answer repeats what was already
+        agreed - same port, same codec, same tag - because a re-INVITE
+        that changes nothing is the common case and the far end only
+        wants to hear that the session is still there. What can change is
+        where the audio goes: a gateway moves its media address on hold,
+        on unhold, and when a handset comes back after losing power."""
+        line = self.line
+        call = self.call
+        rtp = call.get("rtp")
+        payload_type = rtp.payload_type if rtp is not None else None
+        if payload_type is None or (offered_pts and payload_type not in offered_pts):
+            print(f"[call:{line.id}] Re-INVITE for {call['call_id']} no longer offers "
+                  f"{payload_type} - refusing")
+            self._send_response("488 Not Acceptable Here", headers, remote_addr,
+                                to_tag=call["to_tag"])
+            return
+        media = parse_sdp_media_address(body)
+        if media and not line.media_relay_enabled and media != rtp.remote_addr:
+            print(f"[call:{line.id}] Re-INVITE moves the caller's audio from "
+                  f"{rtp.remote_addr} to {media}")
+            rtp.remote_addr = media
+        sdp, _, _ = answer_sdp(line, line.local_rtp_port, payload_type, rtp.dtmf_payload_type)
+        self._send_response("200 OK", headers, remote_addr, extra_headers=[
+            sip_requests.contact_header(line, with_transport=False),
+            "Content-Type: application/sdp",
+        ], body=sdp, to_tag=call["to_tag"])
+        print(f"[call:{line.id}] Re-INVITE for {call['call_id']} answered - the call continues")
+
+    def handle_info(self, text, headers, call_id, remote_addr):
+        """A key press reported as its own request, which some gateways
+        do instead of (or as well as) sending RTP events.
+
+        Every INFO gets a 200 OK whether or not there is a digit in it:
+        an unanswered in-dialog request is retransmitted and then taken
+        as a dead dialog. A digit goes through the same session that
+        reports events and tones, so a press announced twice stays one
+        press."""
+        with self.lock:
+            call = self.call if self.call and self.call["call_id"] == call_id else None
+            rtp = call.get("rtp") if call else None
+            to_tag = call["to_tag"] if call else None
+        self._send_response("200 OK", headers, remote_addr, to_tag=to_tag)
+        digit = dtmf_from_info(extract_sip_body(text))
+        if digit and rtp is not None:
+            print(f"[call:{self.line.id}] DTMF {digit} on {call_id} (as SIP INFO)")
+            rtp.report_digit(digit)
 
     def answer(self) -> bool:
         """Accepts the current ringing call with real audio."""

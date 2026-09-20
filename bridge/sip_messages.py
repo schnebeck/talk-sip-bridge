@@ -57,6 +57,20 @@ def extract_contact_uri(contact_header: str) -> str:
     return contact_header.split(';')[0].strip()
 
 
+def dtmf_from_info(body: str) -> str:
+    """The key press in a SIP INFO body, or "".
+
+    A third way a gateway can report a press, alongside RTP events and
+    the tone itself: `application/dtmf-relay` carries "Signal=5" with a
+    duration, `application/dtmf` just the character. Both appear in the
+    wild from the same gateway at different moments."""
+    match = re.search(r"(?im)^\s*signal\s*=\s*([0-9A-D*#])\s*$", body)
+    if match:
+        return match.group(1).upper()
+    stripped = body.strip()
+    return stripped.upper() if re.fullmatch(r"[0-9A-Da-d*#]", stripped) else ""
+
+
 def caller_number(from_header: str) -> str:
     """The number a call came from: the user part of the SIP URI.
 

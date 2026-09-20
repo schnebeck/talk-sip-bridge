@@ -213,7 +213,7 @@ class RtpSession:
                 timestamp = struct.unpack("!I", data[4:8])[0]
                 digit = self._dtmf.feed(timestamp, data[12:])
                 if digit is not None:
-                    self._report_digit(digit)
+                    self.report_digit(digit)
                 continue
             if payload_type != self.payload_type and payload_type != self._reported_pt:
                 print(f"[rtp] Receiving payload type {payload_type} while {self.payload_type} was negotiated")
@@ -224,13 +224,15 @@ class RtpSession:
             if self._inband is not None:
                 digit = self._inband.feed(pcm)
                 if digit is not None:
-                    self._report_digit(digit)
+                    self.report_digit(digit)
             self.recv_queue.put(pcm)
 
-    def _report_digit(self, digit: str):
-        """One key press, however it arrived. A gateway that sends the
-        same press both ways - as an event and as a tone - would otherwise
-        be read as two, so a digit is reported at most once per window."""
+    def report_digit(self, digit: str):
+        """One key press, however it arrived - as an RTP event, as a tone
+        in the audio, or as a SIP INFO from outside this session. A
+        gateway that sends the same press two of those ways would
+        otherwise be read as two, so a digit is reported at most once per
+        window."""
         now = time.monotonic()
         if now - self._last_digit_at < DTMF_REPEAT_GUARD:
             return

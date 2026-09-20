@@ -72,10 +72,12 @@ class TransportToCallManagerTest(unittest.TestCase):
         missing = dispatched - methods_of("sip_call.py", "CallManager")
         self.assertEqual(missing, set())
 
-    def test_the_four_request_methods_are_handled(self):
+    def test_every_request_method_a_gateway_sends_in_a_call_is_handled(self):
+        """Including INFO: an in-dialog request nobody answers is
+        retransmitted and then taken as a dead dialog."""
         self.assertEqual(
             calls_on("sip_transport.py", "self.call_manager"),
-            {"handle_invite", "handle_bye", "handle_cancel", "handle_options"})
+            {"handle_invite", "handle_bye", "handle_cancel", "handle_options", "handle_info"})
 
 
 class CallManagerToTransportTest(unittest.TestCase):
