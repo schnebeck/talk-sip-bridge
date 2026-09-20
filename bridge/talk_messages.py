@@ -58,11 +58,20 @@ def set_incall(flags: int) -> dict:
     return {"type": "internal", "internal": {"type": "incall", "incall": {"incall": flags}}}
 
 
-def add_session(sessionid: str, roomid: str, call_id: str, number: str, displayname: str) -> dict:
-    """The phone participant Talk shows in the room. A name plate only: a
-    virtual session can never carry media, so it is announced without
-    WITH_AUDIO - pointing clients at a stream that cannot exist leaves them
-    retrying against a silent tile forever."""
+def add_session(sessionid: str, roomid: str, call_id: str, number: str, displayname: str,
+                with_audio: bool = False) -> dict:
+    """The phone participant Talk shows in the room.
+
+    Normally a name plate only: a virtual session can never carry media,
+    so announcing WITH_AUDIO points clients at a stream that cannot exist
+    and leaves them retrying against a silent tile.
+
+    The cost of leaving it out, measured later: Talk's clients build a
+    peer only for participants carrying audio or video, and their "waiting
+    for someone" sound stops only when a peer appears. A room whose only
+    other participant is a phone therefore keeps playing it. with_audio
+    exists to try the other side of that trade - see
+    config.phone_participant."""
     return {
         "type": "internal",
         "internal": {
@@ -70,7 +79,8 @@ def add_session(sessionid: str, roomid: str, call_id: str, number: str, displayn
             "addsession": {
                 "sessionid": sessionid,
                 "roomid": roomid,
-                "incall": FLAG_IN_CALL | FLAG_WITH_PHONE,
+                "incall": (FLAG_IN_CALL | FLAG_WITH_PHONE
+                           | (FLAG_WITH_AUDIO if with_audio else 0)),
                 # No actor here: the signaling server would register this
                 # session with Nextcloud as that actor, and Nextcloud
                 # rejects one that is not already invited to the room -

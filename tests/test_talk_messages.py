@@ -63,6 +63,19 @@ class SessionTest(unittest.TestCase):
         self.assertTrue(incall & m.FLAG_WITH_PHONE)
         self.assertFalse(incall & m.FLAG_WITH_AUDIO)
 
+    def test_it_can_be_announced_with_audio_instead(self):
+        """The other side of the trade: without the flag Talk's clients
+        build no peer for the phone and never stop their "waiting for
+        someone" sound; with it they look for a stream a virtual session
+        cannot have. Which is less wrong is measured per deployment - see
+        config.phone_participant."""
+        message = m.add_session("phone-1", "room-token", call_id="call-1",
+                                number="+4930622", displayname="Anna", with_audio=True)
+        incall = message["internal"]["addsession"]["incall"]
+        self.assertTrue(incall & m.FLAG_WITH_AUDIO)
+        self.assertTrue(incall & m.FLAG_WITH_PHONE)
+        self.assertTrue(incall & m.FLAG_IN_CALL)
+
     def test_the_caller_is_named_by_displayname(self):
         """The field Talk renders participants by; without it the caller
         shows up as a guest."""

@@ -176,6 +176,21 @@ class Config:
         # hand. Empty disables persistence entirely (falls back to today's
         # behavior: registration always starts off). deploy/fritzbox-talk-
         # bridge.service provisions this via systemd's StateDirectory=.
+        # How the phone shows up in the room, and what it costs:
+        #
+        #   phone  a virtual session flagged as a phone, without audio.
+        #          Talk shows the caller's number, but its clients build no
+        #          peer for it and their "waiting for someone" sound never
+        #          stops - measured, every 15s, indefinitely on Android.
+        #   audio  the same, flagged as carrying audio. Clients then look
+        #          for a stream the session cannot have.
+        #   none   no virtual session. The bridge's own publishing session
+        #          carries the call, named after the caller; no phone tile.
+        self.phone_participant = os.environ.get("BRIDGE_PHONE_PARTICIPANT", "phone").strip().lower()
+        if self.phone_participant not in ("phone", "audio", "none"):
+            raise RuntimeError("BRIDGE_PHONE_PARTICIPANT must be phone, audio or none, "
+                               f"not {self.phone_participant!r}")
+
         # Read key presses out of the audio as well as from RFC 4733
         # events. Needed wherever a gateway plays the tones instead of
         # passing the events on, which this deployment's does; harmless

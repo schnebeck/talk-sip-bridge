@@ -354,12 +354,23 @@ class TalkClient:
         retrying against a participant that never answers. The flags have
         to be spelled out because "internal-incall" turns off the server's
         own default for virtual sessions too."""
+        if config.phone_participant == "none":
+            print(f"[talk] No phone participant for {sip_call_id} "
+                  f"(BRIDGE_PHONE_PARTICIPANT=none) - the call shows as this bridge's "
+                  f"own session, named after the caller")
+            return None
         virtual_sessionid = f"phone-{secrets.token_hex(8)}"
+        with_audio = config.phone_participant == "audio"
         await self.ws.send(json.dumps(talk_messages.add_session(
-            virtual_sessionid, roomid, call_id=sip_call_id, number=number, displayname=number)))
+            virtual_sessionid, roomid, call_id=sip_call_id, number=number, displayname=number,
+            with_audio=with_audio)))
+        print(f"[talk] Phone participant {virtual_sessionid} announced "
+              f"{'with' if with_audio else 'without'} audio")
         return virtual_sessionid
 
     async def _remove_virtual_session(self, virtual_sessionid: str, roomid: str):
+        if not virtual_sessionid:
+            return
         await self.ws.send(json.dumps(talk_messages.remove_session(virtual_sessionid, roomid)))
 
     # -- publishing SIP call audio into the room --------------------------
@@ -412,7 +423,8 @@ class TalkClient:
             return
 
         await self._send_publish_offer(sip_call_id, sdp, display_name)
-        print(f"[talk] Publishing call audio for {sip_call_id} as virtual session {virtual_sessionid}")
+        print(f"[talk] Publishing call audio for {sip_call_id}"
+              + (f" as virtual session {virtual_sessionid}" if virtual_sessionid else ""))
 
         # Only now: announcing audio any earlier makes Talk clients ask for a
         # stream that does not exist yet, and they back off to one retry
