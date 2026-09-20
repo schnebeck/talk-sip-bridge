@@ -218,8 +218,9 @@ class Config:
         # automatically after a crash/restart instead of silently staying
         # deregistered until someone notices and toggles it back on by
         # hand. Empty disables persistence entirely (falls back to today's
-        # behavior: registration always starts off). deploy/fritzbox-talk-
-        # bridge.service provisions this via systemd's StateDirectory=.
+        # behavior: registration always starts off).
+        # deploy/talk-sip-bridge.service provisions this via systemd's
+        # StateDirectory=.
         # Talk's own door for telephony backends (its sip_bridge_shared_secret).
         # With it the bridge can ask Nextcloud to create a conversation for an
         # incoming call, in which the caller is a real participant - see
