@@ -21,7 +21,7 @@ same tests would run over both.
 import pathlib
 import unittest
 
-from sip_messages import (content_length_of, extract_contact_uri,
+from sip_messages import (content_length_of, dialled_number, extract_contact_uri,
                           parse_auth_challenge, parse_sip_headers,
                           split_messages)
 from sip_sdp import (choose_payload_type, extract_sip_body,
@@ -52,6 +52,19 @@ class InboundInviteTest(unittest.TestCase):
     def test_the_caller_is_readable_from_the_from_header(self):
         self.assertIn("Handset", self.headers["from"])
         self.assertIn("sip:**611@fritz.box", self.headers["from"])
+
+    def test_the_number_dialled_is_in_neither_the_request_uri_nor_to(self):
+        """What the bridge is addressed as, twice: this gateway delivers
+        a call to the account's own contact, so neither header says
+        anything about which of its numbers was called."""
+        self.assertIn("sip:sip-phone@", self.raw.split("\r\n", 1)[0])
+        self.assertIn("sip:sip-phone@", self.headers["to"])
+
+    def test_the_number_dialled_is_in_p_called_party_id(self):
+        """Where RFC 3455 says it belongs, and the only place this
+        gateway puts it. **9 is its "ring every handset" extension - a
+        call placed to one handset carries that handset's extension."""
+        self.assertEqual(dialled_number(self.raw.split("\r\n", 1)[0], self.headers), "**9")
 
     def test_the_dialog_contact_is_an_opaque_uri_not_the_caller(self):
         """This is why in-dialog requests go to Contact and not to the

@@ -91,6 +91,16 @@ class DialledNumberTest(unittest.TestCase):
     bridge's own call or a person's, so a wrong answer here either takes
     someone's call away or refuses one meant for the bridge."""
 
+    def test_the_header_meant_for_it_wins(self):
+        """A gateway that fills in P-Called-Party-ID means it: this one
+        addresses the INVITE to the account's own contact and puts the
+        dialled extension only here."""
+        self.assertEqual(
+            dialled_number("INVITE sip:sip-phone@192.168.1.10:5070;transport=tcp SIP/2.0",
+                           {"to": "<sip:sip-phone@192.168.1.10:5070>",
+                            "p-called-party-id": "<sip:**621@fritz.box>"}),
+            "**621")
+
     def test_the_request_uri_says_it(self):
         headers = {"to": "<sip:**622@fritz.box>"}
         self.assertEqual(

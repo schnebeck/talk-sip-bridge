@@ -61,16 +61,30 @@ def dialled_number(first_line: str, headers: dict) -> str:
     """Which number an incoming call was placed to.
 
     One registered line receives calls for more than one number - a trunk
-    delivers every number it carries down the same registration, and even
-    a single-account gateway announces its own internal extension. The
-    Request-URI is what the call is addressed to right now, so it is
-    asked first; To holds what the caller originally dialled, which is the
-    same thing unless something forwarded the call.
+    delivers every number it carries down the same registration, and a
+    gateway with one account still distinguishes the extension dialled
+    from the account it is delivering to.
+
+    Three places, in this order, because a gateway that fills in the more
+    specific one means it:
+
+    1. `P-Called-Party-ID` (RFC 3455), whose whole purpose is to name the
+       number that was called. A FRITZ!Box puts the dialled extension
+       here and nowhere else - measured: an INVITE to this bridge is
+       addressed to `sip:sip-phone@...`, the account's own contact, in
+       both the Request-URI and To, and carries
+       `P-Called-Party-ID: <sip:**9@fritz.box>` for the number the
+       handset actually dialled.
+    2. the Request-URI, which is where a trunk puts the number it is
+       delivering,
+    3. To, which holds what the caller dialled where nothing rewrote it.
 
     The user part only, without the host: "sip:**622@fritz.box" is the
     number **622 to everyone except the box."""
     match = re.match(r"\s*[A-Z]+\s+(\S+)", first_line)
-    for candidate in (match.group(1) if match else "", headers.get("to", "")):
+    for candidate in (headers.get("p-called-party-id", ""),
+                      match.group(1) if match else "",
+                      headers.get("to", "")):
         user = re.search(r"sips?:([^@;>\s]+)@", candidate)
         if user:
             return user.group(1)
