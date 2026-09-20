@@ -2,9 +2,10 @@
 
 Each CallManager is bound to one LineConfig (see config.py) and holds at
 most one active call on that line - a second incoming call on the same line
-is rejected with "486 Busy Here". Running several lines concurrently means
-constructing several independent (SipTransport, SipRegistrar, CallManager)
-sets, one per line.
+is rejected with "486 Busy Here", while an INVITE naming the call that is
+already up is a re-offer inside it and is answered. Running several lines
+concurrently means constructing several independent (SipTransport,
+SipRegistrar, CallManager) sets, one per line.
 
 Contains no Talk-specific logic - callers pass callback hooks
 (on_incoming_call, on_call_connected, on_call_ended, on_call_failed) so the

@@ -80,6 +80,11 @@ if event:
     if connected:
         rtp = connected[1]["rtp"]
         record("codec negotiated is G.722", rtp.payload_type == 9, f"payload type {rtp.payload_type}")
+        # Without this, the two audio checks below can pass with the peer
+        # switched off: audio sent to this line's own address comes back
+        # to this line, at the right frequency, proving nothing.
+        record("the peer's own media address is used",
+               rtp.remote_addr != (line.local_ip, line.local_rtp_port), str(rtp.remote_addr))
         while not rtp.recv_queue.empty():
             rtp.recv_queue.get_nowait()
         tone = (np.sin(2 * np.pi * 440 * np.arange(rtp.sample_rate) / rtp.sample_rate) * 8000).astype(np.int16)
