@@ -29,6 +29,7 @@ BRIDGE_CODE=/opt/fritzbox-talk-bridge \
 | `test_sdp.py` | Offer and answer building, codec choice, media-address parsing |
 | `test_requests.py` | The shape of every SIP message this bridge sends |
 | `test_framing.py` | Where one message ends and the next begins in a TCP stream |
+| `test_transport.py` | Which connection a SIP message is written to, including when the one it should use is gone |
 | `test_gateway_messages.py` | The same parsers against messages a real gateway sent, not ones written to be parsed |
 | `test_room_state.py` | Who is in a room's call, replayed from recorded signaling traffic |
 | `test_talk_messages.py` | The shape of every signaling message this bridge sends |
@@ -81,6 +82,13 @@ its docstring.
 | `test_publish_and_verify.py` | A signaling server; publishes a tone into a room and verifies it by FFT, without any SIP call |
 | `test_audio_quality.py` | Nothing beyond the media stack: measures what the publish path does to speech |
 | `test_audio_over_sip.py`, `test_call_lifecycle.py` | A real gateway and a second SIP account |
+| `test_human_call.py` | The same, plus a person to answer in Talk - measures both directions of one call and leaves both as WAV |
+
+`test_human_call.py` needs a second SIP pipe and a second media relay pipe,
+since the bridge's line holds the first of each for the call being placed;
+its docstring carries the command. Tones shorter than about a second
+measure the gain control settling rather than the path, which is why its
+are long and it skips their first 350 ms.
 
 ## Installing them next to a deployment
 

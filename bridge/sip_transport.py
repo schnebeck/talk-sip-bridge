@@ -161,8 +161,19 @@ class TcpSipTransport(_SipTransportBase):
         one; without it the line's own outgoing connection is used, opened
         on first use and re-opened after the far end closes it."""
         if addr is not None and hasattr(addr, "sendall"):
-            addr.sendall(data)
-            return
+            try:
+                addr.sendall(data)
+                return
+            except OSError as e:
+                # The connection a request arrived on does not necessarily
+                # live as long as the request does: a gateway closes an
+                # idle one while a person is still deciding whether to pick
+                # up, and the 200 OK then has nowhere to go. Falling back
+                # to this line's own connection reaches the same gateway,
+                # which matches the response by its branch - losing the
+                # answer instead would strand a call that was accepted.
+                print(f"[sip:{self.line.id}] The connection this request arrived on is gone "
+                      f"({e!r}) - answering over this line's own connection")
         with self._out_lock:
             for attempt in (1, 2):
                 try:
@@ -223,6 +234,9 @@ class TcpSipTransport(_SipTransportBase):
         except OSError:
             return
         finally:
+            # Worth a line of its own: a connection closing mid-call is
+            # what makes a later answer fail, and it is otherwise silent.
+            print(f"[sip:{self.line.id}] TCP connection from {origin} closed")
             with self._out_lock:
                 if sock is self._out:
                     self._out = None

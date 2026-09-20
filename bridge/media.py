@@ -35,6 +35,47 @@ def resample_linear(pcm: np.ndarray, in_rate: int, out_rate: int) -> np.ndarray:
     x_out = np.linspace(0, n_in - 1, n_out)
     return np.interp(x_out, np.arange(n_in), pcm).astype(np.int16)
 
+
+class StreamResampler:
+    """Resamples a stream that arrives in pieces, as a call's audio does.
+
+    resample_linear() converts one array on its own, which is right for a
+    recording and wrong for a stream: it maps each piece onto the whole
+    output, so the interpolation restarts at every boundary. On 20ms
+    packets that is a phase step 50 times a second, which lands on a tone
+    as sidebands at +-50Hz and its multiples - measurably, at about -35dB,
+    and audibly as a low ringing on anything steady. Carrying the last
+    sample and the fractional position across the boundary removes it.
+    """
+
+    def __init__(self, in_rate: int, out_rate: int):
+        self.in_rate = in_rate
+        self.out_rate = out_rate
+        self.step = in_rate / out_rate   # input samples per output sample
+        self.previous = None             # last input sample of the piece before
+        self.position = 0.0              # next output sample, in input samples
+
+    def process(self, pcm: np.ndarray) -> np.ndarray:
+        if self.in_rate == self.out_rate or len(pcm) == 0:
+            return pcm
+        if self.previous is None:
+            known = pcm.astype(np.float64)
+        else:
+            known = np.concatenate(([self.previous], pcm)).astype(np.float64)
+        last = len(known) - 1
+        count = int(np.floor((last - self.position) / self.step)) + 1
+        self.previous = pcm[-1]
+        if count <= 0:
+            self.position -= last
+            return np.zeros(0, dtype=np.int16)
+        positions = self.position + np.arange(count) * self.step
+        out = np.interp(positions, np.arange(len(known)), known)
+        # The next piece starts where this one ended: its first sample is
+        # the one just kept, so positions carry over relative to it.
+        self.position = positions[-1] + self.step - last
+        return out.astype(np.int16)
+
+
 def frame_to_mono_pcm(frame: AudioFrame) -> np.ndarray:
     """aiortc audio frames may be stereo - the SIP side only ever carries
     mono, so any inbound-from-Talk audio is downmixed here before it can be
@@ -48,6 +89,7 @@ def frame_to_mono_pcm(frame: AudioFrame) -> np.ndarray:
         mono = row.reshape(-1, channels).astype(np.float64).mean(axis=1) if channels > 1 else row.astype(np.float64)
     return np.clip(mono, -32768, 32767).astype(np.int16)
 
+
 class SipAudioTrack(AudioStreamTrack):
     """Reads decoded PCM (mono, at the RtpSession's negotiated sample rate -
     8kHz for PCMU, 16kHz for G.722) from an RtpSession's receive queue,
@@ -58,10 +100,11 @@ class SipAudioTrack(AudioStreamTrack):
         self.rtp_session = rtp_session
         self._pts = 0
         self._next_frame_at = None
-        self._stats = {"from_phone": 0, "silence": 0, "peak": 0, "since": None}
+        self._stats = {"from_phone": 0, "silence": 0, "dropped": 0, "peak": 0, "since": None}
         self._silence = np.zeros(rtp_session.samples_per_packet, dtype=np.int16)
         self._agc = Agc(target_peak=config.agc_target_peak, max_gain=config.agc_max_gain,
                         silence_threshold=config.agc_silence_threshold) if config.agc_enabled else None
+        self._resampler = StreamResampler(rtp_session.sample_rate, AUDIO_SAMPLE_RATE)
 
     async def recv(self):
         """Hands out exactly one packet per packet interval of wall clock.
@@ -79,6 +122,7 @@ class SipAudioTrack(AudioStreamTrack):
         while rtp.recv_queue.qsize() > MAX_QUEUED_PACKETS:
             try:
                 rtp.recv_queue.get_nowait()
+                self._stats["dropped"] += 1
             except Exception:
                 break
 
@@ -98,9 +142,14 @@ class SipAudioTrack(AudioStreamTrack):
         elif loop.time() - self._stats["since"] >= 1.0:
             s = self._stats
             gain = f", agc gain {self._agc.gain:.1f}x" if self._agc is not None else ""
+            # Dropped packets are the ones that arrived faster than real
+            # time and had to go to keep latency down. They are not
+            # missing audio the way silence-filled is - they are audio
+            # thrown away - and they sound like chopping, so they are
+            # worth their own number rather than being invisible.
             print(f"[talk] Phone audio: {s['from_phone']} packets, {s['silence']} silence-filled, "
-                  f"peak {s['peak']} (before agc){gain}")
-            self._stats = {"from_phone": 0, "silence": 0, "peak": 0, "since": loop.time()}
+                  f"{s['dropped']} dropped, peak {s['peak']} (before agc){gain}")
+            self._stats = {"from_phone": 0, "silence": 0, "dropped": 0, "peak": 0, "since": loop.time()}
 
         now = loop.time()
         if self._next_frame_at is None or self._next_frame_at < now - frame_duration:
@@ -111,7 +160,7 @@ class SipAudioTrack(AudioStreamTrack):
 
         if self._agc is not None:
             pcm_in = self._agc.process(pcm_in)
-        pcm_48k = resample_linear(pcm_in, self.rtp_session.sample_rate, AUDIO_SAMPLE_RATE)
+        pcm_48k = self._resampler.process(pcm_in)
         frame = AudioFrame.from_ndarray(pcm_48k.reshape(1, -1), format="s16", layout="mono")
         frame.sample_rate = AUDIO_SAMPLE_RATE
         frame.pts = self._pts

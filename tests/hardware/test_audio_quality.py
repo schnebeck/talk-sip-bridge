@@ -60,6 +60,15 @@ BURST_SECONDS = 0.6
 PAUSE_SECONDS = 0.4
 VOICE_TONES = (350, 700, 1400, 2100)
 
+# One RTP packet every 20ms, in both codecs this bridge negotiates. Any
+# per-packet step in the chain modulates the audio at this rate.
+PACKET_RATE = 50
+# Where "audible" sits: sidebands at -30dB are about 6% modulation and
+# plainly heard on a steady tone, -40dB about 2% and not. The chain's own
+# floor, measured over the loopback with everything working, is near
+# -48dB; per-packet resampling put it at -22 to -33dB.
+SIDEBAND_LIMIT = -40.0
+
 
 def build_signal(sample_rate: int, bursts: int) -> np.ndarray:
     """Bursts of stacked voice-band tones separated by a noise floor."""
@@ -150,6 +159,58 @@ async def subscribe_and_record(publisher_sessionid: str, seconds: float) -> tupl
         return (np.concatenate(frames) if frames else np.array([])), rate[0]
 
 
+def longest_burst(pcm: np.ndarray, envelope: np.ndarray, window: int) -> np.ndarray:
+    """The longest stretch of signal, without its edges. Sidebands are
+    measured inside one burst rather than across the recording: the gaps
+    between bursts are themselves a modulation, and would be measured
+    instead of the one being looked for."""
+    loud = envelope > envelope.max() * 0.35
+    best_start = best_length = run_start = run = 0
+    for i, is_loud in enumerate(loud):
+        if is_loud:
+            if run == 0:
+                run_start = i
+            run += 1
+            if run > best_length:
+                best_start, best_length = run_start, run
+        else:
+            run = 0
+    if best_length < 4:
+        return np.array([])
+    return pcm[(best_start + 1) * window:(best_start + best_length - 1) * window]
+
+
+def packet_rate_sidebands(pcm: np.ndarray, sample_rate: int) -> float:
+    """The worst sideband at +-PACKET_RATE around any of the signal's own
+    tones, in dB relative to that tone.
+
+    This is the measurement that catches anything happening once per
+    packet: a resampler that restarts at every packet boundary, a gain
+    step, a packet padded out with silence. All of them put a matched
+    pair of sidebands at the packet rate on every steady tone, heard as a
+    low ringing, and none of them move the level, the in-band share or the
+    noise floor enough for the other numbers here to notice."""
+    if pcm.size < sample_rate * 0.2:
+        return -99.0
+    spectrum = np.abs(np.fft.rfft(pcm * np.hanning(len(pcm))))
+    freqs = np.fft.rfftfreq(len(pcm), 1.0 / sample_rate)
+
+    def level(centre):
+        band = np.abs(freqs - centre) < 8
+        return spectrum[band].max() if band.any() else 0.0
+
+    worst = -99.0
+    for tone in VOICE_TONES:
+        carrier = level(tone)
+        if carrier <= 0:
+            continue
+        for offset in (-PACKET_RATE, PACKET_RATE, -2 * PACKET_RATE, 2 * PACKET_RATE):
+            sideband = level(tone + offset)
+            if sideband > 0:
+                worst = max(worst, 20 * np.log10(sideband / carrier))
+    return worst
+
+
 def report(pcm: np.ndarray, sample_rate: int):
     if len(pcm) == 0:
         print("RESULT: FAILED - nothing recorded")
@@ -177,7 +238,10 @@ def report(pcm: np.ndarray, sample_rate: int):
           f" the noise floor is being amplified)")
     print(f"in-band energy: {in_band / max(total, 1) * 100:5.1f}% of the voice band"
           f"   (the rest is distortion this chain added)")
-    return True
+    sidebands = packet_rate_sidebands(longest_burst(pcm, envelope, window), sample_rate)
+    print(f"packet-rate AM: {sidebands:5.1f} dB at +-{PACKET_RATE} Hz around the tones"
+          f"   (above {SIDEBAND_LIMIT} dB is a ringing a listener hears)")
+    return sidebands <= SIDEBAND_LIMIT
 
 
 async def main():

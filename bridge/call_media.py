@@ -14,7 +14,9 @@ import asyncio
 
 from aiortc import RTCConfiguration, RTCIceCandidate, RTCPeerConnection, RTCSessionDescription
 
-from media import SipAudioTrack, frame_to_mono_pcm, resample_linear
+import numpy as np
+
+from media import SipAudioTrack, StreamResampler, frame_to_mono_pcm
 
 # aiortc defaults to a public STUN server, which costs a measured 5 seconds
 # of candidate gathering per call before anything can be published - five
@@ -115,13 +117,24 @@ class CallMedia:
         captured) and forwards it to the phone, downsampled to the rate the
         call negotiated. Ends when the subscriber is closed: track.recv()
         then raises."""
+        resampler = None
+        pending = np.zeros(0, dtype=np.int16)
         try:
             while True:
                 frame = await track.recv()
                 pcm = frame_to_mono_pcm(frame)
-                await asyncio.to_thread(self.rtp_session.send_pcm,
-                                        resample_linear(pcm, frame.sample_rate,
-                                                        self.rtp_session.sample_rate))
+                if resampler is None or resampler.in_rate != frame.sample_rate:
+                    resampler = StreamResampler(frame.sample_rate, self.rtp_session.sample_rate)
+                # Whole packets only: send_pcm pads a short one with
+                # silence, and a resampler that carries its phase hands
+                # out 159 samples as readily as 160 - padding every one of
+                # those would put back the very artefact it removes.
+                pending = np.concatenate((pending, resampler.process(pcm)))
+                packet = self.rtp_session.samples_per_packet
+                whole = len(pending) - len(pending) % packet
+                if whole:
+                    await asyncio.to_thread(self.rtp_session.send_pcm, pending[:whole])
+                    pending = pending[whole:]
         except Exception as e:
             print(f"[talk] Human audio relay for {self.sip_call_id} ended ({e!r})")
 
