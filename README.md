@@ -1,8 +1,16 @@
-# FritzBox Talk Bridge
+# Talk SIP Bridge
 
-Connects a FritzBox phone line to Nextcloud Talk using Talk's native SIP
-bridge protocol: incoming calls appear as real, named "phone" participants
-in a room, and outgoing calls are placed from Talk's own call UI.
+Connects a SIP phone line to Nextcloud Talk using Talk's native SIP bridge
+protocol: incoming calls appear as real, named "phone" participants in a
+room, and outgoing calls are placed from Talk's own call UI.
+
+Any SIP registrar will do - which gateway, which transport, which dial-plan
+notation are configuration, one line at a time. What is specific to a
+gateway is named as such: the recorded messages in `tests/fixtures/fritzbox/`
+came off the wire from a FRITZ!Box, which is also what this deployment runs
+against and what `test-peer/` exists to keep honest. The one real dependency
+on it today is digest authentication in its simple form, without `qop` -
+see the known gaps in `docs/CONCEPT.md`.
 
 See `docs/SIGNALING-API.md` for the Talk signaling and OCS interface this
 builds on, `docs/CONCEPT.md` for the architecture, `docs/CONFIG.md` for

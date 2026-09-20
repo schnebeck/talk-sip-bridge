@@ -1,5 +1,5 @@
 [Unit]
-Description=FritzBox Talk Bridge daemon
+Description=Talk SIP Bridge daemon
 After=network-online.target
 Wants=network-online.target
 
@@ -14,7 +14,7 @@ User=talk-sip-bridge
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-# The one writable directory this hardened service gets: /var/lib/fritzbox-
+# The one writable directory this hardened service gets: /var/lib/talk-sip-
 # talk-bridge, auto-created and owned by the service user - holds small
 # per-line state files (currently just whether registration should be on)
 # so a crash-triggered restart can resume automatically instead of
