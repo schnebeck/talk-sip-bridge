@@ -311,6 +311,11 @@ class TalkClient:
                 elif entry.waiting_for_accept:
                     waiting_call_id = call_id
                     waiting_entry = entry
+        if active_call_id is not None and entered:
+            # Whoever just joined has heard none of what the phone
+            # announced when the call started.
+            await self._announce_phone_state(active_call_id, peers=entered)
+
         if active_call_id is None and waiting_call_id is None:
             return
 
@@ -497,10 +502,49 @@ class TalkClient:
         # made the roster hand out an hours-old dead session whose audio
         # could only ever fail with "client_not_found".
         human_sessionid = human_sessionid_hint or await self._find_human_in_room()
+        await self._announce_phone_state(sip_call_id)
+
         if human_sessionid:
             asyncio.ensure_future(self._subscribe_human_audio(sip_call_id, media, human_sessionid))
         else:
             print(f"[talk] No other participant found in room {roomid} - phone side will not hear Talk's audio")
+
+    async def _announce_phone_state(self, sip_call_id: str, peers=None):
+        """Tells the others what the phone's microphone and camera are
+        doing, and what to call it.
+
+        Talk's own client does exactly this on joining and again for
+        everyone who joins later (`_sendCurrentStateTo`): unmute or mute
+        per media kind, plus its name. A participant that announces
+        nothing leaves the others to guess from the audio level, which is
+        the muted-microphone marker appearing and disappearing with the
+        caller's speech.
+
+        A phone is always unmuted - there is no mute button on this side
+        of the call - and never has video."""
+        with self._call_sessions_lock:
+            entry = self._call_sessions.get(sip_call_id)
+            if entry is None or not entry.is_publishing:
+                return
+            # The caller id, not the gateway's word for the device: a
+            # handset announces itself as "FritzFon schwarz", which tells
+            # a room nothing, while the number identifies who is calling.
+            name = caller_number(entry.number) or caller_display_name(entry.number)
+            ours = {self.own_sessionid} | entry.own_session_ids()
+            targets = set(peers) if peers is not None else self._room_call.others_in_call(ours)
+        targets -= ours
+        if not targets:
+            return
+        for peer in sorted(targets):
+            for state, payload in (("unmute", {"name": "audio"}),
+                                   ("mute", {"name": "video"}),
+                                   ("nickChanged", {"name": name})):
+                try:
+                    await self.ws.send(json.dumps(talk_messages.peer_state(peer, state, payload)))
+                except Exception as e:
+                    print(f"[talk] Could not tell {peer} about the phone: {e!r}")
+                    return
+        print(f"[talk] Told {len(targets)} participant(s) that {name}'s microphone is on")
 
     async def _find_human_in_room(self, retries: int = 5, delay: float = 0.3) -> str | None:
         """The room roster (see _handle_room_join) is populated from events

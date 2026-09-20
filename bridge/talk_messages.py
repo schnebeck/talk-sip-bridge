@@ -79,7 +79,14 @@ def add_session(sessionid: str, roomid: str, call_id: str, number: str, displayn
             "addsession": {
                 "sessionid": sessionid,
                 "roomid": roomid,
-                "incall": (FLAG_IN_CALL | FLAG_WITH_PHONE
+                # The phone flag says "this session is a telephone, not
+                # a client that failed to send anything". Where Nextcloud
+                # already knows the caller - dial-in makes them a real
+                # participant - that is covered by the actor, and the
+                # flag only adds the state Talk's clients render for a
+                # call still being placed.
+                "incall": (FLAG_IN_CALL
+                           | (0 if actor else FLAG_WITH_PHONE)
                            | (FLAG_WITH_AUDIO if with_audio else 0)),
                 # An actor only when Nextcloud already knows the caller -
                 # direct dial-in makes them a participant, and then the
@@ -146,6 +153,26 @@ def subscribe_answer(peer_sessionid: str, sid, sdp: str, sip_call_id: str = "") 
             "recipient": {"type": "session", "sessionid": peer_sessionid},
             "data": {"to": peer_sessionid, "type": "answer", "sid": sid, "roomType": "video",
                      "payload": {"type": "answer", "sdp": sdp}},
+        },
+    }
+
+
+def peer_state(peer_sessionid: str, state: str, payload: dict) -> dict:
+    """What a Talk client tells the others about itself.
+
+    Read off Talk's own client: on joining, and for every participant
+    that joins later, it sends "unmute"/"mute" per media kind and
+    "nickChanged" with its name, as plain peer messages. A participant
+    that sends none of these leaves the others guessing - measured, the
+    muted-microphone marker on the phone then comes and goes with the
+    speech level, because there is no state to render.
+    """
+    return {
+        "id": f"bridge-state-{secrets.token_hex(4)}", "type": "message",
+        "message": {
+            "recipient": {"type": "session", "sessionid": peer_sessionid},
+            "data": {"to": peer_sessionid, "roomType": "video",
+                     "type": state, "payload": payload},
         },
     }
 

@@ -7,8 +7,11 @@ against the documentation they came from (docs/SIGNALING-API.md).
 """
 import hashlib
 import hmac
+import json
+import threading
 import unittest
 
+from tests.support import needs_media_stack
 import talk_messages as m
 
 SECRET = "internal-secret"
@@ -84,6 +87,26 @@ class SessionTest(unittest.TestCase):
         user = message["internal"]["addsession"]["user"]
         self.assertEqual(user["displayname"], "Anna")
         self.assertEqual(user["type"], "phone")
+
+    def test_a_caller_nextcloud_knows_is_not_flagged_as_a_phone(self):
+        """The phone flag says "a telephone, not a client that sent
+        nothing". With an actor, Nextcloud already knows who this is, and
+        the flag only adds the state clients render for a call still
+        being placed - an hourglass that never clears."""
+        message = m.add_session("phone-1", "room-token", call_id="c", number="+4930622",
+                                displayname="+4930622", with_audio=True,
+                                actor={"actorType": "guests", "actorId": "abc"})
+        incall = message["internal"]["addsession"]["incall"]
+        self.assertFalse(incall & m.FLAG_WITH_PHONE)
+        self.assertTrue(incall & m.FLAG_IN_CALL)
+        self.assertTrue(incall & m.FLAG_WITH_AUDIO)
+
+    def test_a_caller_nextcloud_does_not_know_still_is(self):
+        """Without an actor the session belongs to nobody, and the flag
+        is the only thing saying what it is."""
+        message = m.add_session("phone-1", "room-token", call_id="c",
+                                number="+4930622", displayname="+4930622")
+        self.assertTrue(message["internal"]["addsession"]["incall"] & m.FLAG_WITH_PHONE)
 
     def test_the_call_id_round_trips_so_the_session_can_be_recognised(self):
         """The server assigns its own room session id; this is what maps it
@@ -179,6 +202,86 @@ class DialoutReplyTest(unittest.TestCase):
         self.assertEqual(dialout["type"], "error")
         self.assertEqual(dialout["error"], {"code": "call_failed", "message": "no such number"})
         self.assertNotIn("status", dialout)
+
+
+class PeerStateTest(unittest.TestCase):
+    """What a client tells the others about itself. Talk's own does this
+    on joining and for everyone who joins later; a participant that says
+    nothing is rendered from guesswork."""
+
+    def state(self, kind="unmute", payload=None):
+        return m.peer_state("their-session", kind, payload or {"name": "audio"})
+
+    def test_it_goes_to_one_participant(self):
+        message = self.state()
+        self.assertEqual(message["message"]["recipient"],
+                         {"type": "session", "sessionid": "their-session"})
+        self.assertEqual(message["message"]["data"]["to"], "their-session")
+
+    def test_it_carries_the_state_and_what_it_is_about(self):
+        data = self.state("mute", {"name": "video"})["message"]["data"]
+        self.assertEqual(data["type"], "mute")
+        self.assertEqual(data["payload"], {"name": "video"})
+        self.assertEqual(data["roomType"], "video")
+
+    def test_a_name_is_sent_the_same_way(self):
+        data = self.state("nickChanged", {"name": "+4930622"})["message"]["data"]
+        self.assertEqual(data["type"], "nickChanged")
+        self.assertEqual(data["payload"]["name"], "+4930622")
+
+
+@needs_media_stack
+class AnnouncedStateTest(unittest.TestCase):
+    """What the bridge actually announces for a call."""
+
+    def announce(self, peers=("person-1",), number='"FritzFon" <sip:**611@fritz.box>'):
+        import asyncio
+        from unittest import mock
+        import talk_client
+        from call import Call, INBOUND
+
+        client = talk_client.TalkClient.__new__(talk_client.TalkClient)
+        client.own_sessionid = "bridge-session"
+        client._call_sessions_lock = threading.Lock()
+        entry = Call(sip_call_id="c1", kind=INBOUND, number=number)
+        entry.media = mock.Mock(is_publishing=True)
+        entry.virtual_sessionid = "phone-1"
+        client._call_sessions = {"c1": entry}
+        sent = []
+        client.ws = mock.Mock(send=lambda raw: sent.append(json.loads(raw)))
+
+        async def send(raw):
+            sent.append(json.loads(raw))
+
+        client.ws.send = send
+        asyncio.run(client._announce_phone_state("c1", peers=set(peers)))
+        return [(msg["message"]["data"]["to"], msg["message"]["data"]["type"],
+                 msg["message"]["data"]["payload"]) for msg in sent]
+
+    def test_a_phone_is_named_by_its_number_not_by_the_handset(self):
+        """"FritzFon schwarz" is what the box calls the device; the room
+        wants to know who is calling."""
+        named = [payload["name"] for _, kind, payload in self.announce()
+                 if kind == "nickChanged"]
+        self.assertEqual(named, ["**611"])
+
+    def test_a_caller_with_no_number_keeps_whatever_name_there_is(self):
+        named = [payload["name"] for _, kind, payload
+                 in self.announce(number='"Somebody" <sip:@gw>') if kind == "nickChanged"]
+        self.assertEqual(named, ["Somebody"])
+
+    def test_a_phone_is_unmuted_without_video_and_named(self):
+        self.assertEqual(self.announce(),
+                         [("person-1", "unmute", {"name": "audio"}),
+                          ("person-1", "mute", {"name": "video"}),
+                          ("person-1", "nickChanged", {"name": "**611"})])
+
+    def test_everyone_named_is_told(self):
+        told = {peer for peer, _, _ in self.announce(peers=("a", "b"))}
+        self.assertEqual(told, {"a", "b"})
+
+    def test_the_bridge_does_not_tell_itself(self):
+        self.assertEqual(self.announce(peers=("bridge-session", "phone-1")), [])
 
 
 if __name__ == "__main__":

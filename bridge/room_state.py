@@ -87,6 +87,12 @@ class RoomCallState:
         that a snapshot listing several at once resolves the same way twice."""
         return next((s for s in sorted(entered) if s not in ours), None)
 
+    def others_in_call(self, ours: set) -> set:
+        """Everyone in the call who is not this bridge - who to tell what
+        the phone's microphone is doing."""
+        return {session_id for session_id, flag in (self._in_call or {}).items()
+                if flag and session_id not in ours}
+
     def anyone_in_call_besides(self, ours: set) -> bool:
         return any(flag for session_id, flag in (self._in_call or {}).items()
                    if session_id not in ours)
