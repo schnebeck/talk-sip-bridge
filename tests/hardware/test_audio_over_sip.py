@@ -23,13 +23,10 @@ sys.path.insert(0, os.environ.get("BRIDGE_CODE")
                 or str(pathlib.Path(__file__).resolve().parent.parent.parent / "bridge"))
 
 import asyncio
-import sys
 import threading
 import time
 
 import numpy as np
-
-sys.path.insert(0, "/opt/fritzbox-talk-bridge")
 
 from config import config, LineConfig
 from sip_call import CallManager
@@ -162,10 +159,15 @@ async def main():
 
 
 def find_bridge_session():
-    """The bridge's own signaling session id, read from its log line for
-    this call - it is the publisher a Talk client would subscribe to."""
+    """The bridge's own signaling session id - the publisher a Talk client
+    would subscribe to - read from the last connection it logged.
+
+    Not from a time window: the daemon logs one of these per connection,
+    so an idle bridge has nothing recent to show and a window finds
+    nothing at all. The last line is the current session whenever it was
+    written."""
     import subprocess
-    out = subprocess.run(["journalctl", "-u", "fritzbox-talk-bridge", "--since", "-2min",
+    out = subprocess.run(["journalctl", "-u", "fritzbox-talk-bridge", "-n", "5000",
                           "--no-pager", "-o", "cat"], capture_output=True, text=True).stdout
     session = None
     for line in out.splitlines():

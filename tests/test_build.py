@@ -1,4 +1,5 @@
 """Does it build: every module imports, and the cheap ones stay cheap."""
+import os
 import subprocess
 import sys
 import unittest
@@ -83,6 +84,21 @@ class ConfigBuildTest(unittest.TestCase):
             self.assertEqual(config.lines[1].gateway_host, "192.0.2.2")
             self.assertNotEqual(config.lines[0].local_sip_port, config.lines[1].local_sip_port)
             self.assertNotEqual(config.lines[0].local_rtp_port, config.lines[1].local_rtp_port)
+
+    def test_the_environment_a_test_sees_is_only_the_one_it_asked_for(self):
+        """Run from a shell that sourced a deployment's env file, the suite
+        would otherwise read that deployment's settings and answer
+        differently - which is how a relay address once turned a passing
+        test red on one machine and green on another."""
+        os.environ["BRIDGE_RELAY_LAN_HOST"] = "203.0.113.99"
+        os.environ["BRIDGE_LINES"] = "stray"
+        try:
+            with env() as config:
+                self.assertFalse(config.lines[0].media_relay_enabled)
+                self.assertEqual([line.id for line in config.lines], ["default"])
+        finally:
+            os.environ.pop("BRIDGE_RELAY_LAN_HOST", None)
+            os.environ.pop("BRIDGE_LINES", None)
 
     def test_media_relay_is_off_until_all_four_settings_are_present(self):
         with env() as config:

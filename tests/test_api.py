@@ -199,6 +199,26 @@ def assigned_self_attributes(filename: str, *, inside: str = None) -> set:
     return found
 
 
+class HardwareScriptTest(unittest.TestCase):
+    """The scripts in tests/hardware find the code the same way this
+    package does - through BRIDGE_CODE. One that hardcodes an install path
+    instead silently tests whatever is deployed there, whatever it was
+    pointed at."""
+
+    def scripts(self):
+        return sorted((pathlib.Path(__file__).resolve().parent / "hardware").glob("*.py"))
+
+    def test_none_of_them_hardcodes_an_installation_path(self):
+        for script in self.scripts():
+            with self.subTest(script=script.name):
+                self.assertNotIn("/opt/fritzbox-talk-bridge", script.read_text())
+
+    def test_each_of_them_honours_bridge_code(self):
+        for script in self.scripts():
+            with self.subTest(script=script.name):
+                self.assertIn("BRIDGE_CODE", script.read_text())
+
+
 class StubLineTest(unittest.TestCase):
     """tests/support.py's StubLine stands in for a LineConfig. A field
     added to the real one and not to the stub fails only in whichever test

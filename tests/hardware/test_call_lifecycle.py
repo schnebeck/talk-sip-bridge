@@ -49,7 +49,6 @@ import urllib.request
 
 import websockets
 
-sys.path.insert(0, "/opt/fritzbox-talk-bridge")
 
 from config import config, LineConfig
 from sip_call import CallManager

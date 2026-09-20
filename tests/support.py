@@ -64,6 +64,14 @@ class StubLine:
         self.__dict__.update(overrides)
 
 
+def _clear_bridge_env():
+    """Removes every BRIDGE_* the configuration reads. BRIDGE_CODE is not
+    one of those - it says where the code under test lives, and dropping
+    it would unfind the very modules being tested."""
+    for key in [k for k in os.environ if k.startswith("BRIDGE_") and k != "BRIDGE_CODE"]:
+        del os.environ[key]
+
+
 def bridge_env(**overrides) -> dict:
     """A complete BRIDGE_* environment, for tests that need config."""
     env = {
@@ -81,20 +89,29 @@ def bridge_env(**overrides) -> dict:
 
 
 # Several modules build their configuration as they are imported, so a test
-# module cannot import them without one. Providing defaults here - and only
-# where the environment does not already carry a value - lets a test file
-# import what it tests at the top, the way any other module does. That a
-# module really can be imported with nothing but its own environment is
-# checked separately, in test_build.py, using subprocesses.
-for _key, _value in bridge_env().items():
-    os.environ.setdefault(_key, _value)
+# module cannot import them without one. This puts a complete, known
+# environment in place before any of them runs - replacing whatever the
+# shell carried rather than filling its gaps, because a leftover
+# BRIDGE_LINES or relay address makes the same suite answer differently on
+# two machines. That a module really can be imported with nothing but its
+# own environment is checked separately, in test_build.py, using
+# subprocesses with an environment built from scratch.
+_clear_bridge_env()
+os.environ.update(bridge_env())
 
 
 @contextlib.contextmanager
 def env(**overrides):
     """Applies bridge_env() for the duration of the block and reloads
-    config, so a test never depends on how the shell was set up."""
+    config, so a test never depends on how the shell was set up.
+
+    Clearing first is what makes that true. Adding to the environment is
+    not enough: a variable this function does not mention - a relay
+    address, say - survives from whatever sourced a deployment's env file
+    before running the tests, and the suite then answers differently
+    depending on the shell it was started from."""
     previous = dict(os.environ)
+    _clear_bridge_env()
     os.environ.update(bridge_env(**overrides))
     try:
         import config as config_module
