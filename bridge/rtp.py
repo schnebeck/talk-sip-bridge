@@ -10,10 +10,12 @@ import threading
 import time
 
 from dtmf import EVENT_DIGITS, DtmfEvents
+from dtmf_inband import InbandDtmf
 from g711 import alaw_to_linear, linear_to_alaw, linear_to_ulaw, ulaw_to_linear
 from g722 import G722Decoder, G722Encoder
 import numpy as np
 
+from config import config
 from payload_types import PT_G722, PT_PCMA, PT_PCMU  # re-exported: rtp.PT_* stays valid
 
 RTP_VERSION = 2
@@ -27,6 +29,11 @@ _CODEC_INFO = {
     PT_G722: {"sample_rate": 16000, "samples_per_packet": 320},
 }
 RTP_CLOCK_INCREMENT = 160
+
+# A press reported twice - once as an event, once as the tone the same
+# gateway also plays - is one press. Shorter than the gap between two
+# deliberate presses, longer than the two paths can drift apart.
+DTMF_REPEAT_GUARD = 0.4
 
 # For backwards compatibility with anything still importing the old name.
 SAMPLES_PER_PACKET = _CODEC_INFO[PT_PCMU]["samples_per_packet"]
@@ -51,6 +58,12 @@ class RtpSession:
         self.dtmf_payload_type = dtmf_payload_type
         self.on_dtmf = on_dtmf or (lambda digit: None)
         self._dtmf = DtmfEvents()
+        # Some gateways agree to events and then play the tones into the
+        # audio anyway - this deployment's does, for every press its own
+        # handset makes. Listening as well costs eight dot products per
+        # packet and is the only way to read a key on such a gateway.
+        self._inband = None
+        self._last_digit_at = 0.0
         self.set_payload_type(payload_type)
         self.recv_thread = threading.Thread(target=self._recv_loop, daemon=True)
         self.recv_thread.start()
@@ -69,6 +82,7 @@ class RtpSession:
         else:
             self._encoder = None
             self._decoder = None
+        self._inband = InbandDtmf(self.sample_rate) if config.inband_dtmf else None
 
     def _encode(self, chunk: np.ndarray) -> bytes:
         if self.payload_type == PT_G722:
@@ -171,10 +185,7 @@ class RtpSession:
                 timestamp = struct.unpack("!I", data[4:8])[0]
                 digit = self._dtmf.feed(timestamp, data[12:])
                 if digit is not None:
-                    try:
-                        self.on_dtmf(digit)
-                    except Exception as e:
-                        print(f"[rtp] DTMF handler for {digit} failed: {e!r}")
+                    self._report_digit(digit)
                 continue
             if payload_type != self.payload_type and payload_type != self._reported_pt:
                 print(f"[rtp] Receiving payload type {payload_type} while {self.payload_type} was negotiated")
@@ -182,7 +193,24 @@ class RtpSession:
             pcm = self._decode(data[12:], payload_type)
             if pcm is None:
                 continue
+            if self._inband is not None:
+                digit = self._inband.feed(pcm)
+                if digit is not None:
+                    self._report_digit(digit)
             self.recv_queue.put(pcm)
+
+    def _report_digit(self, digit: str):
+        """One key press, however it arrived. A gateway that sends the
+        same press both ways - as an event and as a tone - would otherwise
+        be read as two, so a digit is reported at most once per window."""
+        now = time.monotonic()
+        if now - self._last_digit_at < DTMF_REPEAT_GUARD:
+            return
+        self._last_digit_at = now
+        try:
+            self.on_dtmf(digit)
+        except Exception as e:
+            print(f"[rtp] DTMF handler for {digit} failed: {e!r}")
 
     def close(self):
         self.stop_event.set()

@@ -28,6 +28,7 @@ BRIDGE_CODE=/opt/talk-sip-bridge \
 | `test_messages.py` | Header parsing, digest authentication, the injection allowlist |
 | `test_sdp.py` | Offer and answer building, codec choice, media-address parsing, key-press negotiation |
 | `test_dtmf.py` | One digit per key press out of the packet storm one press produces |
+| `test_dtmf_inband.py` | Reading key presses out of the audio, including against a real handset's recorded tones - and above all what must *not* be read as a key |
 | `test_requests.py` | The shape of every SIP message this bridge sends |
 | `test_framing.py` | Where one message ends and the next begins in a TCP stream |
 | `test_transport.py` | Which connection a SIP message is written to, including when the one it should use is gone |
@@ -67,6 +68,12 @@ an `Authorization` header, so there is no digest response to attack. They
 are stored
 with their original CRLF line endings, so read them as bytes -
 `read_text()` translates the line endings and takes the framing with them.
+`dtmf-keypad.wav` belongs to the same set: every key of that gateway's
+DECT handset as the bridge received it, cut to the stretches carrying a
+tone so no speech is in the file. It is the recording that corrected the
+detector - built against textbook tones of equal amplitude, it read one
+key in twelve.
+
 The directory name is the disclaimer: one gateway's behaviour, not the
 protocol. A second gateway's recordings belong beside it, under its own
 name, with the same tests running over both.

@@ -176,6 +176,11 @@ class Config:
         # hand. Empty disables persistence entirely (falls back to today's
         # behavior: registration always starts off). deploy/fritzbox-talk-
         # bridge.service provisions this via systemd's StateDirectory=.
+        # Read key presses out of the audio as well as from RFC 4733
+        # events. Needed wherever a gateway plays the tones instead of
+        # passing the events on, which this deployment's does; harmless
+        # where it does not, since a press reported twice is collapsed.
+        self.inband_dtmf = os.environ.get("BRIDGE_INBAND_DTMF", "true").lower() != "false"
         self.state_dir = os.environ.get("BRIDGE_STATE_DIR", "/var/lib/talk-sip-bridge")
 
 
