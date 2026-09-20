@@ -61,6 +61,8 @@ def build_caller(password: str):
     line.gateway_host = config.lines[0].gateway_host
     line.proxy_host = config.lines[0].proxy_host
     line.proxy_port = config.lines[0].proxy_port
+    line.sip_transport = config.lines[0].sip_transport
+    line.contact_transport = config.lines[0].contact_transport
     line.local_sip_port = 5099
     line.local_rtp_port = 41000
     line.contact_host = ""
