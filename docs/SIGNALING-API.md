@@ -3,8 +3,10 @@
 The protocol surface a SIP bridge needs from Nextcloud Talk: the standalone
 signaling server's **internal client** interface (WebSocket) and the Talk
 **OCS call API** (HTTPS). Nextcloud's own SIP bridge product is closed-source
-and no reference implementation of this interface exists publicly, so what
-follows is the working description this bridge is built against.
+and no reference implementation of this interface exists publicly — not in the
+`nextcloud-spreed-signaling` repository itself, which contains only a Go
+benchmarking client — so what follows is the working description this bridge is
+built against.
 
 Official protocol documentation:
 <https://nextcloud-spreed-signaling.readthedocs.io/en/latest/standalone-signaling-api-v1/>
@@ -30,7 +32,8 @@ alerting a person is only possible through the OCS API (see "Ringing" below).
 
 ## Prerequisites in Nextcloud
 
-All native SIP endpoints are gated behind `Config::isSIPConfigured()` /
+All native SIP endpoints (`POST /call/{token}/dialout/{attendeeId}`,
+`verify-dialout` and the rest) are gated behind `Config::isSIPConfigured()` /
 `isSIPDialOutEnabled()` (`spreed/lib/Config.php`). Without these `spreed` app
 config values, Talk offers no "call a phone number" UI and rejects SIP-related
 requests:
@@ -307,11 +310,11 @@ the roster indefinitely, and requesting its audio then fails with
 
 Arrives in three shapes, all under the same event:
 
-| Shape | Meaning |
-|---|---|
-| `users: [...]` | Full room-membership snapshot. Replaces what is known — a session missing from it is gone. The only way to learn about sessions that vanished without a `leave`. |
-| `changed: [...]` | Per-session delta from backend-driven in-call updates. |
-| `all: true` with lowercase `incall` | Room-wide broadcast: the call itself started or ended for everyone. This is what Talk's "end call" button produces. |
+| Shape | Server-side origin | Meaning |
+|---|---|---|
+| `users: [...]` | `NotifySessionChanged` | Full room-membership snapshot. Replaces what is known — a session missing from it is gone. The only way to learn about sessions that vanished without a `leave`. |
+| `changed: [...]` | backend-driven in-call updates | Per-session delta. |
+| `all: true` with lowercase `incall` | `Room.PublishUsersInCallChangedAll` | Room-wide broadcast: the call itself started or ended for everyone, sent to every room member. This is what Talk's "end call" button produces. |
 
 In every shape the in-call state is a bit field; `incall & 1 == 0` means not in
 the call. Field names vary (`sessionId` / `sessionid`, `incall` / `inCall`) —

@@ -4,52 +4,31 @@
 
 Incoming phone calls appear as real, named "phone" participants in a Talk
 room; outgoing calls are placed from Talk's own native call UI ("call a
-phone number"), using Nextcloud Talk's documented standalone-signaling SIP
-bridge protocol.
+phone number"), using Nextcloud Talk's standalone-signaling SIP bridge
+protocol.
 
 ## Reference
 
-[`SIGNALING-API.md`](./SIGNALING-API.md) describes the interface itself - message
-shapes, flags, events, the OCS endpoints, and which parts are undocumented
-upstream. This document covers what this bridge does with it and why.
+[`SIGNALING-API.md`](./SIGNALING-API.md) defines the interface this builds on -
+message shapes, flags, events, the OCS endpoints, and which parts are
+undocumented upstream. This document does not repeat those definitions; it
+records what this bridge does with them and why. Configuration is in
+[`CONFIG.md`](./CONFIG.md).
 
-Protocol: https://nextcloud-spreed-signaling.readthedocs.io/en/latest/standalone-signaling-api-v1/
-("Internal clients", "Dialout session", "Start dialout from a room",
-"Add/update/remove virtual session" sections).
+## Talk configuration in this deployment
 
-No reference implementation exists publicly (neither in the
-`nextcloud-spreed-signaling` repository itself, which contains only a Go
-benchmarking client, nor anywhere else found on GitHub) - Nextcloud's own
-SIP bridge product is closed-source. This is built directly against the
-protocol documentation. The internal-client `hello` handshake also requires
-a `backend` param (the Nextcloud instance URL) that isn't mentioned in that
-documentation - found only by reading the signaling server's own Go source.
+The `spreed` app config values that unlock the native UI are listed in
+[`SIGNALING-API.md`](./SIGNALING-API.md#prerequisites-in-nextcloud). As set on
+the production server: `sip_bridge_groups` is a `sip-testers` group containing
+only `sip-tester`, so the native "call a phone number" UI is visible to that
+account alone; `sip_bridge_dialin_info` is a placeholder string, since no real
+dial-in numbers are used; `sip_dialout` is `yes`; `sip_bridge_shared_secret` is
+a generated secret held only in the production app config, not written down
+here.
 
-## Unlocking the native UI in Talk
-
-All native SIP/dialout endpoints (`POST /call/{token}/dialout/{attendeeId}`,
-`verify-dialout`, etc.) are gated behind `Config::isSIPConfigured()` /
-`isSIPDialOutEnabled()`, found in `custom_apps/spreed/lib/Config.php`. Three
-`spreed` app config values, settable via `occ config:app:set`:
-
-- `sip_bridge_shared_secret` - any non-empty secret (used for the separate
-  REST `/signaling/settings` SIP-bridge auth path, not the WS-level
-  `dialout` mechanism itself, but required for `isSIPConfigured()`).
-- `sip_bridge_dialin_info` - must be non-empty (free text shown to users;
-  content irrelevant here since real dial-in phone numbers aren't used).
-- `sip_dialout` - must not be `no` (e.g. `yes`) to satisfy
-  `isSIPDialOutEnabled()`.
-- `sip_bridge_groups` (optional) - restricts which groups can enable SIP
-  per-room; empty means all users. Worth setting to an admin/test group
-  while evaluating, so the native UI doesn't appear for regular users
-  before the daemon side is verified working.
-
-**Applied on the production server**: `sip_bridge_groups` set to a
-`sip-testers` group containing only `sip-tester`, `sip_bridge_dialin_info`
-set to a placeholder string, `sip_dialout` set to `yes`, and
-`sip_bridge_shared_secret` set to a generated secret (value is in the
-production `spreed` app config only, not written down here). The native
-"call a phone number" UI is visible only to `sip-tester`.
+Restricting the UI to a test group is worth keeping while a deployment is being
+evaluated, so the native call button does not appear for regular users before
+the daemon side is verified.
 
 ## Architecture
 
@@ -59,94 +38,45 @@ production `spreed` app config only, not written down here). The native
    assumption - a deployment where the phone gateway is directly reachable
    needs no relay at all (`config.media_relay_enabled`).
 2. **Native dialout integration**, through Talk's own "call a phone number"
-   UI.
-   - Declare `"features": ["start-dialout", "internal-incall"]` in the hello
-     message. `internal-incall` puts this client in charge of its own inCall
-     flags: it announces `FLAG_IN_CALL | FLAG_WITH_AUDIO` only once its
-     publisher exists, and clears them when the call ends. Without it the
-     server sets both on connect, so Talk clients ask this session for an
-     audio stream while it is merely watching a room for an accept, get
-     `client_not_found`, and then back off to one retry every 10 seconds -
-     which costs a real call its first seconds of audio.
-   - A dialout request arrives as `{"id": "...", "type": "internal",
-     "internal": {"type": "dialout", "dialout": {"roomid": "...", "backend":
-     "...", "request": {"number": "...", "options": {...}}}}}` - the room id
-     is read from this message, not assumed. The reply must echo the same
-     `id`, wrapped the same way, with `dialout: {"type": "status", "roomid":
-     ..., "status": {"callid": ..., "status": "accepted"}}` (or `"type":
-     "error"` with an `error` object) - a flat `{"type": "dialout", ...}` at
-     the top level, with no `internal` wrapper or `id` echo, is silently
-     ignored by the signaling server.
-   - Nextcloud's own number validation (`libphonenumber`, not configurable)
-     runs before any request reaches this bridge at all, and Talk formats
-     any number a user enters as E.164 - see `docs/CONFIG.md`'s
-     `BRIDGE_DIALOUT_STRIP_PREFIX` / `BRIDGE_DIALOUT_INTERNAL_DIAL_PREFIX`
-     for how a real, syntactically valid number gets mapped back to the
-     gateway's own internal-extension dial notation.
-3. **Virtual sessions for calls.** Each phone call is represented as its own
-   session via `addsession`/`removesession`, with
-   `user.type = "phone"`, `callid`, and `number` - so a caller shows up as a
-   real, named participant, and dialout status/hangup can be correlated by
-   call id. It is a name plate only: in MCU mode a virtual session can never
-   carry media, because the signaling server looks a publisher up by the raw
-   recipient session id with no virtual-to-owner mapping, and publishers only
-   ever exist under a real client session's own id. Its flags are therefore
-   set to `FLAG_IN_CALL | FLAG_WITH_PHONE` explicitly, without
-   `FLAG_WITH_AUDIO` - Talk clients only request a stream from a participant
-   carrying audio or video, and pointing them at a session that cannot
-   publish leaves them retrying forever against a silent tile. The call's
-   audio rides on the bridge's own session instead.
+   UI rather than a custom chat command.
+   - The connection declares `start-dialout` and `internal-incall`. Owning the
+     in-call flags is what lets this client announce audio only once its
+     publisher exists, instead of from the moment it connects - the difference
+     is a real call's first seconds of audio.
+   - Each request carries the room it is for, so nothing is assumed about which
+     room a dialout belongs to.
+   - Nextcloud validates any number before the request reaches this bridge at
+     all. Mapping a valid-looking number back to the gateway's internal
+     extension notation is therefore the bridge's job - see `CONFIG.md`'s
+     `BRIDGE_DIALOUT_STRIP_PREFIX` / `BRIDGE_DIALOUT_INTERNAL_DIAL_PREFIX`.
+3. **Virtual sessions for calls.** Every phone call gets its own virtual
+   session, which is what makes the caller a real, named participant in the
+   room and lets dialout status and hangups be correlated by call id.
 
-   One caller therefore appears as two participants in Talk: the phone
-   session, named through `user.displayname` (the field Talk renders
-   participants by), and the bridge's own session carrying the audio, which
-   shows as "Gast" - an internal client has no display name in the
-   protocol. Registering the caller as a real Nextcloud participant through
-   `options.actorType`/`actorId` does not solve that either: Nextcloud
-   rejects an actor that is not already invited to the room, and fails the
-   whole `addsession` with it.
-   `addsession` alone does not route audio anywhere - the bridge also joins
-   the room itself (`{"type": "room", "room": {"roomid": ...}}`) so the
-   signaling server routes its self-addressed WebRTC offer to that room's
-   Janus instance; verified via `bridge/test_publish_and_verify.py`. Joining
-   a room permanently drops the session from the signaling server's dialout
-   candidates for the lifetime of that WebSocket connection - confirmed in
-   its own source, there is no code path that restores it, including on
-   leaving the room again. The only way to regain dialout eligibility is a
-   fresh connection with a new hello, so the bridge deliberately closes and
-   reconnects once a call ends (handled by the existing reconnect loop in
-   `_connect_and_serve`) - fine given only one call is ever handled at a
-   time.
-4. **Call-end detection.** Ending a call in Talk's UI does not tear down the
-   bridge's own publisher - confirmed via the signaling server's own logs,
-   only the human's own publisher/room gets destroyed - so watching the
-   bridge's own `RTCPeerConnection`'s ICE/connection state never reliably
-   detects it (kept as a secondary check for other teardown paths, e.g. the
-   browser tab closing outright). The actual, reliable signal is the
-   signaling server's room-wide `{"type": "event", "event": {"target":
-   "participants", "type": "update", "update": {"roomid": ..., "incall": 0,
-   "all": true}}}` broadcast (`Room.PublishUsersInCallChangedAll`
-   server-side) - sent to every room member, including the bridge since it
-   joins the room to publish, whenever the call itself ends for the whole
-   room. `incall` uses the server's `FlagInCall = 1` bit; `incall & 1 == 0`
-   means the call has ended. The same `participants`/`update` event also
-   comes in two per-session shapes (a `changed` delta from backend-driven
-   "incall" updates, and a full `users` room-membership snapshot from
-   `NotifySessionChanged`); both feed one model of who is in the room's
-   call, and every decision is taken from a *transition* of that model,
-   never from its current state. Reading state instead is what made a
-   session the signaling server still listed as in-call, long after its
-   client was gone, look exactly like a person answering - inbound calls
-   were then picked up instantly against a dead peer. It also means
-   several sessions of the same person (Talk open in a browser and on a
-   phone at once) are unremarkable: only the one that moves counts. A
-   `users` snapshot replaces the model wholesale, which is the only way
-   sessions that vanished without a `leave` are ever forgotten. The virtual "phone" session added via `addsession` gets its own
-   server-assigned room session id (announced via a `room`/`join` event,
-   matched back to the call via its `user.callid`) that is unrelated to the
-   name chosen when adding it - needed to recognize the bridge's own virtual
-   session in room-roster snapshots rather than mistaking it for another
-   participant still on the call.
+   Because such a session can never carry media, the call's audio rides on the
+   bridge's own session instead. One caller therefore appears as **two**
+   participants: the named phone session, and the bridge's own session carrying
+   the audio, which shows as "Gast" - an internal client has no display name in
+   the protocol, and naming the caller as a real Nextcloud actor is not
+   available for someone who is not already invited to the room.
+
+   Publishing also requires the bridge to join the room itself; verified via
+   `bridge/test_publish_and_verify.py`. Since joining costs dialout eligibility
+   permanently for that connection, the bridge deliberately closes and
+   reconnects once a call ends, handled by the existing reconnect loop in
+   `_connect_and_serve`. That is acceptable because one line handles one call at
+   a time.
+4. **Call-end detection.** Ending a call in Talk's UI does not tear down this
+   bridge's publisher - confirmed in the signaling server's own logs, only the
+   human's publisher and room membership are destroyed. Watching the bridge's
+   own `RTCPeerConnection` therefore never detects it reliably, and that check
+   is kept only as a secondary signal for other teardown paths, such as a
+   browser tab closing outright.
+
+   The decision is taken from the room's call membership instead, as a
+   transition rather than a state. The bridge tracks its own virtual session's
+   server-assigned room session id for this, so it does not mistake itself for
+   another participant still on the call.
 5. **Persistent daemon.** The daemon registers with the gateway and accepts
    new calls indefinitely - both signaling and real audio are handled by the
    same long-running process, not a one-shot script.
@@ -164,18 +94,15 @@ production `spreed` app config only, not written down here). The native
    past construction (`set_payload_type`), and `talk_client.py`'s
    `SipAudioTrack` resamples from whatever rate was actually negotiated.
 9. **Bidirectional audio.** `_publish_call_audio` covers the phone-to-Talk
-   direction (a self-addressed WebRTC publish, see above). The opposite
-   direction subscribes to the human room participant's own audio via a
-   `requestoffer`/offer/answer/candidate exchange (`_subscribe_human_audio`)
-   and relays decoded frames into the RTP session (`_relay_human_audio`),
-   resampled to the call's negotiated codec rate. The `requestoffer` is
-   repeated until an offer arrives: the other side's publisher may not exist
-   yet, and the signaling server rejects such a request with
-   `client_not_found` rather than queuing it. Who to subscribe to is the
-   session id that accept detection saw entering the call; the room roster
-   (`_room_roster`, tracked from `room`/`join`/`leave` events) is only the
-   fallback for dialout calls, and it can hold sessions that dropped without
-   the server ever sending a `leave` for them.
+   direction. The opposite direction subscribes to the human participant's
+   audio (`_subscribe_human_audio`) and relays decoded frames into the RTP
+   session (`_relay_human_audio`), resampled to the call's negotiated codec
+   rate.
+
+   Who to subscribe to is the session id that accept detection saw entering the
+   call. The room roster (`_room_roster`) is only the fallback for dialout
+   calls: it can hold sessions that dropped without the server ever announcing
+   it, and asking one of those for audio fails.
 10. **Automatic gain control.** Phone-side audio only (`agc.py`, applied in
     `SipAudioTrack`) - some handsets (e.g. a DECT cordless) have a much
     quieter microphone than a laptop/headset, with no way to adjust that
@@ -184,60 +111,45 @@ production `spreed` app config only, not written down here). The native
     on top risks audible "pumping".
 11. **Multiple lines.** Each SIP account/number (`config.LineConfig`) gets
     its own `SipTransport`/`SipRegistrar`/`CallManager` (still one call at a
-    time per line, as before) and its own dedicated `TalkClient` - i.e. its
-    own connection to the signaling server, not a shared one. That's
-    necessary, not just simpler: joining a room to publish a call's audio
-    makes an internal-client connection ineligible for new dial-out
-    requests for as long as it stays open (point 3 above); lines sharing
-    one connection would make each other's dial-out unavailable whenever
-    either has a call in progress. `daemon.py` starts one full set per
-    configured line; `control_api.py` aggregates their status and accepts
-    an optional `?line=<id>` on `/toggle` and `/hangup` (defaulting to the
-    first line, so a single-line deployment is unaffected). Lines are
-    independent of the registrar/gateway they point at, so a deployment
-    could mix e.g. a FritzBox line and an Asterisk line.
+    time per line) and its own dedicated `TalkClient` - i.e. its own
+    connection to the signaling server, not a shared one. That is necessary,
+    not just simpler: publishing a call's audio costs that connection its
+    dialout eligibility (point 3), so lines sharing one connection would make
+    each other's dialout unavailable whenever either has a call in progress.
+    `daemon.py` starts one full set per configured line; `control_api.py`
+    aggregates their status and accepts an optional `?line=<id>` on `/toggle`
+    and `/hangup` (defaulting to the first line, so a single-line deployment is
+    unaffected). Lines are independent of the registrar/gateway they point at,
+    so a deployment could mix e.g. a FritzBox line and an Asterisk line.
 12. **Ring signal, for a line where a human should get a chance to answer
-    in Talk.** The signaling protocol has no ringing/accept-decline
-    exchange for inbound calls, so there's no native way to ask before
-    picking up - `LineConfig.notify_user`/`notify_app_password` build one:
-    `on_incoming_call` (when `BRIDGE_AUTO_ANSWER` is off) signs into that
-    Nextcloud account and calls Talk's own OCS call API
-    (`_talk_ring_start_sync`) - `POST .../room/{token}/participants/active`
-    to establish a room session, then `POST .../call/{token}` to join the
-    call - the same two calls a real Talk client makes to start a call, so
-    it triggers real ringing (push, full-screen call UI) on every other
-    device logged into that account or already in the room, not just a
-    chat message or a bare notification. Confirmed live that skipping the
-    room-join step and calling the call endpoint directly fails with 404
-    (`RequireParticipant`) - a bare custom Nextcloud endpoint was tried
-    first here and abandoned after extensive testing surfaced a routing bug
-    specific to this instance's `fritzboxbridge` app (all its POST/GET
-    routes except one returning a bare 405 straight from Symfony's router,
-    root cause not identified); Talk's own OCS API sidesteps it entirely.
+    in Talk.** The signaling protocol has no ringing or accept-decline exchange
+    for inbound calls, so there is no native way to ask before picking up.
+    `LineConfig.notify_user`/`notify_app_password` build one out of Talk's own
+    OCS call API: `on_incoming_call` (when `BRIDGE_AUTO_ANSWER` is off) signs
+    into that Nextcloud account and joins the room's call exactly as a real
+    Talk client would (`_talk_ring_start_sync`), which is what makes every
+    other device on that account ring for real - push notification and
+    full-screen call UI, not a chat message. Talk's own API is used rather than
+    a custom endpoint in this repository's Nextcloud app: that app's routes
+    return a bare 405 from Symfony's router on this instance, root cause
+    unidentified.
 
-    The triggering session is deliberately kept open (its cookies/opener
-    stored on the call entry) rather than immediately left - leaving right
-    away would end the call's ring before another device had a chance to
-    answer. The bridge also joins the room itself over its own internal-
-    client connection (same mechanism as `_publish_call_audio`'s room-join)
-    purely to watch `participants`/`update` events for a *different* real
-    session joining the call - the same room model as the call-end
-    detection above, read for the opposite transition and ignoring the
-    bridge's own sessions. On a genuine accept, the bridge answers the SIP
-    call and then leaves the ring-trigger session, in that order: the
-    caller waits on the answer, not on two OCS round trips.
+    The triggering session is deliberately kept open (its cookies/opener stored
+    on the call entry) rather than left immediately - leaving right away would
+    end the ring before another device had a chance to answer.
 
-    Joining the room's call is not enough on its own to get a person to
-    answer. Confirmed live: a client whose signaling session has gone
-    stale still paints an incoming-call screen and then does nothing when
-    it is tapped, so the phone rings out. The bridge therefore also asks
-    Talk to ring the room's users for the call
-    (`POST .../call/{token}/ring/{attendeeId}`), which delivers a real
-    call notification and gets the app to open a live session again. If a different device
-    answers instead (e.g. a physical phone in the same FritzBox
-    parallel-ring group), the gateway cancels this INVITE as usual
-    (`CallManager.handle_cancel`), which leaves the ring-trigger session
-    the same way. `_handle_incoming_ring`'s internal-client room-join has
-    the same dial-out-eligibility cost as a real call's publish (point 3)
-    and is cleaned up the same way (a forced reconnect once the call ends,
-    whether accepted or cancelled).
+    The bridge also joins the room over its own internal-client connection,
+    purely to watch for a *different* real session joining the call - the same
+    room model as the call-end detection above, read for the opposite
+    transition and ignoring the bridge's own sessions. On a genuine accept it
+    answers the SIP call **first** and leaves the ring-trigger session after:
+    the caller waits on the answer, not on two OCS round trips.
+
+    Joining the call is not enough on its own to get a person to answer, so the
+    bridge additionally rings the room's users for it. If a different device
+    wins the race instead - a physical phone in the same FritzBox parallel-ring
+    group, say - the gateway cancels this INVITE as usual
+    (`CallManager.handle_cancel`), which leaves the ring-trigger session the
+    same way. This room-join carries the same dialout-eligibility cost as a
+    real call's publish (point 3) and is cleaned up the same way, by a forced
+    reconnect once the call ends, whether it was accepted or cancelled.

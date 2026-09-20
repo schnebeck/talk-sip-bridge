@@ -31,7 +31,7 @@ to a Docker bridge gateway address instead), set the correct URL:
 
 For Talk's native "call a phone number" UI and virtual phone participants to
 work at all, three `spreed` app config values must be set (see
-`../docs/CONCEPT.md` "Unlocking the native UI in Talk" for what each one
+`../docs/SIGNALING-API.md` "Prerequisites in Nextcloud" for what each one
 does): `sip_bridge_shared_secret`, `sip_bridge_dialin_info`, `sip_dialout`.
 Optionally restrict to specific groups via `sip_bridge_groups` while
 evaluating.
