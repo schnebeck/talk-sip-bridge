@@ -174,6 +174,43 @@ class MessageBuilderApiTest(unittest.TestCase):
         self.assertEqual(source.count("line.sip_transport"), 2, "derived somewhere else too")
 
 
+def assigned_self_attributes(filename: str, *, inside: str = None) -> set:
+    """Every `self.x = ...` in a file, optionally only within one class."""
+    tree = tree_of(filename)
+    scopes = [tree]
+    if inside:
+        scopes = [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == inside]
+    found = set()
+    for scope in scopes:
+        for node in ast.walk(scope):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if (isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name)
+                            and target.value.id == "self"):
+                        found.add(target.attr)
+    return found
+
+
+class StubLineTest(unittest.TestCase):
+    """tests/support.py's StubLine stands in for a LineConfig. A field
+    added to the real one and not to the stub fails only in whichever test
+    happens to read it - which is how a transport field went missing from
+    two hardware scripts and a dialout field from the stub on the same
+    day."""
+
+    def test_the_stub_carries_every_field_a_line_has(self):
+        real = assigned_self_attributes("config.py", inside="LineConfig")
+        stub = set()
+        support = pathlib.Path(__file__).resolve().parent / "support.py"
+        for node in ast.walk(ast.parse(support.read_text())):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if (isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name)
+                            and target.value.id == "self"):
+                        stub.add(target.attr)
+        self.assertEqual(real - stub, set(), "StubLine is missing fields LineConfig sets")
+
+
 class ImportableApiTest(unittest.TestCase):
     """The same contracts, confirmed against the real objects where the
     media stack allows them to be imported.
