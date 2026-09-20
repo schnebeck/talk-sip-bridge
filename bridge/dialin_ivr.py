@@ -28,17 +28,11 @@ import wave
 import numpy as np
 
 import talk_sip_bridge
+from config import config
 
-# How long a caller gets. Generous on the first key - they are reading a
-# number off an email - and short between keys, so a caller who is done
-# typing is not left listening to silence.
-FIRST_DIGIT_TIMEOUT = 12.0
-NEXT_DIGIT_TIMEOUT = 4.0
-# How long a prompt is given to work before the next one is played. A
-# caller who has understood starts keying within a second or two; one who
-# has not is waiting for words they know, and five seconds of silence is
-# about as long as that stays comfortable.
-PROMPT_GAP = 5.0
+# How long a caller gets, and how long a prompt is given before the next
+# language is played: config.ivr_* (see docs/CONFIG.md), because how long
+# a caller needs depends on what they are calling from.
 ATTEMPTS = 3
 MAX_DIGITS = 32
 TERMINATOR = "#"
@@ -123,15 +117,16 @@ class DialInIvr:
     gives up, or hangs up, and belongs in a worker thread."""
 
     def __init__(self, rtp, resolve=None, *, prompt_wav="", pin_prompt_wav="",
-                 attempts: int = ATTEMPTS, first_digit_timeout: float = FIRST_DIGIT_TIMEOUT,
-                 next_digit_timeout: float = NEXT_DIGIT_TIMEOUT,
-                 prompt_gap: float = PROMPT_GAP):
+                 attempts: int = ATTEMPTS, first_digit_timeout: float = None,
+                 next_digit_timeout: float = None, prompt_gap: float = None):
         self.rtp = rtp
         self.resolve = resolve or talk_sip_bridge.join_by_meeting_id
         self.attempts = attempts
-        self.first_digit_timeout = first_digit_timeout
-        self.next_digit_timeout = next_digit_timeout
-        self.prompt_gap = prompt_gap
+        self.first_digit_timeout = (first_digit_timeout if first_digit_timeout is not None
+                                    else config.ivr_first_digit_timeout)
+        self.next_digit_timeout = (next_digit_timeout if next_digit_timeout is not None
+                                   else config.ivr_next_digit_timeout)
+        self.prompt_gap = prompt_gap if prompt_gap is not None else config.ivr_prompt_gap
         self.digits = queue.Queue()
         self.stopped = threading.Event()
         rate = rtp.sample_rate

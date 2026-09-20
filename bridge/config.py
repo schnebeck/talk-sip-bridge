@@ -32,6 +32,22 @@ def _number_map(raw: str, name: str) -> dict:
     return mapping
 
 
+def _seconds(name: str, default: float) -> float:
+    """A duration from the environment. A value that is not a positive
+    number is refused at startup rather than turning into a dialogue that
+    never waits or never gives up."""
+    raw = os.environ.get(name, "")
+    if not raw.strip():
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        raise RuntimeError(f"{name} must be a number of seconds, not {raw!r}")
+    if value <= 0:
+        raise RuntimeError(f"{name} must be greater than zero, not {value}")
+    return value
+
+
 def _require(name: str) -> str:
     value = os.environ.get(name)
     if not value:
@@ -270,6 +286,17 @@ class Config:
         # deployment's language, so there is nothing sensible to ship.
         self.ivr_prompt_wav = os.environ.get("BRIDGE_IVR_PROMPT_WAV", "")
         self.ivr_pin_prompt_wav = os.environ.get("BRIDGE_IVR_PIN_PROMPT_WAV", "")
+        # How patient the dialogue is, in seconds.
+        #
+        # Before the first key a caller is reading a number off an email,
+        # and on a mobile client they first have to switch the speaker on
+        # and open the keypad - measured against that, 25s is not
+        # generous. Between keys it only has to outlast looking back at
+        # the email mid-number. The gap is how long each prompt is given
+        # before the next language is played.
+        self.ivr_first_digit_timeout = _seconds("BRIDGE_IVR_FIRST_DIGIT_TIMEOUT", 25.0)
+        self.ivr_next_digit_timeout = _seconds("BRIDGE_IVR_NEXT_DIGIT_TIMEOUT", 6.0)
+        self.ivr_prompt_gap = _seconds("BRIDGE_IVR_PROMPT_GAP", 5.0)
         self.state_dir = os.environ.get("BRIDGE_STATE_DIR", "/var/lib/talk-sip-bridge")
 
 

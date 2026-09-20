@@ -205,6 +205,26 @@ class ConferenceConfigTest(unittest.TestCase):
             with env(BRIDGE_CONFERENCE_NUMBERS="**621", BRIDGE_CONFERENCE_CALLERS="[unclosed"):
                 pass
 
+    def test_how_long_a_caller_gets_is_configurable(self):
+        with env(BRIDGE_IVR_FIRST_DIGIT_TIMEOUT="40",
+                 BRIDGE_IVR_NEXT_DIGIT_TIMEOUT="8.5") as configured:
+            self.assertEqual(configured.ivr_first_digit_timeout, 40.0)
+            self.assertEqual(configured.ivr_next_digit_timeout, 8.5)
+
+    def test_a_caller_gets_long_enough_to_open_a_keypad_by_default(self):
+        """Measured against a mobile client: the speaker has to be
+        switched on and the keypad opened before a key can be pressed at
+        all, and that is most of half a minute."""
+        with env() as configured:
+            self.assertGreaterEqual(configured.ivr_first_digit_timeout, 20)
+            self.assertGreaterEqual(configured.ivr_next_digit_timeout, 5)
+
+    def test_a_duration_that_is_not_one_is_refused_at_startup(self):
+        for bad in ("soon", "0", "-5"):
+            with self.subTest(value=bad), self.assertRaises(RuntimeError):
+                with env(BRIDGE_IVR_FIRST_DIGIT_TIMEOUT=bad):
+                    pass
+
     def test_the_numbers_are_a_plain_list(self):
         with env(BRIDGE_CONFERENCE_NUMBERS=" **900, **901 ") as configured:
             self.assertEqual(configured.lines[0].conference_numbers, ["**900", "**901"])
