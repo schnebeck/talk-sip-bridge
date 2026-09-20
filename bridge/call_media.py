@@ -59,7 +59,7 @@ class CallMedia:
         self.subscriber = None
         self.human_sessionid = None            # whose audio the subscriber asked for
         self.offer_arrived = None              # set once the server's offer for it came in
-        self.subscriber_receiving = False      # a track arrived: this one works
+        self.subscriber_receiving = False      # a frame arrived: this one really works
         self._answered_an_offer = False
         self._on_receiving = None
         self.relay_task = None
@@ -108,7 +108,6 @@ class CallMedia:
         def on_track(track):
             if track.kind != "audio":
                 return
-            self.subscriber_receiving = True
             if on_receiving:
                 on_receiving(track)
             self.relay_task = asyncio.ensure_future(self._relay(track))
@@ -175,6 +174,11 @@ class CallMedia:
         try:
             while True:
                 frame = await track.recv()
+                # The first frame, not the track: a track object exists as
+                # soon as the offer is applied, long before anything
+                # flows - and treating that as a working connection is
+                # what let a refused answer go unrepaired.
+                self.subscriber_receiving = True
                 pcm = frame_to_mono_pcm(frame)
                 stats["frames"] += 1
                 stats["peak"] = max(stats["peak"], int(np.abs(pcm).max()) if len(pcm) else 0)

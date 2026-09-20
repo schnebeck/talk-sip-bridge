@@ -110,7 +110,10 @@ class SubscriberOfferTest(unittest.TestCase):
 
     def test_a_later_offer_is_ignored_once_audio_is_flowing(self):
         """Answering one resets a connection that already works - observed
-        as audio dropping mid-call."""
+        as audio dropping mid-call. "Works" means frames have arrived, not
+        that a track object exists: aiortc hands one over as soon as the
+        offer is applied, and a connection that never completes has one
+        too."""
         media = self.media()
         run(media.answer_subscriber_offer("v=0 offer"))
         media.subscriber_receiving = True          # a track arrived
