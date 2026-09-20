@@ -7,8 +7,9 @@ import queue
 import socket
 import struct
 import threading
+import time
 
-from dtmf import DtmfEvents
+from dtmf import EVENT_DIGITS, DtmfEvents
 from g711 import alaw_to_linear, linear_to_alaw, linear_to_ulaw, ulaw_to_linear
 from g722 import G722Decoder, G722Encoder
 import numpy as np
@@ -115,6 +116,40 @@ class RtpSession:
             self.sock.sendto(header + payload, self.remote_addr)
             self.seq += 1
             self.timestamp += RTP_CLOCK_INCREMENT
+
+    def send_dtmf(self, digit: str, duration_ms: int = 200, interval_ms: int = 20):
+        """Sends one key press as RTP events (RFC 4733).
+
+        The far end expects a packet per interval for as long as the key is
+        held, all under the timestamp the press started at, and the last
+        one repeated with the end marker - that repetition is what survives
+        a lost packet. The marker bit on the first packet says a new press
+        begins; the timestamp advances only afterwards, because the press
+        occupies that stretch of the timeline.
+        """
+        if self.dtmf_payload_type is None:
+            raise RuntimeError("no telephone-event payload type was negotiated for this call")
+        event = EVENT_DIGITS.find(digit.upper())
+        if event < 0:
+            raise ValueError(f"not a key that exists: {digit!r}")
+        started_at = self.timestamp & 0xFFFFFFFF
+        per_packet = int(self.sample_rate * interval_ms / 1000)
+        packets = max(1, duration_ms // interval_ms)
+
+        def send(index, samples, end):
+            header = struct.pack("!BBHII", (RTP_VERSION << 6),
+                                 (0x80 if index == 0 else 0) | self.dtmf_payload_type,
+                                 self.seq & 0xFFFF, started_at, self.ssrc)
+            self.sock.sendto(header + struct.pack("!BBH", event, (0x80 if end else 0) | 10,
+                                                  samples), self.remote_addr)
+            self.seq += 1
+
+        for index in range(packets):
+            send(index, per_packet * (index + 1), end=False)
+            time.sleep(interval_ms / 1000)
+        for _ in range(3):
+            send(packets, per_packet * packets, end=True)
+        self.timestamp = (started_at + per_packet * packets) & 0xFFFFFFFF
 
     def _recv_loop(self):
         while not self.stop_event.is_set():

@@ -25,7 +25,7 @@ from payload_types import PT_PCMU
 from rtp import RtpSession
 from sip_messages import (VALID_NUMBER, digest_response, extract_contact_uri,
                           parse_auth_challenge, parse_sip_headers)
-from sip_sdp import (SUPPORTED, answer_sdp, choose_payload_type,
+from sip_sdp import (CODEC_NAMES, SUPPORTED, answer_sdp, choose_payload_type,
                      extract_sip_body, offer_sdp, parse_offered_payload_types,
                      parse_sdp_media_address, parse_telephone_event_type)
 
@@ -140,6 +140,14 @@ class CallManager:
             self.call["status"] = "connected"
             self.call["rtp"] = rtp
         sdp, _, _ = answer_sdp(line, line.local_rtp_port, payload_type, dtmf_pt)
+        # What the two sides settled on, once per call: a gateway that was
+        # offered no telephone-event turns key presses into audible tones
+        # instead of passing them on, and that is indistinguishable from a
+        # caller who pressed nothing.
+        print(f"[call:{line.id}] Answering {call_id} with "
+              f"{CODEC_NAMES.get(payload_type, payload_type)}, key presses "
+              + (f"as events (payload type {dtmf_pt})" if dtmf_pt
+                 else "NOT negotiated - the caller offered no telephone-event"))
         self._send_response("200 OK", headers, remote_addr, extra_headers=[
             sip_requests.contact_header(line, with_transport=False),
             "Content-Type: application/sdp",
