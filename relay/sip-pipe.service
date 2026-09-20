@@ -1,0 +1,32 @@
+[Unit]
+Description=SIP TCP pipe between the gateway's LAN and the bridge's network
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/sip-pipe/env
+ExecStart=/usr/bin/python3 -u /opt/sip-pipe/sip_pipe.py
+Restart=on-failure
+RestartSec=2
+
+# It needs nothing but TCP sockets.
+DynamicUser=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

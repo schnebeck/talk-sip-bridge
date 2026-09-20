@@ -10,8 +10,14 @@ Two independent components run here, one per plane:
 
 | Plane | Component | Why |
 |---|---|---|
-| Signaling | Kamailio, `kamailio.cfg.example` | Bridges the two networks **and** converts UDP to TCP |
+| Signaling | `sip_pipe.py`, or Kamailio | Bridges the two networks; Kamailio additionally converts UDP to TCP |
 | Media | `rtp_relay.py` + `rtp-relay.service` | Forwards RTP; the gateway only ever addresses hosts on its own LAN |
+
+Which signaling component depends on the bridge. A line with
+`BRIDGE_SIP_TRANSPORT=tcp` speaks the gateway's own transport, and then
+nothing has to be converted: `sip_pipe.py` forwards bytes and is done. A
+line on UDP needs Kamailio, which terminates the UDP leg and re-originates
+on TCP.
 
 On the bridge side this is pure configuration: `BRIDGE_PROXY_HOST`/`_PORT` point
 at Kamailio's overlay socket, `BRIDGE_CONTACT_HOST`/`_PORT` at its LAN socket
@@ -37,6 +43,29 @@ What does not go away either way: the gateway delivers a call by opening a
 connection to the address in the Contact header, so something has to be
 listening in its LAN. Measured against this deployment's FritzBox - it does
 not answer on the connection the registration arrived on.
+
+## sip_pipe.py: SIP across the networks, nothing else
+
+Two routes, because the directions are not symmetric: the bridge connects
+outwards, the gateway connects inwards to whatever the Contact header
+names. One pair of ports per line, which is also what keeps lines apart -
+each has its own, rather than sharing one rule that can only point at one
+of them.
+
+```
+SIP_PIPE_ROUTES=10.1.1.5:5070->192.168.1.1:5060,192.168.1.10:5070->10.1.1.1:5091
+SIP_PIPE_PEERS=10.1.1.1,192.168.1.1
+```
+
+Config: [`sip-pipe.env.example`](./sip-pipe.env.example) →
+`/etc/sip-pipe/env`, [`sip_pipe.py`](./sip_pipe.py) → `/opt/sip-pipe/`,
+[`sip-pipe.service`](./sip-pipe.service) → `/etc/systemd/system/`. Like the
+RTP relay it runs under `DynamicUser` with no capabilities.
+
+It forwards and nothing more - no Via rewriting, no transaction state. That
+works because the gateway answers on the connection a request arrived on
+rather than at the address in `Via`; measured against this deployment's
+FritzBox, over the pipe, with a registration and a call.
 
 ## Kamailio: SIP across the networks, UDP to TCP
 
