@@ -19,12 +19,12 @@ records what this bridge does with them and why. Configuration is in
 
 The `spreed` app config values that unlock the native UI are listed in
 [`SIGNALING-API.md`](./SIGNALING-API.md#prerequisites-in-nextcloud). As set on
-the production server: `sip_bridge_groups` is a `sip-testers` group containing
-only `sip-tester`, so the native "call a phone number" UI is visible to that
-account alone; `sip_bridge_dialin_info` is a placeholder string, since no real
-dial-in numbers are used; `sip_dialout` is `yes`; `sip_bridge_shared_secret` is
-a generated secret held only in the production app config, not written down
-here.
+the production server: `sip_bridge_groups` is a `sip-testers` group holding a
+single administrator account, so the native "call a phone number" UI is
+visible to that one account; `sip_bridge_dialin_info` is a placeholder
+string, since no real dial-in numbers are used; `sip_dialout` is `yes`; and
+`sip_bridge_shared_secret` is a generated secret held only in the production
+app config, not written down here.
 
 Restricting the UI to a test group is worth keeping while a deployment is being
 evaluated, so the native call button does not appear for regular users before
