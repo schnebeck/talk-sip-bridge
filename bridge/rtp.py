@@ -8,6 +8,7 @@ import socket
 import struct
 import threading
 
+from dtmf import DtmfEvents
 from g711 import alaw_to_linear, linear_to_alaw, linear_to_ulaw, ulaw_to_linear
 from g722 import G722Decoder, G722Encoder
 import numpy as np
@@ -31,7 +32,8 @@ SAMPLES_PER_PACKET = _CODEC_INFO[PT_PCMU]["samples_per_packet"]
 
 
 class RtpSession:
-    def __init__(self, local_ip: str, local_port: int, remote_ip: str, remote_port: int, payload_type: int = PT_PCMU):
+    def __init__(self, local_ip: str, local_port: int, remote_ip: str, remote_port: int,
+                 payload_type: int = PT_PCMU, dtmf_payload_type: int = None, on_dtmf=None):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind((local_ip, local_port))
         self.sock.settimeout(0.5)
@@ -42,6 +44,12 @@ class RtpSession:
         self.recv_queue = queue.Queue()
         self.stop_event = threading.Event()
         self._reported_pt = None  # payload type already reported as unexpected
+        # Key presses arrive as their own payload type, negotiated per call
+        # (RFC 4733). Without knowing its number they are indistinguishable
+        # from a codec nobody agreed on, and get dropped as noise.
+        self.dtmf_payload_type = dtmf_payload_type
+        self.on_dtmf = on_dtmf or (lambda digit: None)
+        self._dtmf = DtmfEvents()
         self.set_payload_type(payload_type)
         self.recv_thread = threading.Thread(target=self._recv_loop, daemon=True)
         self.recv_thread.start()
@@ -124,6 +132,15 @@ class RtpSession:
             if len(data) < 12:
                 continue
             payload_type = data[1] & 0x7F
+            if self.dtmf_payload_type is not None and payload_type == self.dtmf_payload_type:
+                timestamp = struct.unpack("!I", data[4:8])[0]
+                digit = self._dtmf.feed(timestamp, data[12:])
+                if digit is not None:
+                    try:
+                        self.on_dtmf(digit)
+                    except Exception as e:
+                        print(f"[rtp] DTMF handler for {digit} failed: {e!r}")
+                continue
             if payload_type != self.payload_type and payload_type != self._reported_pt:
                 print(f"[rtp] Receiving payload type {payload_type} while {self.payload_type} was negotiated")
                 self._reported_pt = payload_type

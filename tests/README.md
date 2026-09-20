@@ -26,7 +26,8 @@ BRIDGE_CODE=/opt/talk-sip-bridge \
 | `test_build.py` | Every module imports on its own, in a fresh interpreter, with only the environment it declares; and that SDP and message building stay clear of the media stack |
 | `test_api.py` | The calls modules make into each other exist there - read from the source, so paths only a hangup or a timeout reaches are covered too |
 | `test_messages.py` | Header parsing, digest authentication, the injection allowlist |
-| `test_sdp.py` | Offer and answer building, codec choice, media-address parsing |
+| `test_sdp.py` | Offer and answer building, codec choice, media-address parsing, key-press negotiation |
+| `test_dtmf.py` | One digit per key press out of the packet storm one press produces |
 | `test_requests.py` | The shape of every SIP message this bridge sends |
 | `test_framing.py` | Where one message ends and the next begins in a TCP stream |
 | `test_transport.py` | Which connection a SIP message is written to, including when the one it should use is gone |

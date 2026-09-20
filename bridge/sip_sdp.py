@@ -6,7 +6,9 @@ SDP historically labeling it G722/8000. Below it sit both halves of G.711,
 because which one a registrar speaks is regional: A-law across most of the
 world, mu-law in North America and Japan, and some offer only one.
 """
-from payload_types import PT_G722, PT_PCMA, PT_PCMU
+import re
+
+from payload_types import (PT_G722, PT_PCMA, PT_PCMU, PT_TELEPHONE_EVENT)
 
 # What this bridge can encode and decode, best first.
 SUPPORTED = (PT_G722, PT_PCMA, PT_PCMU)
@@ -32,21 +34,36 @@ def offer_sdp(line, local_port: int) -> tuple[str, str, int]:
     rtpmaps = "".join(f"a=rtpmap:{pt} {CODEC_NAMES[pt]}/8000\r\n" for pt in SUPPORTED)
     sdp = (
         f"v=0\r\no=- 0 0 IN IP4 {host}\r\ns=-\r\n"
-        f"c=IN IP4 {host}\r\nt=0 0\r\nm=audio {port} RTP/AVP {formats}\r\n"
+        f"c=IN IP4 {host}\r\nt=0 0\r\n"
+        f"m=audio {port} RTP/AVP {formats} {PT_TELEPHONE_EVENT}\r\n"
         f"{rtpmaps}"
+        f"a=rtpmap:{PT_TELEPHONE_EVENT} telephone-event/8000\r\n"
+        f"a=fmtp:{PT_TELEPHONE_EVENT} 0-15\r\n"
     )
     return sdp, host, port
 
 
-def answer_sdp(line, local_port: int, payload_type: int) -> tuple[str, str, int]:
+def answer_sdp(line, local_port: int, payload_type: int,
+               dtmf_payload_type: int = None) -> tuple[str, str, int]:
     """Returns (sdp, advertised_host, advertised_port) for a single, already
-    chosen codec - used when this line is the UAS answering an INVITE."""
+    chosen codec - used when this line is the UAS answering an INVITE.
+
+    `dtmf_payload_type` is echoed back under the number the caller chose
+    for it, which is the only number they will send events under. Left out
+    when they did not offer telephone-event: claiming it then invites
+    events nobody asked for."""
     host, port = _sdp_host_port(line, local_port)
     name = CODEC_NAMES[payload_type]
+    formats = str(payload_type)
+    extra = ""
+    if dtmf_payload_type is not None:
+        formats += f" {dtmf_payload_type}"
+        extra = (f"a=rtpmap:{dtmf_payload_type} telephone-event/8000\r\n"
+                 f"a=fmtp:{dtmf_payload_type} 0-15\r\n")
     sdp = (
         f"v=0\r\no=- 0 0 IN IP4 {host}\r\ns=-\r\n"
-        f"c=IN IP4 {host}\r\nt=0 0\r\nm=audio {port} RTP/AVP {payload_type}\r\n"
-        f"a=rtpmap:{payload_type} {name}/8000\r\n"
+        f"c=IN IP4 {host}\r\nt=0 0\r\nm=audio {port} RTP/AVP {formats}\r\n"
+        f"a=rtpmap:{payload_type} {name}/8000\r\n{extra}"
     )
     return sdp, host, port
 
@@ -95,3 +112,20 @@ def choose_payload_type(offered: list[int]):
     if PT_G722 in offered:
         return PT_G722
     return next((pt for pt in offered if pt in SUPPORTED), None)
+
+
+TELEPHONE_EVENT_RTPMAP = re.compile(r"^a=rtpmap:(\d+)\s+telephone-event/", re.IGNORECASE)
+
+
+def parse_telephone_event_type(sdp_body: str):
+    """The payload type the peer uses for key presses (RFC 4733), or None
+    if they did not offer them.
+
+    Read, never assumed: the number is dynamic. This deployment's gateway
+    happens to use 101, which is common enough to look like a constant and
+    is not one."""
+    for line in sdp_body.splitlines():
+        match = TELEPHONE_EVENT_RTPMAP.match(line.strip())
+        if match:
+            return int(match.group(1))
+    return None

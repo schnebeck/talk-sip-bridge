@@ -25,7 +25,8 @@ from sip_messages import (content_length_of, extract_contact_uri,
                           parse_auth_challenge, parse_sip_headers,
                           split_messages)
 from sip_sdp import (choose_payload_type, extract_sip_body,
-                     parse_offered_payload_types, parse_sdp_media_address)
+                     parse_offered_payload_types, parse_sdp_media_address,
+                     parse_telephone_event_type)
 
 FIXTURES = pathlib.Path(__file__).resolve().parent / "fixtures" / "fritzbox"
 
@@ -73,6 +74,11 @@ class InboundInviteTest(unittest.TestCase):
     def test_the_media_address_is_found(self):
         self.assertEqual(parse_sdp_media_address(extract_sip_body(self.raw)),
                          ("192.168.1.1", 7078))
+
+    def test_the_number_key_presses_will_arrive_under_is_read_from_the_offer(self):
+        """101 here, but dynamic by definition - it is read, not assumed,
+        and the gateway offers `telephone-event` alongside its codecs."""
+        self.assertEqual(parse_telephone_event_type(extract_sip_body(self.raw)), 101)
 
     def test_a_padded_content_length_is_still_a_number(self):
         """The gateway writes "Content-Length:   415", with spaces."""

@@ -27,7 +27,7 @@ from sip_messages import (VALID_NUMBER, digest_response, extract_contact_uri,
                           parse_auth_challenge, parse_sip_headers)
 from sip_sdp import (SUPPORTED, answer_sdp, choose_payload_type,
                      extract_sip_body, offer_sdp, parse_offered_payload_types,
-                     parse_sdp_media_address)
+                     parse_sdp_media_address, parse_telephone_event_type)
 
 
 class _OutboundAttempt:
@@ -50,7 +50,8 @@ class CallManager:
     calls; talk_client.py reads from/writes to call["rtp"] to bridge it into
     a Talk room."""
 
-    def __init__(self, line, *, on_incoming_call=None, on_call_connected=None, on_call_ended=None, on_call_failed=None):
+    def __init__(self, line, *, on_incoming_call=None, on_call_connected=None,
+                 on_call_ended=None, on_call_failed=None, on_dtmf=None):
         self.line = line
         self.lock = threading.Lock()
         self.call = None
@@ -59,6 +60,10 @@ class CallManager:
         self.on_call_connected = on_call_connected or (lambda **kw: None)
         self.on_call_ended = on_call_ended or (lambda **kw: None)
         self.on_call_failed = on_call_failed or (lambda **kw: None)
+        # Key presses during a call. Nothing in this bridge acts on them
+        # yet; they are carried out so a caller-driven room choice can be
+        # built on top without touching the SIP layer again.
+        self.on_dtmf = on_dtmf or (lambda **kw: None)
 
     def status(self) -> dict:
         with self.lock:
@@ -75,14 +80,26 @@ class CallManager:
             status_line, req_headers, extra_headers=extra_headers or (),
             body=body, to_tag=to_tag), remote_addr)
 
-    def _new_rtp_session(self, payload_type: int = PT_PCMU) -> RtpSession:
+    def _new_rtp_session(self, payload_type: int = PT_PCMU,
+                         dtmf_payload_type: int = None, call_id: str = None) -> RtpSession:
         line = self.line
+
+        def dtmf(digit):
+            print(f"[call:{line.id}] DTMF {digit} on {call_id}")
+            self.on_dtmf(call_id=call_id, digit=digit)
+
         if line.media_relay_enabled:
-            return RtpSession(line.local_ip, line.local_rtp_port, line.relay_overlay_host, line.relay_overlay_port, payload_type=payload_type)
-        return RtpSession(line.local_ip, line.local_rtp_port, line.gateway_host, line.local_rtp_port, payload_type=payload_type)
+            return RtpSession(line.local_ip, line.local_rtp_port, line.relay_overlay_host,
+                              line.relay_overlay_port, payload_type=payload_type,
+                              dtmf_payload_type=dtmf_payload_type, on_dtmf=dtmf)
+        return RtpSession(line.local_ip, line.local_rtp_port, line.gateway_host,
+                          line.local_rtp_port, payload_type=payload_type,
+                          dtmf_payload_type=dtmf_payload_type, on_dtmf=dtmf)
 
     def handle_invite(self, text, headers, call_id, remote_addr):
-        offered_pts = parse_offered_payload_types(extract_sip_body(text))
+        body = extract_sip_body(text)
+        offered_pts = parse_offered_payload_types(body)
+        dtmf_pt = parse_telephone_event_type(body)
         with self.lock:
             if self.call is not None:
                 self._send_response("486 Busy Here", headers, remote_addr, to_tag=f"bridge{secrets.token_hex(3)}")
@@ -90,7 +107,7 @@ class CallManager:
             to_tag = f"bridge{secrets.token_hex(3)}"
             self.call = {"call_id": call_id, "headers": headers, "remote_addr": remote_addr,
                          "status": "ringing", "bye_timer": None, "to_tag": to_tag, "rtp": None,
-                         "offered_pts": offered_pts}
+                         "offered_pts": offered_pts, "dtmf_pt": dtmf_pt}
         caller = headers.get("from", "unknown")
         print(f"[call:{self.line.id}] Incoming call from {caller}")
         self._send_response("180 Ringing", headers, remote_addr, to_tag=to_tag)
@@ -118,10 +135,11 @@ class CallManager:
                                     to_tag=to_tag)
                 self.call = None
                 return False
-            rtp = self._new_rtp_session(payload_type)
+            dtmf_pt = self.call.get("dtmf_pt")
+            rtp = self._new_rtp_session(payload_type, dtmf_pt, call_id)
             self.call["status"] = "connected"
             self.call["rtp"] = rtp
-        sdp, _, _ = answer_sdp(line, line.local_rtp_port, payload_type)
+        sdp, _, _ = answer_sdp(line, line.local_rtp_port, payload_type, dtmf_pt)
         self._send_response("200 OK", headers, remote_addr, extra_headers=[
             sip_requests.contact_header(line, with_transport=False),
             "Content-Type: application/sdp",
@@ -311,8 +329,17 @@ class CallManager:
         answer_body = extract_sip_body(resp)
 
         answered_pts = parse_offered_payload_types(answer_body)
-        if answered_pts:
-            rtp.set_payload_type(choose_payload_type(answered_pts))
+        chosen = choose_payload_type(answered_pts) if answered_pts else None
+        if chosen is not None:
+            rtp.set_payload_type(chosen)
+        elif answered_pts:
+            # We offered only what we speak, so this means the far end
+            # answered with something else entirely. Say so rather than
+            # carrying on with whatever the session was built with.
+            print(f"[call:{line.id}] Answer for {attempt.call_id} picked {answered_pts}, "
+                  f"none of which this bridge speaks")
+        # Key presses come under the number the far end named in its answer.
+        rtp.dtmf_payload_type = parse_telephone_event_type(answer_body)
         if not line.media_relay_enabled:
             # Without a relay the peer's own advertised media address is the
             # only correct target - the one this session was built with is a
@@ -344,7 +371,9 @@ class CallManager:
         """Places one outbound call and follows it to its end: connected,
         refused, or given up on."""
         line = self.line
-        rtp = self._new_rtp_session()  # payload type settled once the answer is read
+        # Payload types settle once the answer is read; the call id is
+        # known now and is what a key press has to be reported against.
+        rtp = self._new_rtp_session(call_id=call_id)
         sdp, _, _ = offer_sdp(line, line.local_rtp_port)
         attempt = _OutboundAttempt(number, call_id, from_tag, sdp)
 
