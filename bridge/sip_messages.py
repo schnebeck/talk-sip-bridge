@@ -57,6 +57,48 @@ def extract_contact_uri(contact_header: str) -> str:
     return contact_header.split(';')[0].strip()
 
 
+def content_length_of(header_block: str) -> int:
+    """The body length a message announces, 0 if it announces none. Both
+    spellings occur: "l" is the compact form."""
+    for line in header_block.split("\r\n")[1:]:
+        if ":" not in line:
+            continue
+        name, value = line.split(":", 1)
+        if name.strip().lower() in ("content-length", "l"):
+            try:
+                return max(0, int(value.strip()))
+            except ValueError:
+                return 0
+    return 0
+
+
+def split_messages(buffer: bytes) -> tuple[list, bytes]:
+    """Splits a stream into complete SIP messages and the remainder.
+
+    A datagram is one message; a stream is not. Over TCP the only thing
+    that says where a message ends is its own Content-Length, so a reader
+    that assumes otherwise either truncates a message or glues two
+    together - both silently.
+
+    Returns (messages, rest). Anything incomplete stays in rest for the
+    next read."""
+    messages = []
+    while True:
+        separator = buffer.find(b"\r\n\r\n")
+        if separator < 0:
+            return messages, buffer
+        header_end = separator + 4
+        try:
+            header_block = buffer[:separator].decode(errors="replace")
+        except Exception:
+            return messages, buffer
+        total = header_end + content_length_of(header_block)
+        if len(buffer) < total:
+            return messages, buffer  # body still on its way
+        messages.append(buffer[:total])
+        buffer = buffer[total:]
+
+
 def parse_auth_challenge(auth_val: str) -> dict:
     if auth_val.lower().startswith("digest"):
         auth_val = auth_val.split(" ", 1)[1]

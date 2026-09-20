@@ -31,16 +31,26 @@ def methods_of(filename: str, class_name: str) -> set:
 
 
 def calls_on(filename: str, receiver: str) -> set:
-    """Method names called on `receiver`, which may be a plain name
-    ("transport") or an attribute path ("self.transport")."""
+    """Everything reached through `receiver` - called, or referenced to be
+    called later. A dispatch table holds the second kind, and a contract
+    test that only sees the first would miss a whole handler set."""
     found = set()
     for node in ast.walk(tree_of(filename)):
-        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
-            continue
-        target = node.func.value
-        if ast.unparse(target) == receiver:
-            found.add(node.func.attr)
+        if isinstance(node, ast.Attribute) and ast.unparse(node.value) == receiver:
+            found.add(node.attr)
     return found
+
+
+def methods_of_any(filename: str, *class_names: str) -> set:
+    """The interface several classes present together - a base and its
+    implementations."""
+    found = set()
+    for name in class_names:
+        found |= methods_of(filename, name)
+    return found
+
+
+TRANSPORTS = ("_SipTransportBase", "UdpSipTransport", "TcpSipTransport")
 
 
 def assignments_to(filename: str, receiver: str) -> set:
@@ -72,14 +82,23 @@ class CallManagerToTransportTest(unittest.TestCase):
     def test_every_transport_method_used_exists(self):
         used = calls_on("sip_call.py", "self.transport")
         self.assertTrue(used)
-        missing = used - methods_of("sip_transport.py", "SipTransport")
+        missing = used - methods_of_any("sip_transport.py", *TRANSPORTS)
         self.assertEqual(missing, set())
 
     def test_registrar_only_uses_what_the_transport_offers(self):
         used = calls_on("sip_registrar.py", "transport")
         self.assertTrue(used)
-        missing = used - methods_of("sip_transport.py", "SipTransport")
+        missing = used - methods_of_any("sip_transport.py", *TRANSPORTS)
         self.assertEqual(missing, set())
+
+    def test_both_transports_present_the_same_interface(self):
+        """A line picks one of them from configuration; anything only one of
+        them has would work until somebody switches transport."""
+        shared = methods_of("sip_transport.py", "_SipTransportBase")
+        udp = methods_of("sip_transport.py", "UdpSipTransport") | shared
+        tcp = methods_of("sip_transport.py", "TcpSipTransport") | shared
+        public = lambda names: {n for n in names if not n.startswith("_")}
+        self.assertEqual(public(udp), public(tcp))
 
 
 class DaemonWiringTest(unittest.TestCase):
@@ -136,18 +155,23 @@ class MessageBuilderApiTest(unittest.TestCase):
                 actual = set(inspect.signature(func).parameters)
                 self.assertEqual(actual, expected)
 
-    def test_the_transport_is_named_in_exactly_one_place(self):
-        """The point of the extraction: changing which transport the bridge
-        speaks is a change to sip_requests, not a hunt through the call and
-        registration code."""
-        for filename in ("sip_call.py", "sip_registrar.py", "sip_transport.py"):
+    def test_no_module_hardcodes_a_transport_into_a_message(self):
+        """Which transport a line speaks is configuration. A literal in the
+        call or registration code would apply it to every deployment,
+        which is how Contact came to claim TCP on a UDP socket."""
+        for filename in ("sip_call.py", "sip_registrar.py", "sip_transport.py", "sip_requests.py"):
             source = (BRIDGE / filename).read_text()
             with self.subTest(file=filename):
                 self.assertNotIn("SIP/2.0/UDP", source)
+                self.assertNotIn("SIP/2.0/TCP", source)
                 self.assertNotIn("transport=tcp", source)
-        requests_source = (BRIDGE / "sip_requests.py").read_text()
-        self.assertIn("VIA_TRANSPORT", requests_source)
-        self.assertIn("CONTACT_TRANSPORT", requests_source)
+                self.assertNotIn("transport=udp", source)
+
+    def test_the_transport_is_derived_in_exactly_one_place(self):
+        self.assertTrue(callable(sip_requests.via_transport))
+        self.assertTrue(callable(sip_requests.contact_transport))
+        source = (BRIDGE / "sip_requests.py").read_text()
+        self.assertEqual(source.count("line.sip_transport"), 2, "derived somewhere else too")
 
 
 class ImportableApiTest(unittest.TestCase):
@@ -164,8 +188,9 @@ class ImportableApiTest(unittest.TestCase):
             import sip_transport
         for name in ("handle_invite", "handle_bye", "handle_cancel", "handle_options"):
             self.assertTrue(callable(getattr(sip_call.CallManager, name, None)))
-        for name in ("send", "wait_response", "open_waiter", "close_waiter"):
-            self.assertTrue(callable(getattr(sip_transport.SipTransport, name, None)))
+        for transport in (sip_transport.UdpSipTransport, sip_transport.TcpSipTransport):
+            for name in ("send", "wait_response", "open_waiter", "close_waiter", "close"):
+                self.assertTrue(callable(getattr(transport, name, None)), f"{transport.__name__}.{name}")
 
     @needs_media_stack
     def test_talk_client_exposes_the_callbacks_and_a_starter(self):

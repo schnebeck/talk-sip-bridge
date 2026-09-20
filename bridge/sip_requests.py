@@ -15,13 +15,21 @@ import secrets
 USER_AGENT = "FritzboxTalkBridge/0.1"
 ALLOWED_METHODS = "INVITE, ACK, BYE, CANCEL, OPTIONS"
 
-# The transport the bridge's own socket speaks, as it appears in Via, and
-# the one the gateway is told to reach us over, as it appears in Contact.
-# These differ in the deployment this was built for: a relay terminates the
-# bridge's UDP leg and re-originates towards the gateway over TCP, and
-# Contact names the relay, not this host (see LineConfig.contact_host).
-VIA_TRANSPORT = "UDP"
-CONTACT_TRANSPORT = "tcp"
+# Which transport a line speaks appears twice in what it sends: in Via, as
+# the transport of its own socket, and in Contact, as the one the gateway
+# should reach it over. They can legitimately differ - with a relay in
+# between, Contact names the relay's leg, not this host's (see
+# LineConfig.contact_host / LineConfig.contact_transport).
+
+
+def via_transport(line) -> str:
+    return line.sip_transport.upper()
+
+
+def contact_transport(line) -> str:
+    """What the gateway is told to use. Defaults to the line's own
+    transport; a relay that changes transport on the way sets it apart."""
+    return (getattr(line, "contact_transport", "") or line.sip_transport).lower()
 
 
 def new_branch(suffix: str = "") -> str:
@@ -34,7 +42,7 @@ def new_tag() -> str:
 
 
 def via_header(line, branch: str) -> str:
-    return f"Via: SIP/2.0/{VIA_TRANSPORT} {line.local_ip}:{line.local_sip_port};rport;branch={branch}"
+    return f"Via: SIP/2.0/{via_transport(line)} {line.local_ip}:{line.local_sip_port};rport;branch={branch}"
 
 
 def contact_header(line, *, with_transport: bool = True) -> str:
@@ -44,7 +52,7 @@ def contact_header(line, *, with_transport: bool = True) -> str:
     deliver to an address on its own LAN."""
     host = line.contact_host or line.local_ip
     port = line.contact_port or line.local_sip_port
-    transport = f";transport={CONTACT_TRANSPORT}" if with_transport else ""
+    transport = f";transport={contact_transport(line)}" if with_transport else ""
     return f"Contact: <sip:{line.sip_user}@{host}:{port}{transport}>"
 
 

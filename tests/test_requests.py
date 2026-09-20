@@ -86,7 +86,7 @@ class RegisterTest(unittest.TestCase):
         message = build_register(StubLine(), call_id="cid", tag="t", branch="z9hG4bKb",
                                  cseq=1, expires=600)
         self.assertEqual(header_value(message, "Contact"),
-                         f"<sip:sip-phone@{LOCAL_IP}:5060;transport=tcp>")
+                         f"<sip:sip-phone@{LOCAL_IP}:5060;transport=udp>")
 
     def test_contact_points_at_the_relay_when_one_is_configured(self):
         """This is the address the gateway sends calls to, so it has to be
@@ -95,7 +95,7 @@ class RegisterTest(unittest.TestCase):
         message = build_register(line, call_id="cid", tag="t", branch="z9hG4bKb",
                                  cseq=1, expires=600)
         self.assertEqual(header_value(message, "Contact"),
-                         "<sip:sip-phone@203.0.113.10:5070;transport=tcp>")
+                         "<sip:sip-phone@203.0.113.10:5070;transport=udp>")
 
     def test_deregistering_everything_uses_a_wildcard_contact(self):
         message = build_register(StubLine(), call_id="cid", tag="t", branch="z9hG4bKb",

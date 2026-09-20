@@ -27,8 +27,16 @@ Observed on the FritzBox this is deployed against, and both failure modes are
 - **Registration requires the SIP username** (e.g. `sip-phone`) in the
   To/From/Request-URI, not the internal extension number (e.g. `621`).
 
-The bridge's own SIP stack speaks UDP, which is what makes the transport
-conversion below necessary rather than a plain packet forwarder.
+Whether that conversion is needed depends on the bridge: with
+`BRIDGE_SIP_TRANSPORT=tcp` it speaks TCP itself, and nothing here has to
+translate. Kamailio would then be replaceable by a plain TCP pipe - one
+that forwards bytes without knowing SIP, because a stream keeps the
+message boundaries a datagram-to-stream conversion has to reconstruct.
+
+What does not go away either way: the gateway delivers a call by opening a
+connection to the address in the Contact header, so something has to be
+listening in its LAN. Measured against this deployment's FritzBox - it does
+not answer on the connection the registration arrived on.
 
 ## Kamailio: SIP across the networks, UDP to TCP
 

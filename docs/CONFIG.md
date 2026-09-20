@@ -81,7 +81,9 @@ the line's `DEFAULT_ROOM`.
 | Variable | Default | Meaning |
 |---|---|---|
 | `BRIDGE_PROXY_HOST` / `BRIDGE_PROXY_PORT` | gateway host / 5060 | Where SIP requests are actually sent - a relay if one is needed (see "Media relay" below), otherwise the gateway itself. |
-| `BRIDGE_LOCAL_SIP_PORT` | 5060 | Local UDP port for SIP signaling. |
+| `BRIDGE_SIP_TRANSPORT` | `udp` | `udp` or `tcp`: which transport this line's SIP runs over. Registrars differ, and a wrong choice is silent - a FritzBox drops UDP without a word, and TCP-only providers are common. With `tcp` the bridge keeps one outgoing connection for its own requests and listens for the ones the gateway opens to its Contact, because a registrar delivers a call by connecting to that address rather than answering on the registration's connection. |
+| `BRIDGE_CONTACT_TRANSPORT` | follows `BRIDGE_SIP_TRANSPORT` | Which transport the gateway is told to use towards the Contact. Only differs when a relay changes transport on the way: with the bridge speaking UDP to a relay that speaks TCP onwards, this is `tcp` while `BRIDGE_SIP_TRANSPORT` stays `udp`. Getting it wrong costs inbound calls only - registration still succeeds. |
+| `BRIDGE_LOCAL_SIP_PORT` | 5060 | Local port for SIP signaling - bound as a UDP socket, or as a listener the gateway connects to, depending on `BRIDGE_SIP_TRANSPORT`. |
 | `BRIDGE_CONTACT_HOST` / `BRIDGE_CONTACT_PORT` | `BRIDGE_LOCAL_IP` / `BRIDGE_LOCAL_SIP_PORT` | Address advertised in the SIP Contact header - where the gateway sends calls for this registration. Only needs to differ from the defaults when a SIP proxy/relay sits between this host and the gateway; it is then that relay's address, not this host's or the media relay's. |
 | `BRIDGE_LOCAL_RTP_PORT` | 40000 | Local UDP port for RTP media. |
 | `BRIDGE_REGISTER_EXPIRES` | 600 | SIP registration lifetime in seconds. |

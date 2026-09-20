@@ -48,6 +48,8 @@ class StubLine:
         self.contact_port = None
         self.proxy_host = GATEWAY_HOST
         self.proxy_port = 5060
+        self.sip_transport = "udp"
+        self.contact_transport = ""   # empty: follow sip_transport
         self.media_relay_enabled = False
         self.relay_lan_host = RELAY_LAN_HOST
         self.relay_lan_port = 40000

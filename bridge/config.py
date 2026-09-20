@@ -46,6 +46,13 @@ class LineConfig:
         self.gateway_host = env_required("GATEWAY_HOST")  # e.g. the FritzBox, or any other SIP registrar
         self.proxy_host = env("PROXY_HOST", self.gateway_host)
         self.proxy_port = int(env("PROXY_PORT", "5060"))
+        # Which transport this line's SIP runs over. Gateways differ: some
+        # registrars accept UDP, others only TCP and drop UDP without a
+        # word. It is a per-line setting because a deployment can hold
+        # lines at different gateways.
+        self.sip_transport = (env("SIP_TRANSPORT", "udp") or "udp").strip().lower()
+        if self.sip_transport not in ("udp", "tcp"):
+            raise RuntimeError(f"{env_prefix}SIP_TRANSPORT must be udp or tcp, not {self.sip_transport!r}")
         self.local_sip_port = int(env("LOCAL_SIP_PORT", default_local_sip_port) if default_local_sip_port else env_required("LOCAL_SIP_PORT"))
         self.local_rtp_port = int(env("LOCAL_RTP_PORT", default_local_rtp_port) if default_local_rtp_port else env_required("LOCAL_RTP_PORT"))
         # Address/port to advertise in the SIP Contact header - where the
@@ -54,6 +61,14 @@ class LineConfig:
         # when a SIP proxy/relay sits between this host and the gateway.
         self.contact_host = env("CONTACT_HOST", "")
         self.contact_port = int(env("CONTACT_PORT", "0") or 0)
+        # Which transport the gateway should use towards that contact.
+        # Defaults to this line's own; it differs when a relay changes
+        # transport on the way, which is the case this deployment runs:
+        # the bridge speaks UDP to the relay, the relay TCP to the gateway,
+        # and the gateway must be told TCP.
+        self.contact_transport = (env("CONTACT_TRANSPORT", "") or "").strip().lower()
+        if self.contact_transport not in ("", "udp", "tcp"):
+            raise RuntimeError(f"{env_prefix}CONTACT_TRANSPORT must be udp or tcp, not {self.contact_transport!r}")
         # Which Talk room an inbound call on this line is bridged into.
         self.default_room_token = env("DEFAULT_ROOM", "")
         # Optional regex restricting which numbers may be dialed out through
