@@ -10,6 +10,9 @@ Fields are filled in by different parts at different moments and stay unset
 until then, so `None` means "not yet" throughout. Every access happens
 under the owning client's lock: the SIP side writes from worker threads,
 the Talk side from its event loop.
+
+The WebRTC of a call lives in its own object behind `media` - see
+call_media.py.
 """
 import dataclasses
 
@@ -36,19 +39,17 @@ class Call:
     virtual_sessionid: str = None         # chosen here, used to add and remove it
     virtual_room_sessionid: str = None    # assigned by the server, seen in room rosters
 
-    # -- media, one peer connection per direction ------------------------
-    publisher: object = None              # phone -> Talk
-    publisher_peer_sessionid: str = None  # who the publish offer is addressed to (ourselves)
-    subscriber: object = None             # Talk -> phone
-    human_sessionid: str = None           # whose audio the subscriber asked for
-    subscriber_offer: object = None       # set once that offer arrives, ending the retries
-    relay_task: object = None             # forwards subscribed frames into the RTP session
+    # -- media -----------------------------------------------------------
+    # A CallMedia once the call carries audio: the two peer connections and
+    # what runs between them. Kept behind one field rather than spread over
+    # six, because they are created together and die together.
+    media: object = None
 
     @property
     def is_publishing(self) -> bool:
         """Whether this call reached the point of carrying audio. Distinguishes
         a call in progress from one still ringing."""
-        return self.publisher is not None
+        return self.media is not None and self.media.is_publishing
 
     def own_session_ids(self) -> set:
         """The sessions in the room that belong to this bridge rather than to

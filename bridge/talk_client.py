@@ -21,16 +21,14 @@ import json
 import re
 import secrets
 import threading
-import time
 import traceback
 
 import websockets
-from aiortc import RTCConfiguration, RTCIceCandidate, RTCPeerConnection, RTCSessionDescription
 
 import talk_ocs
 from call import DIALOUT, INBOUND, Call
+from call_media import CallMedia
 from config import config
-from media import SipAudioTrack, frame_to_mono_pcm, resample_linear
 from room_state import FLAG_IN_CALL, RoomCallState, is_room_wide_call_end
 
 # Call flags, shared by Talk's clients and the signaling server. Talk's own
@@ -47,16 +45,6 @@ FLAG_WITH_PHONE = 8
 SUBSCRIBE_RETRY_INTERVAL = 5
 SUBSCRIBE_MAX_ATTEMPTS = 6
 
-# aiortc defaults to a public STUN server, which costs a measured 5 seconds
-# of candidate gathering per call before anything can be published - five
-# seconds of silence after a caller is answered. The other end of every one
-# of these connections is the signaling server's own Janus on this host, so
-# host candidates are what actually get used; the reflexive ones it waits
-# for are useless here, and asking for them tells a third party about every
-# call placed.
-NO_ICE_SERVERS = RTCConfiguration(iceServers=[])
-
-
 def _sip_display_name(from_header: str) -> str:
     """Reduces a SIP From header to something usable as a participant name
     in Talk - the caller's display name if it sent one, else the user part
@@ -68,15 +56,6 @@ def _sip_display_name(from_header: str) -> str:
     if uri_user:
         return uri_user.group(1)
     return from_header.split(";")[0].strip()
-
-
-def _parse_ice_candidate(cand_str: str, sdp_mid=None, sdp_mline_index=0) -> RTCIceCandidate:
-    parts = cand_str.replace("candidate:", "").split()
-    return RTCIceCandidate(
-        component=int(parts[1]), foundation=parts[0], ip=parts[4], port=int(parts[5]),
-        priority=int(parts[3]), protocol=parts[2], type=parts[7],
-        sdpMid=sdp_mid, sdpMLineIndex=sdp_mline_index,
-    )
 
 
 def _run_coro_logged(coro, loop, label: str):
@@ -268,15 +247,16 @@ class TalkClient:
         await self._send_dialout_response("", roomid, call_id=call_id, status=status)
 
     async def _handle_webrtc_message(self, message: dict):
+        """Routes one WebRTC message to the call it belongs to. Which
+        connection that is - the publisher or the subscriber - follows from
+        who sent it, and only the call's own media knows that."""
         data = message.get("data", {})
         sender_sessionid = message.get("sender", {}).get("sessionid")
         with self._call_sessions_lock:
-            for matched_entry in self._call_sessions.values():
-                if matched_entry.publisher_peer_sessionid == sender_sessionid and matched_entry.publisher:
-                    pc, peer, is_subscriber = matched_entry.publisher, self.own_sessionid, False
-                    break
-                if matched_entry.human_sessionid == sender_sessionid and matched_entry.subscriber:
-                    pc, peer, is_subscriber = matched_entry.subscriber, sender_sessionid, True
+            for entry in self._call_sessions.values():
+                match = entry.media.peer_for(sender_sessionid) if entry.media else None
+                if match:
+                    media, (pc, is_subscriber) = entry.media, match
                     break
             else:
                 print(f"[talk] DEBUG unmatched webrtc message from sender={sender_sessionid} data.type={data.get('type')}")
@@ -284,42 +264,26 @@ class TalkClient:
 
         msg_type = data.get("type")
         if msg_type == "answer":
-            # Answer to our own publish offer (self-addressed - see
-            # _publish_call_audio). Only ever happens on the publish pc.
-            await pc.setRemoteDescription(RTCSessionDescription(sdp=data["payload"]["sdp"], type="answer"))
+            # Answer to our own publish offer, which is self-addressed - so
+            # it only ever arrives on the publishing connection.
+            await media.accept_publisher_answer(data["payload"]["sdp"])
         elif msg_type == "offer" and is_subscriber:
-            # The server's offer for the stream we requested via
-            # requestoffer (see _subscribe_human_audio) - we answer it, and
-            # stop the retry loop that was covering the case where the other
-            # side had no publisher yet.
-            offer_event = matched_entry.subscriber_offer
-            if offer_event is not None:
-                if offer_event.is_set():
-                    return  # already negotiated; a late duplicate offer would reset the connection
-                offer_event.set()
-            await pc.setRemoteDescription(RTCSessionDescription(sdp=data["payload"]["sdp"], type="offer"))
-            answer = await pc.createAnswer()
-            await pc.setLocalDescription(answer)
+            answer_sdp = await media.answer_subscriber_offer(data["payload"]["sdp"])
+            if answer_sdp is None:
+                return  # a late duplicate; answering it would reset a working connection
+            peer = sender_sessionid
             await self.ws.send(json.dumps({
                 "id": f"bridge-subanswer-{secrets.token_hex(4)}", "type": "message",
                 "message": {
                     "recipient": {"type": "session", "sessionid": peer},
                     "data": {
                         "to": peer, "type": "answer", "sid": data.get("sid"), "roomType": "video",
-                        "payload": {"type": "answer", "sdp": pc.localDescription.sdp},
+                        "payload": {"type": "answer", "sdp": answer_sdp},
                     },
                 },
             }))
         elif msg_type == "candidate":
-            cand_data = data.get("payload", {}).get("candidate", {})
-            cand_str = cand_data.get("candidate", "")
-            if not cand_str:
-                return
-            try:
-                await pc.addIceCandidate(_parse_ice_candidate(
-                    cand_str, sdp_mid=cand_data.get("sdpMid"), sdp_mline_index=cand_data.get("sdpMLineIndex", 0)))
-            except Exception as e:
-                print(f"[talk] Could not add ICE candidate: {e!r}")
+            await media.add_candidate(pc, data.get("payload"))
 
     async def _handle_participants_update(self, update: dict):
         """The room's two answers this bridge acts on: somebody joined the
@@ -474,129 +438,86 @@ class TalkClient:
         }))
 
     # -- publishing SIP call audio into the room --------------------------
-    async def _publish_call_audio(self, sip_call_id: str, rtp_session, roomid: str, number: str, human_sessionid_hint: str = None):
-        # Join the room so the signaling server routes our self-addressed
-        # offer to that room's Janus instance and generates a real SDP
-        # answer - a plain addsession alone does not do this. This makes us
-        # briefly ineligible for a new dialout request (the signaling server
-        # excludes any internal session that is in a room from its dialout
-        # candidates) - acceptable since only one call is ever handled at a
-        # time here anyway; _teardown_call leaves the room again once done.
+    async def _join_room_for_publishing(self, roomid: str) -> None:
+        """Publishing needs the bridge in the room: that is what makes the
+        signaling server route its self-addressed offer to the room's Janus
+        and answer it. addsession alone does not.
+
+        It costs this connection its dialout eligibility for as long as it
+        lives (see docs/CONCEPT.md point 3), which is why _teardown_call
+        reconnects afterwards."""
         self._room_joined_event.clear()
         await self.ws.send(json.dumps({"id": "bridge-room", "type": "room", "room": {"roomid": roomid}}))
         try:
             await asyncio.wait_for(self._room_joined_event.wait(), timeout=5)
         except asyncio.TimeoutError:
             print(f"[talk] Warning: no room-join confirmation for {roomid} within 5s, publishing anyway")
+
+    async def _send_publish_offer(self, sip_call_id: str, sdp: str, display_name: str) -> None:
+        await self.ws.send(json.dumps({
+            "id": f"bridge-offer-{sip_call_id}", "type": "message",
+            "message": {
+                "recipient": {"type": "session", "sessionid": self.own_sessionid},
+                "data": {
+                    "to": self.own_sessionid, "type": "offer", "sid": secrets.token_hex(8),
+                    "roomType": "video",
+                    # This nick names the tile that actually carries the
+                    # call's audio - the phone participant added via
+                    # addsession is a name plate without media.
+                    "payload": {"nick": display_name, "type": "offer", "sdp": sdp},
+                    "audiocodec": "opus",
+                },
+            },
+        }))
+
+    async def _publish_call_audio(self, sip_call_id: str, rtp_session, roomid: str, number: str, human_sessionid_hint: str = None):
+        await self._join_room_for_publishing(roomid)
         if not self._call_still_running(sip_call_id):
             print(f"[talk] {sip_call_id} ended before publishing started - nothing to publish")
             return
+
         display_name = _sip_display_name(number)
         virtual_sessionid = await self._add_virtual_session(sip_call_id, roomid=roomid, number=display_name, caller=True)
-        pc = RTCPeerConnection(NO_ICE_SERVERS)
-        pc.addTrack(SipAudioTrack(rtp_session))
 
-        # Ending a call in Talk's UI does not send an explicit hangup control
-        # message for this room type - what actually happens is the Janus
-        # publisher gets torn down at the DTLS level. That alone does not
-        # reliably move iceConnectionState to "closed"/"failed" in aiortc,
-        # but connectionState (which also factors in the DTLS/SCTP state)
-        # does. This is the only observed signal that the human ended the
-        # call, so it drives the actual SIP hangup - without it, the phone
-        # side stays connected indefinitely regardless of what Talk shows.
-        hangup_triggered = False
-
-        def maybe_hangup(source: str, state: str):
-            nonlocal hangup_triggered
-            print(f"[talk] Publish {source}: {state}")
-            if not hangup_triggered and state in ("failed", "closed", "disconnected"):
-                hangup_triggered = True
-                self._hangup_sip(None)
-
-        @pc.on("iceconnectionstatechange")
-        async def on_ice_state_change():
-            maybe_hangup("ICE state", pc.iceConnectionState)
-
-        @pc.on("connectionstatechange")
-        async def on_connection_state_change():
-            maybe_hangup("connection state", pc.connectionState)
-
-        async def poll_connection_state():
-            # Redundant against the event handlers above: observed at least
-            # once that neither fired even though the connection had
-            # genuinely gone bad, leaving the phone call connected
-            # indefinitely with nothing to end it. Polling is a fallback,
-            # not the primary mechanism - state changes are still normally
-            # caught immediately by the events.
-            while not hangup_triggered:
-                await asyncio.sleep(5)
-                if pc.connectionState in ("failed", "closed", "disconnected") or \
-                        pc.iceConnectionState in ("failed", "closed", "disconnected"):
-                    maybe_hangup("state poll", pc.connectionState)
-                    return
-
-        asyncio.ensure_future(poll_connection_state())
-
+        media = CallMedia(sip_call_id, rtp_session, on_connection_lost=self._hangup_sip)
+        media.open_publisher(self.own_sessionid)
         with self._call_sessions_lock:
             # get, not setdefault: _teardown_call removing the entry is what
             # says the call is over, and recreating it here would hide that.
             entry = self._call_sessions.get(sip_call_id)
             if entry is not None:
                 entry.virtual_sessionid = virtual_sessionid
-                entry.publisher = pc
-            # The offer is addressed to our OWN session, not the virtual
-            # one - a virtual session (addsession) only represents the call
-            # in the participant list, it has no real client attached that
-            # could answer a WebRTC offer. Publishing as ourselves is what
-            # makes the signaling server/Janus generate the SDP answer.
-            entry.publisher_peer_sessionid = self.own_sessionid
+                entry.media = media
 
-        offer = await pc.createOffer()
-        await pc.setLocalDescription(offer)
+        sdp = await media.publisher_offer()
         if not self._call_still_running(sip_call_id):
             # Gathering ICE takes seconds, and a caller who gives up in the
             # meantime tears the call down underneath us. Publishing anyway
-            # would leave a live publisher and a subscriber running for a
-            # call that no longer exists.
+            # would leave a live publisher running for a call that is gone.
             print(f"[talk] {sip_call_id} ended while gathering ICE - discarding the publisher")
-            await pc.close()
+            await media.close()
             await self._remove_virtual_session(virtual_sessionid, roomid)
             return
-        await self.ws.send(json.dumps({
-            "id": f"bridge-offer-{sip_call_id}", "type": "message",
-            "message": {
-                "recipient": {"type": "session", "sessionid": self.own_sessionid},
-                "data": {
-                    "to": self.own_sessionid, "type": "offer", "sid": secrets.token_hex(8), "roomType": "video",
-                    # This nick is what Talk shows for the tile that actually
-                    # carries the call's audio - the phone participant added
-                    # via addsession is a name plate without media.
-                    "payload": {"nick": display_name, "type": "offer", "sdp": pc.localDescription.sdp},
-                    "audiocodec": "opus",
-                },
-            },
-        }))
+
+        await self._send_publish_offer(sip_call_id, sdp, display_name)
         print(f"[talk] Publishing call audio for {sip_call_id} as virtual session {virtual_sessionid}")
 
         # Only now: announcing audio any earlier makes Talk clients ask for a
         # stream that does not exist yet, and they back off to one retry
-        # every 10 seconds after that. Announcing it here also satisfies the
-        # signaling server's rule that both sides must be in the call before
-        # either may subscribe to the other, which the requestoffer below
-        # depends on.
+        # every 10 seconds after that. It also satisfies the signaling
+        # server's rule that both sides must be in the call before either
+        # may subscribe to the other, which the request below depends on.
         await self._set_incall(FLAG_IN_CALL | FLAG_WITH_AUDIO)
 
-        # Prefer the session id the accept-detection just confirmed as
-        # in-call over scanning the room roster: the roster only ever gains
-        # entries (see _handle_room_join) and the signaling server does not
-        # reliably send a "room"/"leave" for a chat-relay session that just
-        # silently drops (e.g. the mobile app backgrounded) - confirmed
-        # live, this made _find_human_in_room() keep returning an hours-old
-        # dead session, and requesting its audio failed with
-        # "client_not_found" instead of ever reaching the real one.
+        # Prefer the session accept detection just saw entering the call over
+        # scanning the room roster: the roster only ever gains entries, and
+        # the server does not reliably announce a chat-relay session that
+        # drops silently (a backgrounded mobile app) - confirmed live, that
+        # made the roster hand out an hours-old dead session whose audio
+        # could only ever fail with "client_not_found".
         human_sessionid = human_sessionid_hint or await self._find_human_in_room()
         if human_sessionid:
-            asyncio.ensure_future(self._subscribe_human_audio(sip_call_id, rtp_session, human_sessionid))
+            asyncio.ensure_future(self._subscribe_human_audio(sip_call_id, media, human_sessionid))
         else:
             print(f"[talk] No other participant found in room {roomid} - phone side will not hear Talk's audio")
 
@@ -615,35 +536,20 @@ class TalkClient:
         return None
 
     # -- subscribing to the human's audio, to relay it to the phone -------
-    async def _subscribe_human_audio(self, sip_call_id: str, rtp_session, human_sessionid: str):
-        sub_pc = RTCPeerConnection(NO_ICE_SERVERS)
-
-        @sub_pc.on("track")
-        def on_track(track):
-            if track.kind != "audio":
-                return
-            # The only positive evidence that Talk's audio actually reaches
-            # the phone side - everything before this is just negotiation.
+    async def _subscribe_human_audio(self, sip_call_id: str, media, human_sessionid: str):
+        """Asks for the other side's audio until an offer arrives. One
+        request is not enough: their publisher may not exist yet, and the
+        server rejects such a request with "client_not_found" rather than
+        queuing it."""
+        def on_receiving(track):
             print(f"[talk] Receiving audio from {human_sessionid} for {sip_call_id}")
-            task = asyncio.ensure_future(self._relay_human_audio(sip_call_id, rtp_session, track))
-            with self._call_sessions_lock:
-                entry = self._call_sessions.get(sip_call_id)
-                if entry is not None:
-                    entry.relay_task = task
 
-        offer_received = asyncio.Event()
-        with self._call_sessions_lock:
-            entry = self._call_sessions.get(sip_call_id)
-            if entry is None:
-                return  # call already ended
-            entry.subscriber = sub_pc
-            entry.human_sessionid = human_sessionid
-            entry.subscriber_offer = offer_received
+        media.open_subscriber(human_sessionid, on_receiving=on_receiving)
 
         for attempt in range(SUBSCRIBE_MAX_ATTEMPTS):
             with self._call_sessions_lock:
-                current = self._call_sessions.get(sip_call_id)
-                still_current = current is not None and current.subscriber is sub_pc
+                entry = self._call_sessions.get(sip_call_id)
+                still_current = entry is not None and entry.media is media
             if not still_current:
                 return  # call ended, or a newer subscription replaced this one
             try:
@@ -660,26 +566,12 @@ class TalkClient:
             print(f"[talk] Requested audio from {human_sessionid} for {sip_call_id} "
                   f"(attempt {attempt + 1}/{SUBSCRIBE_MAX_ATTEMPTS})")
             try:
-                await asyncio.wait_for(offer_received.wait(), timeout=SUBSCRIBE_RETRY_INTERVAL)
+                await asyncio.wait_for(media.offer_arrived.wait(), timeout=SUBSCRIBE_RETRY_INTERVAL)
                 return
             except asyncio.TimeoutError:
                 continue
         print(f"[talk] No audio offer from {human_sessionid} for {sip_call_id} - "
               f"phone side stays silent for this call")
-
-    async def _relay_human_audio(self, sip_call_id: str, rtp_session, track):
-        """Reads Talk's audio (48kHz, from whatever the human's device
-        captured) and forwards it to the phone side, downsampled to the RTP
-        session's negotiated codec rate. Ends naturally when the subscriber
-        pc is closed (_teardown_call) - track.recv() then raises."""
-        try:
-            while True:
-                frame = await track.recv()
-                pcm = frame_to_mono_pcm(frame)
-                pcm_out = resample_linear(pcm, frame.sample_rate, rtp_session.sample_rate)
-                await asyncio.to_thread(rtp_session.send_pcm, pcm_out)
-        except Exception as e:
-            print(f"[talk] Human audio relay for {sip_call_id} ended ({e!r})")
 
     async def _teardown_call(self, sip_call_id: str, roomid: str):
         with self._call_sessions_lock:
@@ -692,15 +584,12 @@ class TalkClient:
             # before a human joined it in Talk - leave the ring-trigger call/
             # room session, nothing else to publish/remove.
             await self._stop_talk_ring(roomid, entry.talk_ring_opener, self.call_manager.line)
-        if entry.relay_task:
-            entry.relay_task.cancel()
-        if entry.subscriber:
-            await entry.subscriber.close()
-        if entry.publisher:
-            await entry.publisher.close()
+        was_publishing = entry.is_publishing
+        if entry.media:
+            await entry.media.close()
         if entry.virtual_sessionid:
             await self._remove_virtual_session(entry.virtual_sessionid, roomid)
-        if entry.is_publishing:
+        if was_publishing:
             # The publisher is gone, so stop advertising audio - otherwise
             # Talk clients keep asking this session for a stream that no
             # longer exists.
@@ -717,7 +606,7 @@ class TalkClient:
             line = self.call_manager.line
             await asyncio.to_thread(talk_ocs.end_room_call, roomid,
                                     line.notify_user, line.notify_app_password)
-        if entry.is_publishing or entry.waiting_for_accept:
+        if was_publishing or entry.waiting_for_accept:
             # The signaling server permanently drops a "start-dialout"
             # session from its dialout candidates the moment it joins any
             # room (confirmed in its own source - there is no code path

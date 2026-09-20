@@ -11,9 +11,7 @@ class DefaultsTest(unittest.TestCase):
         self.assertFalse(call.waiting_for_accept)
         self.assertEqual(call.own_session_ids(), set())
         for field in ("talk_ring_opener", "talk_ring_sessionid", "accepted_sessionid",
-                      "virtual_sessionid", "virtual_room_sessionid", "publisher",
-                      "publisher_peer_sessionid", "subscriber", "human_sessionid",
-                      "subscriber_offer", "relay_task"):
+                      "virtual_sessionid", "virtual_room_sessionid", "media"):
             with self.subTest(field=field):
                 self.assertIsNone(getattr(call, field))
 
@@ -25,18 +23,28 @@ class DefaultsTest(unittest.TestCase):
         self.assertEqual(Call(sip_call_id="c2", kind=INBOUND).roomid, "")
 
 
-class PublishingTest(unittest.TestCase):
-    def test_publishing_starts_with_the_publisher(self):
-        """What separates a call carrying audio from one still ringing."""
-        call = Call(sip_call_id="c1", kind=INBOUND)
-        self.assertFalse(call.is_publishing)
-        call.publisher = object()
-        self.assertTrue(call.is_publishing)
+class FakeMedia:
+    def __init__(self, publishing=False):
+        self.is_publishing = publishing
 
-    def test_a_subscriber_alone_is_not_publishing(self):
+
+class PublishingTest(unittest.TestCase):
+    """What separates a call carrying audio from one still ringing. The
+    answer lives in its media, so a call without media is not publishing
+    whatever else it has."""
+
+    def test_a_call_without_media_is_not_publishing(self):
+        self.assertFalse(Call(sip_call_id="c1", kind=INBOUND).is_publishing)
+
+    def test_media_that_has_not_started_publishing_yet(self):
         call = Call(sip_call_id="c1", kind=INBOUND)
-        call.subscriber = object()
+        call.media = FakeMedia(publishing=False)
         self.assertFalse(call.is_publishing)
+
+    def test_media_that_is_publishing(self):
+        call = Call(sip_call_id="c1", kind=INBOUND)
+        call.media = FakeMedia(publishing=True)
+        self.assertTrue(call.is_publishing)
 
 
 class OwnSessionsTest(unittest.TestCase):

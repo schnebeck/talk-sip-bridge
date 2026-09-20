@@ -8,8 +8,8 @@ from tests.support import bridge_env, env, needs_media_stack
 
 PURE_MODULES = ["payload_types", "sip_messages", "sip_sdp", "sip_requests", "room_state", "call"]
 CONFIG_MODULES = ["config", "sip_transport", "sip_registrar", "talk_ocs"]
-MEDIA_MODULES = ["g711", "g722", "agc", "rtp", "media", "sip_call", "talk_client",
-                 "control_api", "daemon"]
+MEDIA_MODULES = ["g711", "g722", "agc", "rtp", "media", "call_media", "sip_call",
+                 "talk_client", "control_api", "daemon"]
 
 
 def import_in_subprocess(module: str, environment: dict = None) -> subprocess.CompletedProcess:

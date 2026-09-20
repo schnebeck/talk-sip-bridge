@@ -93,11 +93,12 @@ the daemon side is verified.
    `G722/8000` (see `g722.py`). `rtp.py`'s `RtpSession` is codec-agnostic
    past construction (`set_payload_type`), and `media.py`'s
    `SipAudioTrack` resamples from whatever rate was actually negotiated.
-9. **Bidirectional audio.** `_publish_call_audio` covers the phone-to-Talk
-   direction. The opposite direction subscribes to the human participant's
-   audio (`_subscribe_human_audio`) and relays decoded frames into the RTP
-   session (`_relay_human_audio`), resampled to the call's negotiated codec
-   rate.
+9. **Bidirectional audio.** Both directions of one call are one object
+   (`call_media.py`): a publisher carrying the phone into the room, and a
+   subscriber carrying the room back, relaying decoded frames into the RTP
+   session at the call's negotiated rate. It knows peer connections and not
+   the signaling protocol - what goes on the wire stays in `talk_client.py`,
+   and reaches the media as SDP and candidates.
 
    Who to subscribe to is the session id that accept detection saw entering the
    call. The room roster (`_room_roster`) is only the fallback for dialout
