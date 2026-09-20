@@ -241,5 +241,28 @@ class ContactHeaderTest(unittest.TestCase):
         self.assertIn("transport=", sip_requests.contact_header(line))
 
 
+class AckTargetTest(unittest.TestCase):
+    """An ACK for a 2xx is a request inside the dialog, and goes where the
+    dialog's remote end lives - the Contact from the 200 OK, not the
+    number that was dialled. Same lesson as the BYE, learned in the same
+    place twice."""
+
+    def test_it_goes_to_the_contact_when_there_is_one(self):
+        ack = sip_requests.build_ack(
+            StubLine(), number="**611", call_id="c", from_tag="t", branch="b", cseq=1,
+            to_header="<sip:x>;tag=theirs",
+            request_uri="sip:opaque@192.0.2.1:44528;transport=tcp").decode()
+        self.assertTrue(ack.startswith("ACK sip:opaque@192.0.2.1:44528;transport=tcp SIP/2.0"),
+                        ack.split("\r\n")[0])
+
+    def test_without_one_it_falls_back_to_the_number(self):
+        """A call that never captured a Contact should still be
+        acknowledged rather than not at all."""
+        ack = sip_requests.build_ack(
+            StubLine(), number="**611", call_id="c", from_tag="t", branch="b", cseq=1,
+            to_header="<sip:x>;tag=theirs").decode()
+        self.assertIn("ACK sip:**611@", ack.split("\r\n")[0])
+
+
 if __name__ == "__main__":
     unittest.main()

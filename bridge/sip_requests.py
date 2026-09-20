@@ -151,9 +151,13 @@ def build_invite(line, *, number: str, call_id: str, from_tag: str, branch: str,
 
 
 def build_ack(line, *, number: str, call_id: str, from_tag: str, branch: str, cseq,
-              to_header: str) -> bytes:
+              to_header: str, request_uri: str = None) -> bytes:
+    """request_uri is the Contact the peer gave in its 200 OK. Like a BYE,
+    an ACK for a 2xx is addressed to the dialog's remote end, not to the
+    number that was dialled - the gateway this bridge runs against accepts
+    the latter, and the standard does not promise that anywhere."""
     return build_request(
-        "ACK", f"sip:{number}@{line.gateway_host}", line=line, branch=branch,
+        "ACK", request_uri or f"sip:{number}@{line.gateway_host}", line=line, branch=branch,
         from_header=f"{address(line, line.sip_user)};tag={from_tag}",
         to_header=to_header, call_id=call_id, cseq=cseq,
     )

@@ -333,11 +333,11 @@ class CallManager:
             from_tag=attempt.from_tag, branch=attempt.branch, cseq=attempt.cseq,
             sdp=attempt.sdp, auth_header=auth_header))
 
-    def _send_ack(self, attempt, to_header: str):
+    def _send_ack(self, attempt, to_header: str, request_uri: str = None):
         self.transport.send(sip_requests.build_ack(
             self.line, number=attempt.number, call_id=attempt.call_id,
             from_tag=attempt.from_tag, branch=sip_requests.new_branch(),
-            cseq=attempt.cseq, to_header=to_header))
+            cseq=attempt.cseq, to_header=to_header, request_uri=request_uri))
 
     def _retry_invite_with_auth(self, attempt, code: str, headers: dict):
         """Answers a challenge with a fresh INVITE. It is a new transaction,
@@ -417,9 +417,10 @@ class CallManager:
             if media:
                 rtp.remote_addr = media
 
-        self._send_ack(attempt, to_header)
-
         remote_contact = headers.get("contact", "")
+        dialog_target = extract_contact_uri(remote_contact) if remote_contact else None
+        self._send_ack(attempt, to_header, dialog_target)
+
         timer = threading.Timer(config.max_call_duration, self.hangup)
         timer.daemon = True
         with self.lock:
@@ -428,8 +429,8 @@ class CallManager:
                 self.call["to_tag"] = match.group(1) if match else None
                 self.call["rtp"] = rtp
                 self.call["bye_timer"] = timer
-                if remote_contact:
-                    self.call["remote_contact"] = extract_contact_uri(remote_contact)
+                if dialog_target:
+                    self.call["remote_contact"] = dialog_target
         if line.media_relay_enabled:
             rtp.send_pcm(np.zeros(rtp.samples_per_packet, dtype=np.int16))  # prime the relay
         timer.start()
