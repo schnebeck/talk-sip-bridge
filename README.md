@@ -8,6 +8,29 @@ See `docs/SIGNALING-API.md` for the Talk signaling and OCS interface this
 builds on, `docs/CONCEPT.md` for the architecture, `docs/CONFIG.md` for
 configuration, and `deploy/README.md` for installation.
 
+## Tests
+
+`bridge/tests/` needs no phone gateway, no signaling server and no network:
+
+```
+cd bridge && python3 -m unittest discover -s tests -t .
+```
+
+It covers that every module imports on its own (`test_build.py`), that the
+calls modules make into each other exist there (`test_api.py`, read from the
+source, so paths that only a hangup or a timeout reaches are covered too),
+and what the message, SDP and request-building functions compute. Tests
+needing the media stack (numpy, av, aiortc) skip themselves where it is not
+installed; run the suite in the deployment venv for the full set.
+
+`bridge/test_*.py` are something else: manual verification scripts that place
+real calls and measure real audio against a live gateway and signaling
+server. See their module docstrings.
+
+`test-peer/` is an Asterisk in a container to point the bridge at instead of
+the FritzBox, so that "works with the FritzBox" and "speaks SIP" stay
+distinguishable. It runs only while a test needs it.
+
 ## Status
 
 - `bridge/` - the daemon: gateway registration, bidirectional real audio

@@ -11,7 +11,7 @@ sections "Internal clients", "Client features", "Dialout session",
 "Start dialout from a room", "Add/update/remove virtual session".
 
 This module owns its own asyncio event loop (run in a background thread by
-daemon.py) and bridges to sip_core.CallManager, whose callbacks fire from
+daemon.py) and bridges to sip_call.CallManager, whose callbacks fire from
 plain worker threads via asyncio.run_coroutine_threadsafe.
 """
 import asyncio
@@ -261,7 +261,7 @@ def _run_coro_logged(coro, loop, label: str):
     """asyncio.run_coroutine_threadsafe() returns a concurrent.futures.Future
     whose exception is silently dropped unless something calls .result() on
     it - unlike a plain asyncio Task, it does NOT log on garbage collection.
-    Every sip_core.CallManager callback in this module schedules its async
+    Every sip_call.CallManager callback in this module schedules its async
     work this way from a plain worker thread, so without this wrapper any
     exception anywhere in that coroutine (offer/answer negotiation, codec
     setup, ...) simply vanishes with zero trace, no matter how bad."""
@@ -1033,7 +1033,7 @@ class TalkClient:
         with self._call_sessions_lock:
             return self._call_sessions.get(call_id, {}).get("roomid") or self.call_manager.line.default_room_token
 
-    # -- thread-safe entry points for sip_core.CallManager callbacks ------
+    # -- thread-safe entry points for sip_call.CallManager callbacks ------
     def on_call_connected(self, *, call_id, direction, rtp):
         with self._call_sessions_lock:
             entry = self._call_sessions.get(call_id, {})

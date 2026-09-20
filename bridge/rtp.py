@@ -12,9 +12,9 @@ from g711 import linear_to_ulaw, ulaw_to_linear
 from g722 import G722Decoder, G722Encoder
 import numpy as np
 
+from payload_types import PT_G722, PT_PCMU  # re-exported: rtp.PT_* stays valid
+
 RTP_VERSION = 2
-PT_PCMU = 0
-PT_G722 = 9
 
 # 20ms per packet for both codecs. G.722 carries twice as many audio samples
 # per packet as PCMU (16kHz vs 8kHz) but the RTP timestamp still advances by

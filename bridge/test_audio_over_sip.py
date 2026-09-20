@@ -23,7 +23,9 @@ import numpy as np
 sys.path.insert(0, "/opt/fritzbox-talk-bridge")
 
 from config import config, LineConfig
-import sip_core
+from sip_call import CallManager
+from sip_registrar import SipRegistrar
+from sip_transport import SipTransport
 from test_audio_quality import build_signal, report, subscribe_and_record
 from test_call_lifecycle import SignalingClient, bridge_status
 from talk_client import TalkClient
@@ -65,10 +67,10 @@ def build_caller(password: str):
     line.relay_overlay_host = RELAY_OVERLAY_HOST
     line.relay_overlay_port = RELAY_OVERLAY_PORT
 
-    manager = sip_core.CallManager(line, on_call_connected=on_connected)
+    manager = CallManager(line, on_call_connected=on_connected)
     holder = {}
-    registrar = sip_core.SipRegistrar(lambda: holder["t"], line)
-    holder["t"] = sip_core.SipTransport(manager, line)
+    registrar = SipRegistrar(lambda: holder["t"], line)
+    holder["t"] = SipTransport(manager, line)
     manager.transport = holder["t"]
     return manager, registrar, holder["t"]
 

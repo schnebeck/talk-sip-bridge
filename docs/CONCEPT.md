@@ -88,7 +88,7 @@ the daemon side is verified.
    `l10n/de.js` - Nextcloud's standard i18n mechanism, not hardcoded German
    text in the templates.
 8. **Codec negotiation (G.722/"HD-Telefonie", PCMU fallback).** The SIP side
-   offers both (`sip_core.py`'s `_offer_sdp`/`_answer_sdp`), preferring
+   offers both (`sip_sdp.py`'s `offer_sdp`/`answer_sdp`), preferring
    G.722 - real 16kHz audio despite SDP historically labeling it
    `G722/8000` (see `g722.py`). `rtp.py`'s `RtpSession` is codec-agnostic
    past construction (`set_payload_type`), and `talk_client.py`'s
@@ -153,3 +153,22 @@ the daemon side is verified.
     same way. This room-join carries the same dialout-eligibility cost as a
     real call's publish (point 3) and is cleaned up the same way, by a forced
     reconnect once the call ends, whether it was accepted or cancelled.
+
+## Known gaps in the SIP implementation
+
+What this bridge does not implement, and what depends on that:
+
+- **Digest authentication is the RFC 2069 form**: `MD5(HA1:nonce:HA2)`, with
+  no `qop`, `cnonce`, nonce count or `opaque` echo. Asterisk 20 challenges
+  with `qop="auth"` and `opaque=...` and accepts the older response anyway;
+  a registrar that *requires* `qop` would reject it.
+- **`Record-Route` and `Route` are ignored entirely.** In-dialog requests
+  (BYE) go straight to the peer's Contact. A proxy that builds a route set
+  for the dialog would not be honoured.
+- **`;rport` is sent but the answer is never read.** A registrar that reports
+  back the source address it actually saw is telling us something this
+  bridge discards - which matters the moment it sits behind NAT.
+- **Two codecs**, G.722 and PCMU (`sip_sdp.py`). Anything else a peer offers
+  is answered with PCMU.
+
+`test-peer/` exists to keep this list honest.

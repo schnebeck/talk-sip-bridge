@@ -6,7 +6,7 @@ that line's own gateway. Exposes a local HTTP control API (GET /status,
 POST /toggle) for the Nextcloud app to enable/disable registration. A
 brand new deployment starts with registration off, nothing calls a gateway
 until toggled on; a line that was on when the process last stopped resumes
-automatically (see sip_core.SipRegistrar's state-file persistence), so a
+automatically (see sip_registrar.SipRegistrar's state-file persistence), so a
 crash-triggered restart doesn't silently leave the phone line dead until
 someone notices. See docs/CONCEPT.md for the architecture and
 docs/CONFIG.md for the required environment variables.
@@ -23,12 +23,14 @@ import time
 
 from config import config, LineConfig
 import control_api
-import sip_core
+from sip_call import CallManager
+from sip_registrar import SipRegistrar
+from sip_transport import SipTransport
 import talk_client
 
 
 def _start_line(line: LineConfig):
-    call_manager = sip_core.CallManager(line)
+    call_manager = CallManager(line)
     client = talk_client.start_in_background(call_manager)
     call_manager.on_incoming_call = client.on_incoming_call
     call_manager.on_call_connected = client.on_call_connected
@@ -40,8 +42,8 @@ def _start_line(line: LineConfig):
     def get_transport():
         return transport_holder["transport"]
 
-    registrar = sip_core.SipRegistrar(get_transport, line)
-    transport_holder["transport"] = sip_core.SipTransport(call_manager, line)
+    registrar = SipRegistrar(get_transport, line)
+    transport_holder["transport"] = SipTransport(call_manager, line)
     call_manager.transport = transport_holder["transport"]
     return registrar, call_manager
 

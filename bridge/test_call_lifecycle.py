@@ -43,7 +43,9 @@ import websockets
 sys.path.insert(0, "/opt/fritzbox-talk-bridge")
 
 from config import config, LineConfig
-import sip_core
+from sip_call import CallManager
+from sip_registrar import SipRegistrar
+from sip_transport import SipTransport
 
 EXTENSION = sys.argv[2] if len(sys.argv) > 2 else "**621"
 CONTROL = f"http://{config.control_bind}:{config.control_port}"
@@ -180,10 +182,10 @@ def build_caller(password: str, sip_port: int, rtp_port: int):
     line.relay_overlay_host = ""
     line.relay_overlay_port = 0
 
-    manager = sip_core.CallManager(line)
+    manager = CallManager(line)
     holder = {}
-    registrar = sip_core.SipRegistrar(lambda: holder["t"], line)
-    holder["t"] = sip_core.SipTransport(manager, line)
+    registrar = SipRegistrar(lambda: holder["t"], line)
+    holder["t"] = SipTransport(manager, line)
     manager.transport = holder["t"]
     return manager, registrar, holder["t"]
 

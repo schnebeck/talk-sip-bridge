@@ -1,0 +1,22 @@
+# A second SIP peer to test the bridge against, so that "works with the
+# FritzBox" and "speaks SIP" stay distinguishable. See README.md.
+#
+# Started for a test and stopped afterwards - never on boot, never in the
+# background. `restart: "no"` is what keeps it that way: the container does
+# not come back when the Docker daemon or the machine restarts, so at rest
+# this peer costs disk space and nothing else.
+#
+# Host networking with every listener bound to 127.0.0.1 in pjsip.conf:
+# reachable from this machine only, and no port range to map for RTP.
+services:
+  asterisk:
+    build: .
+    image: sip-test-peer
+    container_name: sip-test-peer
+    network_mode: host
+    volumes:
+      - ./etc/pjsip.conf:/etc/asterisk/pjsip.conf:ro
+      - ./etc/extensions.conf:/etc/asterisk/extensions.conf:ro
+      - ./etc/rtp.conf:/etc/asterisk/rtp.conf:ro
+      - ./etc/logger.conf:/etc/asterisk/logger.conf:ro
+    restart: "no"
