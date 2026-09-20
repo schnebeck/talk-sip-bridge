@@ -176,7 +176,7 @@ class Config:
         # hand. Empty disables persistence entirely (falls back to today's
         # behavior: registration always starts off). deploy/fritzbox-talk-
         # bridge.service provisions this via systemd's StateDirectory=.
-        self.state_dir = os.environ.get("BRIDGE_STATE_DIR", "/var/lib/fritzbox-talk-bridge")
+        self.state_dir = os.environ.get("BRIDGE_STATE_DIR", "/var/lib/talk-sip-bridge")
 
 
 config = Config()

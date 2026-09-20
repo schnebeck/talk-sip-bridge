@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace OCA\FritzboxBridge\Settings;
+namespace OCA\TalkSipBridge\Settings;
 
 use OCP\IL10N;
 use OCP\IURLGenerator;
@@ -16,11 +16,11 @@ class AdminSection implements IIconSection {
 	}
 
 	public function getID(): string {
-		return 'fritzboxbridge';
+		return 'talk_sip_bridge';
 	}
 
 	public function getName(): string {
-		return $this->l->t('FritzBox Talk Bridge');
+		return $this->l->t('Talk SIP Bridge');
 	}
 
 	public function getPriority(): int {

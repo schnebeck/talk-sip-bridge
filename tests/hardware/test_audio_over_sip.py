@@ -167,7 +167,7 @@ def find_bridge_session():
     nothing at all. The last line is the current session whenever it was
     written."""
     import subprocess
-    out = subprocess.run(["journalctl", "-u", "fritzbox-talk-bridge", "-n", "5000",
+    out = subprocess.run(["journalctl", "-u", "talk-sip-bridge", "-n", "5000",
                           "--no-pager", "-o", "cat"], capture_output=True, text=True).stdout
     session = None
     for line in out.splitlines():

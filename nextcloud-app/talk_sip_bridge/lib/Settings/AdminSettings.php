@@ -2,18 +2,18 @@
 
 declare(strict_types=1);
 
-namespace OCA\FritzboxBridge\Settings;
+namespace OCA\TalkSipBridge\Settings;
 
 use OCP\AppFramework\Http\TemplateResponse;
 use OCP\Settings\ISettings;
 
 class AdminSettings implements ISettings {
 	public function getForm(): TemplateResponse {
-		return new TemplateResponse('fritzboxbridge', 'admin', [], '');
+		return new TemplateResponse('talk_sip_bridge', 'admin', [], '');
 	}
 
 	public function getSection(): string {
-		return 'fritzboxbridge';
+		return 'talk_sip_bridge';
 	}
 
 	public function getPriority(): int {

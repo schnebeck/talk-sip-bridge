@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace OCA\FritzboxBridge\Controller;
+namespace OCA\TalkSipBridge\Controller;
 
 use OCP\AppFramework\Controller;
 use OCP\AppFramework\Http\DataResponse;
@@ -27,7 +27,7 @@ class BridgeController extends Controller {
 	}
 
 	private function bridgeUrl(): string {
-		return rtrim($this->config->getAppValue('fritzboxbridge', 'bridge_url', 'http://127.0.0.1:8765'), '/');
+		return rtrim($this->config->getAppValue('talk_sip_bridge', 'bridge_url', 'http://127.0.0.1:8765'), '/');
 	}
 
 	private function callBridge(string $path, string $method = 'GET'): DataResponse {
@@ -43,7 +43,7 @@ class BridgeController extends Controller {
 			$decoded = json_decode($response->getBody(), true);
 			return new DataResponse($decoded ?? ['raw' => $response->getBody()], $response->getStatusCode());
 		} catch (\Exception $e) {
-			$this->logger->warning('FritzBox Talk Bridge unreachable: ' . $e->getMessage(), ['app' => 'fritzboxbridge']);
+			$this->logger->warning('Talk SIP Bridge unreachable: ' . $e->getMessage(), ['app' => 'talk_sip_bridge']);
 			return new DataResponse(['error' => $e->getMessage()], 502);
 		}
 	}

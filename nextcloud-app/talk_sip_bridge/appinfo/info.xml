@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<info xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:noNamespaceSchemaLocation="https://apps.nextcloud.com/schema/apps/info.xsd">
+    <id>talk_sip_bridge</id>
+    <name>Talk SIP Bridge</name>
+    <summary>Enable/disable the SIP phone line connection for Talk calls.</summary>
+    <description>Admin settings for the Talk SIP Bridge daemon: shows live registration status and turns the SIP gateway connection on or off. Calls themselves use Talk's own native call UI - incoming calls appear as regular participants, outgoing calls use "call a phone number".</description>
+    <version>0.0.1</version>
+    <licence>agpl</licence>
+    <author>Talk SIP Bridge</author>
+    <namespace>TalkSipBridge</namespace>
+    <category>integration</category>
+    <dependencies>
+        <nextcloud min-version="30" max-version="36"/>
+    </dependencies>
+    <settings>
+        <admin>OCA\TalkSipBridge\Settings\AdminSettings</admin>
+        <admin-section>OCA\TalkSipBridge\Settings\AdminSection</admin-section>
+    </settings>
+</info>

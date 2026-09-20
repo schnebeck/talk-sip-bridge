@@ -8,7 +8,7 @@ without it the sibling `bridge/` of a checkout is used.
 Run from the repository root, or from wherever this directory was installed:
 
     python3 -m unittest discover -s tests -t .
-    BRIDGE_CODE=/opt/fritzbox-talk-bridge python3 -m unittest discover -s tests -t .
+    BRIDGE_CODE=/opt/talk-sip-bridge python3 -m unittest discover -s tests -t .
 
 `hardware/` holds the other kind: scripts that place real calls against a
 gateway, a signaling server or the Asterisk test peer. They are not

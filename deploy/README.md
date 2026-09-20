@@ -5,29 +5,29 @@ systemd - no ad-hoc scripts.
 
 ## Bridge daemon
 
-1. Create a dedicated system user: `useradd --system --no-create-home fritzbox-talk-bridge`.
-2. Create a Python venv at `/opt/fritzbox-talk-bridge-venv` (`bridge/requirements.txt`)
-   and copy `bridge/*.py` to `/opt/fritzbox-talk-bridge/`, owned by that user.
+1. Create a dedicated system user: `useradd --system --no-create-home talk-sip-bridge`.
+2. Create a Python venv at `/opt/talk-sip-bridge-venv` (`bridge/requirements.txt`)
+   and copy `bridge/*.py` to `/opt/talk-sip-bridge/`, owned by that user.
    `bridge/` holds the daemon and nothing else - the tests are installed
    separately or not at all, see [`../tests/README.md`](../tests/README.md).
-3. Copy [`env.example`](./env.example) to `/etc/fritzbox-talk-bridge/env`, fill
+3. Copy [`env.example`](./env.example) to `/etc/talk-sip-bridge/env`, fill
    in the required values (see `../docs/CONFIG.md`), `chmod 600`, owned by
    the service user.
-4. Copy [`fritzbox-talk-bridge.service`](./fritzbox-talk-bridge.service) to
+4. Copy [`talk-sip-bridge.service`](./talk-sip-bridge.service) to
    `/etc/systemd/system/`, then `systemctl daemon-reload && systemctl enable
-   --now fritzbox-talk-bridge`.
+   --now talk-sip-bridge`.
 
 Registration is off by default - toggle it on via the Nextcloud app's admin
 settings page, or `curl -X POST http://<BRIDGE_CONTROL_BIND>:<BRIDGE_CONTROL_PORT>/toggle`.
 
 ## Nextcloud app
 
-Copy [`../nextcloud-app/fritzboxbridge`](../nextcloud-app/fritzboxbridge) into
+Copy [`../nextcloud-app/talk_sip_bridge`](../nextcloud-app/talk_sip_bridge) into
 `custom_apps/`, owned by the web server user, then `occ app:enable
-fritzboxbridge`. If the daemon's control API isn't reachable at the default
+talk_sip_bridge`. If the daemon's control API isn't reachable at the default
 `http://127.0.0.1:8765` from the Nextcloud container/host (e.g. it's bound
 to a Docker bridge gateway address instead), set the correct URL:
-`occ config:app:set fritzboxbridge bridge_url --value='http://<address>:<port>'`.
+`occ config:app:set talk_sip_bridge bridge_url --value='http://<address>:<port>'`.
 
 ## Talk configuration
 

@@ -1,23 +1,23 @@
 (function() {
 	'use strict';
 
-	const base = OC.generateUrl('/apps/fritzboxbridge');
-	const statusText = document.getElementById('fritzboxbridge-status-text');
-	const toggleBtn = document.getElementById('fritzboxbridge-toggle-btn');
+	const base = OC.generateUrl('/apps/talk_sip_bridge');
+	const statusText = document.getElementById('talk_sip_bridge-status-text');
+	const toggleBtn = document.getElementById('talk_sip_bridge-toggle-btn');
 
 	function renderStatus(data) {
 		if (data && data.error) {
-			statusText.textContent = t('fritzboxbridge', 'Error: {message}', {message: data.error});
+			statusText.textContent = t('talk_sip_bridge', 'Error: {message}', {message: data.error});
 			toggleBtn.disabled = true;
 			toggleBtn.textContent = '…';
 			return;
 		}
 		const on = !!(data && data.registered);
 		statusText.textContent = on
-			? t('fritzboxbridge', 'Active (registered as {username})', {username: data.username || '?'})
-			: t('fritzboxbridge', 'Inactive (not registered)');
+			? t('talk_sip_bridge', 'Active (registered as {username})', {username: data.username || '?'})
+			: t('talk_sip_bridge', 'Inactive (not registered)');
 		toggleBtn.disabled = false;
-		toggleBtn.textContent = on ? t('fritzboxbridge', 'Turn off') : t('fritzboxbridge', 'Turn on');
+		toggleBtn.textContent = on ? t('talk_sip_bridge', 'Turn off') : t('talk_sip_bridge', 'Turn on');
 	}
 
 	function fetchStatus() {
@@ -25,7 +25,7 @@
 			.then((r) => r.json())
 			.then(renderStatus)
 			.catch((err) => {
-				statusText.textContent = t('fritzboxbridge', 'Error loading status: {message}', {message: String(err)});
+				statusText.textContent = t('talk_sip_bridge', 'Error loading status: {message}', {message: String(err)});
 			});
 	}
 
@@ -41,7 +41,7 @@
 				fetchStatus();
 			})
 			.catch((err) => {
-				statusText.textContent = t('fritzboxbridge', 'Error: {message}', {message: String(err)});
+				statusText.textContent = t('talk_sip_bridge', 'Error: {message}', {message: String(err)});
 				toggleBtn.disabled = false;
 			});
 	});

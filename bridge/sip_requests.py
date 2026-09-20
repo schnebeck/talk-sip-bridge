@@ -12,7 +12,7 @@ goes on the wire.
 """
 import secrets
 
-USER_AGENT = "FritzboxTalkBridge/0.1"
+USER_AGENT = "TalkSipBridge/0.1"
 ALLOWED_METHODS = "INVITE, ACK, BYE, CANCEL, OPTIONS"
 
 # Which transport a line speaks appears twice in what it sends: in Via, as

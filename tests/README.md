@@ -4,7 +4,7 @@ Installed and removed separately from the daemon. Nothing here is needed to
 run the bridge, and removing all of it changes nothing about a deployment:
 
 ```
-rm -rf /opt/fritzbox-talk-bridge-tests
+rm -rf /opt/talk-sip-bridge-tests
 ```
 
 The code under test is found through `BRIDGE_CODE`, or - without it - in the
@@ -17,7 +17,7 @@ No phone gateway, no signaling server, no network, no sockets.
 
 ```
 python3 -m unittest discover -s tests -t .                       # in a checkout
-BRIDGE_CODE=/opt/fritzbox-talk-bridge \
+BRIDGE_CODE=/opt/talk-sip-bridge \
     python3 -m unittest discover -s tests -t .                   # against an install
 ```
 
@@ -93,11 +93,11 @@ are long and it skips their first 350 ms.
 ## Installing them next to a deployment
 
 ```
-install -d /opt/fritzbox-talk-bridge-tests
-cp -r tests /opt/fritzbox-talk-bridge-tests/
-cd /opt/fritzbox-talk-bridge-tests
-BRIDGE_CODE=/opt/fritzbox-talk-bridge \
-    /opt/fritzbox-talk-bridge-venv/bin/python3 -m unittest discover -s tests -t .
+install -d /opt/talk-sip-bridge-tests
+cp -r tests /opt/talk-sip-bridge-tests/
+cd /opt/talk-sip-bridge-tests
+BRIDGE_CODE=/opt/talk-sip-bridge \
+    /opt/talk-sip-bridge-venv/bin/python3 -m unittest discover -s tests -t .
 ```
 
 The venv belongs to the daemon and is shared; the tests add no dependencies

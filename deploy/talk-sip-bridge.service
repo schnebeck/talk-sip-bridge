@@ -5,12 +5,12 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-EnvironmentFile=/etc/fritzbox-talk-bridge/env
-ExecStart=/opt/fritzbox-talk-bridge-venv/bin/python3 -u /opt/fritzbox-talk-bridge/daemon.py
-WorkingDirectory=/opt/fritzbox-talk-bridge
+EnvironmentFile=/etc/talk-sip-bridge/env
+ExecStart=/opt/talk-sip-bridge-venv/bin/python3 -u /opt/talk-sip-bridge/daemon.py
+WorkingDirectory=/opt/talk-sip-bridge
 Restart=on-failure
 RestartSec=5
-User=fritzbox-talk-bridge
+User=talk-sip-bridge
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
@@ -19,7 +19,7 @@ ProtectHome=true
 # per-line state files (currently just whether registration should be on)
 # so a crash-triggered restart can resume automatically instead of
 # silently leaving the phone line deregistered. See config.py's state_dir.
-StateDirectory=fritzbox-talk-bridge
+StateDirectory=talk-sip-bridge
 StateDirectoryMode=0700
 UMask=0077
 
