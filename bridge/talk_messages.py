@@ -132,9 +132,16 @@ def request_offer(sip_call_id: str, human_sessionid: str) -> dict:
     }
 
 
-def subscribe_answer(peer_sessionid: str, sid, sdp: str) -> dict:
+def subscribe_answer(peer_sessionid: str, sid, sdp: str, sip_call_id: str = "") -> dict:
+    """The answer to an offer the server relayed.
+
+    The request id names the call, because the answer can be refused -
+    the server re-attaches a subscriber whose publisher is not sending
+    yet, and an answer carrying the old handle's id is then rejected.
+    Without the call in the id there is no way to tell which call has to
+    ask again."""
     return {
-        "id": f"bridge-subanswer-{secrets.token_hex(4)}", "type": "message",
+        "id": f"bridge-subanswer-{sip_call_id or secrets.token_hex(4)}", "type": "message",
         "message": {
             "recipient": {"type": "session", "sessionid": peer_sessionid},
             "data": {"to": peer_sessionid, "type": "answer", "sid": sid, "roomType": "video",

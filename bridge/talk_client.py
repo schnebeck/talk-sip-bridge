@@ -135,6 +135,9 @@ class TalkClient:
                 # this instead of a real join confirmation - it means we are
                 # in the room already, which is just as good.
                 self._room_joined_event.set()
+            elif msg_type == "error" and str(msg.get("id", "")).startswith("bridge-subanswer-"):
+                await self._subscription_answer_refused(
+                    str(msg.get("id"))[len("bridge-subanswer-"):], msg.get("error", {}))
             elif msg_type == "control" and msg.get("control", {}).get("data", {}).get("type") == "hangup":
                 # Sent when the call's virtual phone session is disinvited
                 # (the room participant hung up in Talk, or the room's call
@@ -244,10 +247,48 @@ class TalkClient:
             if answer_sdp is None:
                 return  # a late duplicate; answering it would reset a working connection
             peer = sender_sessionid
-            await self.ws.send(json.dumps(
-                talk_messages.subscribe_answer(peer, data.get("sid"), answer_sdp)))
+            await self.ws.send(json.dumps(talk_messages.subscribe_answer(
+                peer, data.get("sid"), answer_sdp, sip_call_id=media.sip_call_id)))
         elif msg_type == "candidate":
             await media.add_candidate(pc, data.get("payload"))
+
+    async def _subscription_answer_refused(self, sip_call_id: str, error: dict):
+        """The server would not take our answer for the other side's
+        audio.
+
+        Measured against a live call: it re-attaches its own end of a
+        subscription while the publisher is not sending yet, without
+        offering again, and every answer after that names a handle it has
+        already dropped ("answer message sid does not match subscriber
+        sid"). Nothing arrives afterwards and the connection goes to
+        failed, with the phone side silent for the rest of the call.
+
+        So the subscription is thrown away and asked for again - by then
+        the publisher is sending, and the offer that comes back names a
+        handle that is current."""
+        with self._call_sessions_lock:
+            entry = self._call_sessions.get(sip_call_id)
+            media = entry.media if entry else None
+            human = entry.media.human_sessionid if entry and entry.media else None
+            attempts = entry.subscribe_retries if entry else 0
+            if entry is not None:
+                entry.subscribe_retries = attempts + 1
+        if media is None or not human:
+            return
+        if attempts >= SUBSCRIBE_MAX_ATTEMPTS:
+            print(f"[talk] Talk's audio for {sip_call_id} was refused "
+                  f"{attempts} times - the phone side stays silent")
+            return
+        print(f"[talk] The server refused our answer for {human}'s audio "
+              f"({error.get('code')}) - asking for a fresh offer")
+        if not await media.prepare_for_new_offer():
+            return
+        await asyncio.sleep(1)
+        with self._call_sessions_lock:
+            entry = self._call_sessions.get(sip_call_id)
+            if entry is None or entry.media is not media:
+                return
+        await self.ws.send(json.dumps(talk_messages.request_offer(sip_call_id, human)))
 
     async def _handle_participants_update(self, update: dict):
         """The room's two answers this bridge acts on: somebody joined the

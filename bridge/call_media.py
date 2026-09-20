@@ -145,6 +145,21 @@ class CallMedia:
         await self.subscriber.setLocalDescription(await self.subscriber.createAnswer())
         return self.subscriber.localDescription.sdp
 
+    async def prepare_for_new_offer(self):
+        """Throws away a subscription the server no longer knows and
+        builds a fresh one, ready to be offered to again.
+
+        Needed because the server can re-attach its side without
+        offering again: it does that while the publisher is not sending
+        yet, and every answer after that names a handle that is gone."""
+        if self.subscriber_receiving or self.subscriber is None:
+            return False
+        replaced = self.subscriber
+        self.open_subscriber(self.human_sessionid, on_receiving=self._on_receiving)
+        self.offer_arrived.clear()
+        await replaced.close()
+        return True
+
     async def _relay(self, track):
         """Reads Talk's audio (48kHz, from whatever the person's device
         captured) and forwards it to the phone, downsampled to the rate the
