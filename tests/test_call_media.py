@@ -23,11 +23,15 @@ def run(coro):
 
 
 class FakePeerConnection:
-    def __init__(self, answer_sdp="v=0 answer"):
+    def __init__(self, *args, answer_sdp="v=0 answer", **kwargs):
         self.closed = False
         self.remote = None
         self.localDescription = type("D", (), {"sdp": answer_sdp})()
         self.candidates = []
+
+    def on(self, event):
+        """aiortc's event decorator; the handlers are not exercised here."""
+        return lambda handler: handler
 
     async def setRemoteDescription(self, description):
         self.remote = description
@@ -104,12 +108,32 @@ class SubscriberOfferTest(unittest.TestCase):
         self.assertEqual(run(media.answer_subscriber_offer("v=0 offer")), "v=0 answer")
         self.assertTrue(media.offer_arrived.is_set())
 
-    def test_a_later_duplicate_is_ignored(self):
+    def test_a_later_offer_is_ignored_once_audio_is_flowing(self):
         """Answering one resets a connection that already works - observed
         as audio dropping mid-call."""
         media = self.media()
         run(media.answer_subscriber_offer("v=0 offer"))
+        media.subscriber_receiving = True          # a track arrived
         self.assertIsNone(run(media.answer_subscriber_offer("v=0 offer again")))
+
+    def test_a_later_offer_rebuilds_the_subscription_while_nothing_flows(self):
+        """The opposite case, and the one that cost a call its return
+        direction: the server throws the subscription away and builds a
+        new one when the publisher is not sending yet. An answer carrying
+        the old one's id is refused - "answer message sid does not match
+        subscriber sid" - so the second offer is the live one."""
+        from unittest import mock
+
+        media = self.media()
+        media.human_sessionid = "person"
+        run(media.answer_subscriber_offer("v=0 offer"))
+        first = media.subscriber
+        with mock.patch("call_media.RTCPeerConnection", FakePeerConnection):
+            answer = run(media.answer_subscriber_offer("v=0 second offer"))
+        self.assertEqual(answer, "v=0 answer")
+        self.assertIsNot(media.subscriber, first, "the dead connection was kept")
+        self.assertTrue(first.closed, "the dead connection was left open")
+        self.assertEqual(media.subscriber.remote.sdp, "v=0 second offer")
 
     def test_the_arrival_is_what_stops_the_retries(self):
         media = self.media()

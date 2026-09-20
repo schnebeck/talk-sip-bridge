@@ -59,6 +59,9 @@ class CallMedia:
         self.subscriber = None
         self.human_sessionid = None            # whose audio the subscriber asked for
         self.offer_arrived = None              # set once the server's offer for it came in
+        self.subscriber_receiving = False      # a track arrived: this one works
+        self._answered_an_offer = False
+        self._on_receiving = None
         self.relay_task = None
         self._poll_task = None
         self._lost = False
@@ -90,7 +93,10 @@ class CallMedia:
         reaches the phone at all - everything before it is negotiation."""
         self.subscriber = RTCPeerConnection(NO_ICE_SERVERS)
         self.human_sessionid = human_sessionid
-        self.offer_arrived = asyncio.Event()
+        self.offer_arrived = self.offer_arrived or asyncio.Event()
+        self.subscriber_receiving = False
+        self._answered_an_offer = False
+        self._on_receiving = on_receiving
 
         @self.subscriber.on("connectionstatechange")
         async def on_subscriber_state():
@@ -102,17 +108,38 @@ class CallMedia:
         def on_track(track):
             if track.kind != "audio":
                 return
+            self.subscriber_receiving = True
             if on_receiving:
                 on_receiving(track)
             self.relay_task = asyncio.ensure_future(self._relay(track))
 
     async def answer_subscriber_offer(self, sdp: str):
         """Answers the offer the server relays for the stream we asked for.
-        Returns the answer SDP, or None if this offer is a late duplicate -
-        answering one of those resets a connection that already works."""
+
+        A second offer means one of two opposite things, and which one is
+        decided by whether audio is already arriving:
+
+        - audio is flowing: the offer is a late duplicate, and answering
+          it resets a connection that works - observed as audio dropping
+          mid-call.
+        - nothing is flowing yet: the server has thrown the old
+          subscription away and built a new one, which it does when the
+          publisher is not sending yet. The old one is dead, its handle
+          is gone, and an answer carrying its id is refused ("answer
+          message sid does not match subscriber sid"). The new offer is
+          the live one, so the connection is rebuilt for it.
+
+        Returns the answer SDP, or None if there is nothing to answer."""
+        if self.subscriber_receiving:
+            return None
+        if self._answered_an_offer and self.subscriber is not None:
+            replaced = self.subscriber
+            self.open_subscriber(self.human_sessionid, on_receiving=self._on_receiving)
+            await replaced.close()
+            print(f"[talk] The server re-offered {self.human_sessionid}'s audio for "
+                  f"{self.sip_call_id} - subscribing again")
+        self._answered_an_offer = True
         if self.offer_arrived is not None:
-            if self.offer_arrived.is_set():
-                return None
             self.offer_arrived.set()
         await self.subscriber.setRemoteDescription(RTCSessionDescription(sdp=sdp, type="offer"))
         await self.subscriber.setLocalDescription(await self.subscriber.createAnswer())
