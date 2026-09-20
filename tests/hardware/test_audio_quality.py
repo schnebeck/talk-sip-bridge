@@ -86,11 +86,21 @@ def build_signal(sample_rate: int, bursts: int) -> np.ndarray:
 
 
 def send_signal(sender: RtpSession, signal: np.ndarray):
-    """Paced in real time, like a phone would deliver it."""
+    """Paced in real time, like a phone would deliver it - against a fixed
+    schedule, because sleeping one interval after each send adds the send's
+    own time and the stream then runs measurably slow (20.77ms per 20ms
+    packet). A gateway re-clocks such a stream and fills in what is
+    missing, which is heard as chopping and measured as distortion the
+    chain did not actually add."""
     spp = sender.samples_per_packet
+    interval = spp / sender.sample_rate
+    due = time.monotonic()
     for i in range(0, len(signal) - spp, spp):
         sender.send_pcm(signal[i:i + spp])
-        time.sleep(spp / sender.sample_rate)
+        due += interval
+        remaining = due - time.monotonic()
+        if remaining > 0:
+            time.sleep(remaining)
 
 
 async def subscribe_and_record(publisher_sessionid: str, seconds: float) -> tuple:

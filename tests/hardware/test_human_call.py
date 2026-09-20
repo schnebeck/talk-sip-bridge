@@ -150,10 +150,23 @@ def tone_sequence(rate: int) -> np.ndarray:
 
 
 def play(rtp, signal):
+    """Paced against a fixed schedule, not by sleeping between packets.
+
+    Sleeping for one packet interval after each send adds the time the
+    send itself took, which measured 20.77ms per 20ms packet - 3.8% slow.
+    A gateway re-clocks the stream to exactly 50 packets a second and has
+    to fill in the difference, and that filling is heard as chopping. A
+    real handset has a hardware clock and this problem does not exist;
+    a test that creates it measures itself."""
     spp = rtp.samples_per_packet
+    interval = spp / rtp.sample_rate
+    due = time.monotonic()
     for i in range(0, len(signal) - spp, spp):
         rtp.send_pcm(signal[i:i + spp])
-        time.sleep(spp / rtp.sample_rate)
+        due += interval
+        remaining = due - time.monotonic()
+        if remaining > 0:
+            time.sleep(remaining)
 
 
 def record(rtp, seconds: float) -> np.ndarray:
