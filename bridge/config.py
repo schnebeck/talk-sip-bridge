@@ -184,8 +184,11 @@ class Config:
         #          stops - measured, every 15s, indefinitely on Android.
         #   audio  the same, flagged as carrying audio. Clients then look
         #          for a stream the session cannot have.
-        #   none   no virtual session. The bridge's own publishing session
-        #          carries the call, named after the caller; no phone tile.
+        #   none   no virtual session. Measured not to work: Talk's
+        #          clients then have nothing to answer and refuse with "a
+        #          call to yourself cannot be answered", so the caller
+        #          rings until the gateway gives up. Kept because it is
+        #          one line and says what was tried.
         self.phone_participant = os.environ.get("BRIDGE_PHONE_PARTICIPANT", "phone").strip().lower()
         if self.phone_participant not in ("phone", "audio", "none"):
             raise RuntimeError("BRIDGE_PHONE_PARTICIPANT must be phone, audio or none, "
