@@ -30,7 +30,7 @@ class ParseHeadersTest(unittest.TestCase):
 
     def test_parsing_stops_at_the_body(self):
         headers = parse_sip_headers(
-            "INVITE sip:x SIP/2.0\r\nCall-ID: abc\r\n\r\nv=0\r\no=- 0 0 IN IP4 1.2.3.4\r\n")
+            "INVITE sip:x SIP/2.0\r\nCall-ID: abc\r\n\r\nv=0\r\no=- 0 0 IN IP4 192.0.2.1\r\n")
         self.assertNotIn("o=-", headers)
         self.assertNotIn("v", headers)
 
