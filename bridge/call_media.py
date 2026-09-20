@@ -92,6 +92,12 @@ class CallMedia:
         self.human_sessionid = human_sessionid
         self.offer_arrived = asyncio.Event()
 
+        @self.subscriber.on("connectionstatechange")
+        async def on_subscriber_state():
+            # Only the publisher was watched, which is the direction that
+            # has never been the problem.
+            print(f"[talk] Subscriber connection state: {self.subscriber.connectionState}")
+
         @self.subscriber.on("track")
         def on_track(track):
             if track.kind != "audio":
@@ -119,10 +125,23 @@ class CallMedia:
         then raises."""
         resampler = None
         pending = np.zeros(0, dtype=np.int16)
+        # The mirror of the phone-side counters. Without them a silent call
+        # in this direction looks identical to a broken one: the track
+        # arrives either way, and everything after it is invisible.
+        loop = asyncio.get_running_loop()
+        stats = {"frames": 0, "peak": 0, "since": None}
         try:
             while True:
                 frame = await track.recv()
                 pcm = frame_to_mono_pcm(frame)
+                stats["frames"] += 1
+                stats["peak"] = max(stats["peak"], int(np.abs(pcm).max()) if len(pcm) else 0)
+                if stats["since"] is None:
+                    stats["since"] = loop.time()
+                elif loop.time() - stats["since"] >= 1.0:
+                    print(f"[talk] Talk audio for {self.sip_call_id}: {stats['frames']} frames, "
+                          f"peak {stats['peak']}")
+                    stats = {"frames": 0, "peak": 0, "since": loop.time()}
                 if resampler is None or resampler.in_rate != frame.sample_rate:
                     resampler = StreamResampler(frame.sample_rate, self.rtp_session.sample_rate)
                 # Whole packets only: send_pcm pads a short one with
