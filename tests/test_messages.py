@@ -1,8 +1,9 @@
 """What the message helpers compute."""
 import unittest
 
-from sip_messages import (VALID_NUMBER, digest_response, extract_contact_uri,
-                          md5hex, parse_auth_challenge, parse_sip_headers)
+from sip_messages import (VALID_NUMBER, dialled_number, digest_response,
+                          extract_contact_uri, md5hex, parse_auth_challenge,
+                          parse_sip_headers)
 
 
 class ParseHeadersTest(unittest.TestCase):
@@ -83,6 +84,34 @@ class ContactUriTest(unittest.TestCase):
 
     def test_display_name_and_parameters_outside_the_brackets(self):
         self.assertEqual(extract_contact_uri('"Phone" <sip:a@b>;expires=600'), "sip:a@b")
+
+
+class DialledNumberTest(unittest.TestCase):
+    """Which number a call came in on - what decides whether it is the
+    bridge's own call or a person's, so a wrong answer here either takes
+    someone's call away or refuses one meant for the bridge."""
+
+    def test_the_request_uri_says_it(self):
+        headers = {"to": "<sip:**622@fritz.box>"}
+        self.assertEqual(
+            dialled_number("INVITE sip:**622@10.1.1.1:5091;transport=tcp SIP/2.0", headers),
+            "**622")
+
+    def test_a_full_number_survives_intact(self):
+        self.assertEqual(
+            dialled_number("INVITE sip:+493012345@provider.example SIP/2.0", {}),
+            "+493012345")
+
+    def test_to_answers_when_the_request_uri_names_no_user(self):
+        """A relay may rewrite the Request-URI down to the host it is
+        forwarding to; what was dialled is then only in To."""
+        self.assertEqual(dialled_number("INVITE sip:10.1.1.1:5091 SIP/2.0",
+                                        {"to": '"Lobby" <sip:**622@fritz.box>;tag=x'}),
+                         "**622")
+
+    def test_nothing_to_go_on_is_empty_not_a_guess(self):
+        self.assertEqual(dialled_number("INVITE sip:10.1.1.1 SIP/2.0", {}), "")
+        self.assertEqual(dialled_number("", {}), "")
 
 
 class NumberAllowlistTest(unittest.TestCase):

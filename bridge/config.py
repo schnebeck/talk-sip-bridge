@@ -14,6 +14,24 @@ import re
 _LINE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_]+$")
 
 
+def _number_map(raw: str, name: str) -> dict:
+    """Parses "a=b,c=d" into {"a": "b", "c": "d"}.
+
+    A malformed entry is refused rather than skipped: a mapping silently
+    one entry short means calls to that number quietly take the wrong
+    path, and nothing about the running bridge would say so."""
+    mapping = {}
+    for entry in (raw or "").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        left, sep, right = entry.partition("=")
+        if not (sep and left.strip() and right.strip()):
+            raise RuntimeError(f"{name} entry {entry!r} is not <dialled>=<number>")
+        mapping[left.strip()] = right.strip()
+    return mapping
+
+
 def _require(name: str) -> str:
     value = os.environ.get(name)
     if not value:
@@ -92,11 +110,19 @@ class LineConfig:
         self.notify_user = env("NOTIFY_USER", "")
         self.notify_app_password = env("NOTIFY_APP_PASSWORD", "")
 
-        # The number this line answers, in the form Nextcloud has it in
-        # talk_phone_numbers. Only used with direct dial-in, and only
-        # because a gateway announces an internal extension ("**621") in
+        # Which of the numbers reaching this line are the bridge's own,
+        # as "<what the INVITE says>=<the number Nextcloud has in
+        # talk_phone_numbers>", comma separated. Both halves are needed
+        # because a gateway announces an internal extension ("**622") in
         # the INVITE, which is no phone number to anyone but itself.
-        self.dialin_number = env("DIALIN_NUMBER", "")
+        #
+        # A call to a mapped number is a call to the bridge: Nextcloud
+        # creates the conversation for it and the bridge answers it (see
+        # talk_sip_bridge.direct_dial_in). A call to any other number
+        # rings as it always did - which is what lets one line carry both,
+        # and keeps a line whose number is also a person's own phone from
+        # ever being answered by a machine.
+        self.dialin_numbers = _number_map(env("DIALIN_NUMBERS", ""), env_prefix + "DIALIN_NUMBERS")
 
         # Optional media relay for this line (only needed if its gateway
         # can't reach this host's own address directly for RTP).

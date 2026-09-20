@@ -14,7 +14,7 @@ import unittest
 import urllib.error
 from unittest import mock
 
-from tests.support import env  # noqa: F401  (imported first: sets the environment)
+from tests.support import StubLine, env, needs_media_stack  # noqa: F401  (env first: sets the environment)
 import talk_sip_bridge
 
 SECRET = "sip-bridge-secret"
@@ -127,6 +127,80 @@ class DirectDialInTest(unittest.TestCase):
         with env(), mock.patch("urllib.request.urlopen", opener):
             self.assertIsNone(talk_sip_bridge.direct_dial_in(DIALLED, CALLER, secret=""))
         self.assertEqual(opener.requests, [])
+
+
+class MappingTest(unittest.TestCase):
+    """Which numbers on a line are the bridge's own."""
+
+    def test_a_mapping_is_parsed_per_line(self):
+        with env(BRIDGE_DIALIN_NUMBERS="**622=4930622, **623 = 4930623") as configured:
+            self.assertEqual(configured.lines[0].dialin_numbers,
+                             {"**622": "4930622", "**623": "4930623"})
+
+    def test_no_mapping_means_no_number_is_the_bridges(self):
+        with env() as configured:
+            self.assertEqual(configured.lines[0].dialin_numbers, {})
+
+    def test_a_malformed_entry_is_refused_rather_than_skipped(self):
+        """Skipping it would route calls to that number the other way
+        with nothing anywhere saying so."""
+        for broken in ("**622", "=4930622", "**622=", "**622=4930622,**623"):
+            with self.subTest(entry=broken), self.assertRaises(RuntimeError):
+                with env(BRIDGE_DIALIN_NUMBERS=broken):
+                    pass
+
+
+@needs_media_stack
+class InboundRoutingTest(unittest.TestCase):
+    """Where an incoming call goes, decided by the number it was placed
+    to. The line in this deployment carries a person's own number as well
+    as the bridge's, so this decision is the whole safety property: an
+    unmapped number must never take the dial-in path, which answers."""
+
+    def route(self, line, dialled, *, secret="sip-secret", room=room()):
+        import asyncio
+        import talk_client
+        asked = []
+
+        def fake_dial_in(number, caller, **kw):
+            asked.append((number, caller))
+            return room["ocs"]["data"] if room else None
+
+        # The secret is patched on the configuration talk_client is
+        # holding, not put in the environment: the module bound that object
+        # when it was imported, and a reload gives a new one it never sees.
+        with mock.patch.object(talk_client.config, "sip_shared_secret", secret), \
+                mock.patch("talk_sip_bridge.direct_dial_in", fake_dial_in):
+            result = asyncio.run(talk_client.TalkClient._room_for_inbound_call(
+                mock.Mock(), line, f"<sip:{CALLER}@gw>", dialled))
+        return result, asked
+
+    def test_a_mapped_number_gets_the_conversation_nextcloud_makes(self):
+        line = StubLine(dialin_numbers={"**622": "4930622"}, default_room_token="standing")
+        (roomid, actor), asked = self.route(line, "**622")
+        self.assertEqual(asked, [("4930622", CALLER)])
+        self.assertEqual(roomid, "abc123")
+        self.assertEqual(actor, {"actorType": "guests", "actorId": "guest-hash"})
+
+    def test_an_unmapped_number_on_the_same_line_rings_as_before(self):
+        line = StubLine(dialin_numbers={"**622": "4930622"}, default_room_token="standing")
+        (roomid, actor), asked = self.route(line, "**621")
+        self.assertEqual(asked, [], "a person's own number must not be dialled in")
+        self.assertEqual((roomid, actor), ("standing", None))
+
+    def test_a_call_with_no_number_at_all_rings_as_before(self):
+        line = StubLine(dialin_numbers={"**622": "4930622"}, default_room_token="standing")
+        self.assertEqual(self.route(line, "")[0], ("standing", None))
+
+    def test_without_the_secret_nothing_is_asked(self):
+        line = StubLine(dialin_numbers={"**622": "4930622"}, default_room_token="standing")
+        (roomid, actor), asked = self.route(line, "**622", secret="")
+        self.assertEqual(asked, [])
+        self.assertEqual((roomid, actor), ("standing", None))
+
+    def test_a_number_nextcloud_will_not_place_falls_back_to_the_room(self):
+        line = StubLine(dialin_numbers={"**622": "4930622"}, default_room_token="standing")
+        self.assertEqual(self.route(line, "**622", room=None)[0], ("standing", None))
 
 
 if __name__ == "__main__":

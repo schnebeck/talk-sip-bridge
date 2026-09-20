@@ -55,7 +55,7 @@ class StubLine:
         self.relay_lan_port = 40000
         self.relay_overlay_host = LOCAL_IP
         self.relay_overlay_port = 40001
-        self.dialin_number = ""
+        self.dialin_numbers = {}
         self.dialout_number_allowlist = ""
         self.dialout_strip_prefix = ""
         self.dialout_internal_dial_prefix = ""

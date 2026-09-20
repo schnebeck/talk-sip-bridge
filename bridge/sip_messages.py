@@ -57,6 +57,26 @@ def extract_contact_uri(contact_header: str) -> str:
     return contact_header.split(';')[0].strip()
 
 
+def dialled_number(first_line: str, headers: dict) -> str:
+    """Which number an incoming call was placed to.
+
+    One registered line receives calls for more than one number - a trunk
+    delivers every number it carries down the same registration, and even
+    a single-account gateway announces its own internal extension. The
+    Request-URI is what the call is addressed to right now, so it is
+    asked first; To holds what the caller originally dialled, which is the
+    same thing unless something forwarded the call.
+
+    The user part only, without the host: "sip:**622@fritz.box" is the
+    number **622 to everyone except the box."""
+    match = re.match(r"\s*[A-Z]+\s+(\S+)", first_line)
+    for candidate in (match.group(1) if match else "", headers.get("to", "")):
+        user = re.search(r"sips?:([^@;>\s]+)@", candidate)
+        if user:
+            return user.group(1)
+    return ""
+
+
 def content_length_of(header_block: str) -> int:
     """The body length a message announces, 0 if it announces none. Both
     spellings occur: "l" is the compact form."""

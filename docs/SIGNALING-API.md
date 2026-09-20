@@ -437,8 +437,16 @@ can be used at all:
   nobody else is in it. A bridge account cannot join it to ring anybody, which
   is how the room-per-line arrangement rings people. Ringing is Nextcloud's
   own doing here.
-- Which means **the line has to answer**: the caller is already a participant
-  waiting in a conversation of their own. That suits numbers that belong to
-  the bridge - a lobby a caller dials into - and it is wrong for a line whose
-  number also rings a person's own phone, where answering takes the call away
-  from them.
+- Which means **the call has to be answered**: the caller is already a
+  participant waiting in a conversation of their own, and nothing else will
+  pick up. That suits numbers that belong to the bridge - a lobby a caller
+  dials into - and it is wrong for a number that also rings a person's own
+  phone, where answering takes the call away from them.
+
+Which is why dial-in is configured per number and not per line (`DIALIN_NUMBERS`
+in `docs/CONFIG.md`). The number a call was placed to is read from the INVITE's
+Request-URI, falling back to `To`; a number in the mapping is the bridge's own
+and is answered into the conversation Nextcloud creates for it, and every other
+number on the same line rings the room that line names, untouched. One
+registration therefore carries both, which matters where there is only one:
+a person's own number and a set of dial-in numbers can share a single line.

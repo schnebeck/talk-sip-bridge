@@ -23,8 +23,8 @@ import sip_requests
 from config import config
 from payload_types import PT_PCMU
 from rtp import RtpSession
-from sip_messages import (VALID_NUMBER, digest_response, extract_contact_uri,
-                          parse_auth_challenge, parse_sip_headers)
+from sip_messages import (VALID_NUMBER, dialled_number, digest_response,
+                          extract_contact_uri, parse_auth_challenge, parse_sip_headers)
 from sip_sdp import (CODEC_NAMES, SUPPORTED, answer_sdp, choose_payload_type,
                      extract_sip_body, offer_sdp, parse_offered_payload_types,
                      parse_sdp_media_address, parse_telephone_event_type)
@@ -122,9 +122,11 @@ class CallManager:
                          "status": "ringing", "bye_timer": None, "to_tag": to_tag, "rtp": None,
                          "offered_pts": offered_pts, "dtmf_pt": dtmf_pt}
         caller = headers.get("from", "unknown")
-        print(f"[call:{self.line.id}] Incoming call from {caller}")
+        dialled = dialled_number(text.split("\r\n", 1)[0], headers)
+        print(f"[call:{self.line.id}] Incoming call from {caller}"
+              + (f" to {dialled}" if dialled else ""))
         self._send_response("180 Ringing", headers, remote_addr, to_tag=to_tag)
-        self.on_incoming_call(call_id=call_id, caller=caller)
+        self.on_incoming_call(call_id=call_id, caller=caller, dialled=dialled)
 
     def answer(self) -> bool:
         """Accepts the current ringing call with real audio."""

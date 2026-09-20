@@ -91,6 +91,14 @@ its docstring.
 | `test_audio_quality.py` | Nothing beyond the media stack: measures what the publish path does to speech |
 | `test_audio_over_sip.py`, `test_call_lifecycle.py` | A real gateway and a second SIP account |
 | `test_human_call.py` | The same, plus a person to answer in Talk - measures both directions of one call and leaves both as WAV |
+| `test_dialin_answer.py` | A running Nextcloud with a mapped dial-in number and `BRIDGE_SIP_SHARED_SECRET` - no gateway and no second account, because `fake_gateway.py` plays the caller |
+
+`test_dialin_answer.py` is the one test here that needs no telephony at
+all. A dial-in number has to arrive as a *different* number than the one a
+person's phone rings on, which a single line cannot deliver; `fake_gateway.py`
+sends the INVITE for it instead, and everything from the CallManager
+onwards - the `direct-dial-in` endpoint, the conversation Nextcloud
+creates, the answer, the audio - is the deployed path.
 
 `test_human_call.py` needs a second SIP pipe and a second media relay pipe,
 since the bridge's line holds the first of each for the call being placed;

@@ -576,7 +576,7 @@ class TalkClient:
         roomid = self._entry_roomid(call_id)
         _run_coro_logged(self._send_dialout_status(call_id, roomid, "rejected"), self.loop, f"on_call_failed({call_id})")
 
-    def on_incoming_call(self, *, call_id, caller):
+    def on_incoming_call(self, *, call_id, caller, dialled=""):
         # The signaling protocol has no ringing/accept-decline exchange for
         # inbound calls ("addsession" represents an already-connected call,
         # and dialout is Talk-initiated only), so there is no native way to
@@ -595,9 +595,10 @@ class TalkClient:
             print(f"[talk] Incoming call {call_id} from {caller} - answering with real audio")
             self.call_manager.answer()
             return
-        _run_coro_logged(self._handle_incoming_ring(call_id, caller), self.loop, f"on_incoming_call({call_id})")
+        _run_coro_logged(self._handle_incoming_ring(call_id, caller, dialled), self.loop,
+                         f"on_incoming_call({call_id})")
 
-    async def _room_for_inbound_call(self, line, caller: str):
+    async def _room_for_inbound_call(self, line, caller: str, dialled: str):
         """Which room an incoming call belongs in, and who the caller is
         in it.
 
@@ -608,13 +609,21 @@ class TalkClient:
         call and makes the caller a participant of it, which is the only
         way anything but the signaling server knows who is calling.
 
+        Which of the two a call gets is decided by the number it was
+        placed to, not by the line it arrived on: only the numbers named
+        in the line's dialin_numbers are the bridge's own. Everything else
+        rings the configured room, including every number the mapping does
+        not mention - a line that shares its number with a person's phone
+        simply maps nothing.
+
         Falls back to the configured room whenever dial-in is not set up
         or has nothing to say - a caller nobody can place is still a
         caller, and leaving them ringing would be worse."""
-        if not (config.sip_shared_secret and line.dialin_number):
+        number = line.dialin_numbers.get(dialled, "")
+        if not (config.sip_shared_secret and number):
             return line.default_room_token, None
         room = await asyncio.to_thread(
-            talk_sip_bridge.direct_dial_in, line.dialin_number, _sip_display_name(caller))
+            talk_sip_bridge.direct_dial_in, number, _sip_display_name(caller))
         if not room:
             return line.default_room_token, None
         actor = {"actorType": room.get("actorType"), "actorId": room.get("actorId")}
@@ -624,7 +633,7 @@ class TalkClient:
             return room["token"], None
         return room["token"], actor
 
-    async def _handle_incoming_ring(self, call_id: str, caller: str):
+    async def _handle_incoming_ring(self, call_id: str, caller: str, dialled: str = ""):
         """Rings Talk for an inbound call and waits for somebody to answer.
 
         The order matters. Joining the room first establishes what the
@@ -637,7 +646,7 @@ class TalkClient:
         answered within a second was never noticed and the phone rang
         out."""
         line = self.call_manager.line
-        roomid, dialin = await self._room_for_inbound_call(line, caller)
+        roomid, dialin = await self._room_for_inbound_call(line, caller, dialled)
         if dialin:
             with self._call_sessions_lock:
                 entry = self._call_sessions.get(call_id)
@@ -650,15 +659,12 @@ class TalkClient:
             # anybody there. Ringing is Nextcloud's own business here - it
             # knows whose number was dialled - and the caller is already a
             # participant waiting in the room. What is left for the bridge
-            # is to answer, which it does only if allowed to: on a line
-            # that shares its number with a person's own phone, picking up
-            # automatically takes the call away from them.
-            if not config.auto_answer_calls:
-                print(f"[talk] {call_id} has a conversation of its own ({roomid}) but "
-                      f"auto-answer is off - nothing here can ring it, so it stays ringing "
-                      f"at the gateway. Direct dial-in expects a line that answers.")
-                return
-            print(f"[talk] Answering {call_id} into its own conversation {roomid}")
+            # is to answer, and it does so without asking
+            # config.auto_answer_calls: that switch guards numbers that
+            # might belong to a person, and this number is in
+            # dialin_numbers, which says it belongs to the bridge.
+            print(f"[talk] Answering {call_id}, dialled {dialled}, "
+                  f"into its own conversation {roomid}")
             self.call_manager.answer()
             return
         if not roomid or not line.notify_user or not line.notify_app_password:
