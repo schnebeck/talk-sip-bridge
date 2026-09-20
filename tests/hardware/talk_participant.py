@@ -91,7 +91,14 @@ class TalkParticipant:
     async def __aexit__(self, *exc):
         await self.close()
 
-    async def start(self, timeout: float = 20.0):
+    async def connect(self):
+        """In the room, with a session id, but publishing nothing yet.
+
+        Separate from publishing because when the two happen decides
+        which negotiation the other side runs: a participant that is
+        known but silent is answered "client_not_found", which is what a
+        person looks like between joining a call and their browser
+        getting a stream up."""
         self.ws = await websockets.connect(config.ws_url)
         await self.ws.send(json.dumps(
             talk_messages.hello(config.internal_secret, config.backend_url)))
@@ -99,8 +106,10 @@ class TalkParticipant:
         hello = json.loads(await self.ws.recv())
         self.sessionid = hello["hello"]["sessionid"]
         await self.ws.send(json.dumps(talk_messages.join_room(self.roomid)))
-
         self._task = asyncio.ensure_future(self._serve())
+        return self.sessionid
+
+    async def publish(self, timeout: float = 20.0):
         await self._publish()
         await asyncio.wait_for(self._published.wait(), timeout=timeout)
         # In the call, and carrying audio - without this the server tells
@@ -108,6 +117,10 @@ class TalkParticipant:
         await self.ws.send(json.dumps(talk_messages.set_incall(
             talk_messages.FLAG_IN_CALL | talk_messages.FLAG_WITH_AUDIO)))
         return self.sessionid
+
+    async def start(self, timeout: float = 20.0):
+        await self.connect()
+        return await self.publish(timeout)
 
     async def _publish(self):
         self.pc = RTCPeerConnection()

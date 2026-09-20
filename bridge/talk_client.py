@@ -659,6 +659,11 @@ class TalkClient:
             state = entry.subscription if entry else None
         if not still_the_call or state is None:
             return  # the call ended, or a newer subscription replaced this one
+        if media.human_sessionid != human_sessionid:
+            # The call is now listening to somebody else. A step decided
+            # for the previous one would ask the server about a session
+            # this call has nothing to do with any more.
+            return
         if not state.still_current(step):
             # Decided before the wait, overtaken during it: an offer
             # arrived, audio started flowing, or the attempts ran out.
@@ -695,7 +700,8 @@ class TalkClient:
         with self._call_sessions_lock:
             entry = self._call_sessions.get(sip_call_id)
             state = entry.subscription if entry and entry.media is media else None
-        if state is None or state.working or state.generation != generation:
+        if (state is None or state.working or state.generation != generation
+                or media.human_sessionid != human_sessionid):
             return  # something else happened in the meantime; not our turn
         await self._pursue(sip_call_id, media, human_sessionid, state.no_publisher())
 

@@ -38,12 +38,20 @@ MEETING_ID = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("IVR_MEETING_I
 TONE_HZ = float(os.environ.get("TALK_TONE_HZ", "660"))
 LISTEN_SECONDS = float(os.environ.get("TALK_LISTEN_SECONDS", "12"))
 OUT_WAV = os.environ.get("OUT_WAV", "")
+# Seconds to wait before the participant publishes, 0 for "already
+# there". Late is the interesting case: it is what a person does.
+JOIN_LATE = float(os.environ.get("TALK_JOIN_LATE", "0"))
 # Which codec the call runs at. A real call to this gateway negotiates
 # G.722, and its 16kHz resample from Talk's 48kHz for the way back
 # is a different operation than PCMU's 8kHz.
 CODEC = {"pcmu": 0, "g722": 9}[os.environ.get("TALK_CODEC", "pcmu").lower()]
 
 results = []
+
+
+async def _no_human():
+    """Nobody for the bridge to pick on its own - see below."""
+    return None
 
 
 def record_result(name, ok, detail=""):
@@ -111,14 +119,28 @@ async def main() -> int:
         record_result("the bridge reaches the signaling server", bool(session))
         if not session:
             return 1
+        # The bridge picks somebody out of the room roster when the call
+        # starts, and that roster also holds sessions from hours ago. Two
+        # subscriptions on one call share its negotiation and cancel each
+        # other out, so the choosing is taken out of this test - what is
+        # under test is the negotiation with a publisher it names.
+        client._find_human_in_room = lambda *a, **kw: _no_human()
 
-        # Somebody in the room first: the bridge looks for a publisher
-        # when the call starts, and one that appears later is only found
-        # again through a repair.
+        # When the participant appears decides which negotiation runs.
+        # Before the call, the first request succeeds and there is one
+        # attempt and no waiting - the easy timing, and the one this
+        # test used to have only. After it, the first requests are
+        # answered "client_not_found", retries are armed, and the offer
+        # arrives while one of them is still pending: the timing of a
+        # real call, where a person joins after the phone is in the
+        # room. A retry that fires into the connection that meanwhile
+        # started working is exactly what broke one.
         participant = TalkParticipant(MEETING_ID, frequency=TONE_HZ)
-        published = await participant.start()
-        record_result("a participant publishes into the conversation", bool(published),
-                      published or "no session")
+        published = await participant.connect()
+        if not JOIN_LATE:
+            await participant.publish()
+            record_result("a participant publishes into the conversation", bool(published),
+                          published or "no session")
 
         status, elapsed, rtp = await asyncio.to_thread(
             gateway.invite, (line.local_ip, line.local_sip_port),
@@ -149,6 +171,16 @@ async def main() -> int:
         entry.media.subscriber_receiving = False
         asyncio.ensure_future(client._subscribe_human_audio(
             entry.sip_call_id, entry.media, published))
+
+        if JOIN_LATE:
+            # By now the bridge has asked for audio nobody is sending,
+            # been told "client_not_found", and armed a retry. The offer
+            # arrives while that retry is still pending - the timing a
+            # person produces, and the one that broke a call.
+            await asyncio.sleep(JOIN_LATE)
+            await participant.publish()
+            record_result("a participant publishes into the conversation", True,
+                          f"after {JOIN_LATE:.0f}s, the way a person joins")
 
         # The dialogue's own "you are in" chime is still in the caller's
         # queue at this point, and its second note is 1320 Hz - measuring
