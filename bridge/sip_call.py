@@ -30,6 +30,20 @@ from sip_sdp import (answer_sdp, choose_payload_type, extract_sip_body,
                      parse_sdp_media_address)
 
 
+class _OutboundAttempt:
+    """What one outbound INVITE keeps across its retries: which CSeq it is
+    on, and the branch of the request currently outstanding - a CANCEL has
+    to repeat that branch, or it cancels nothing."""
+
+    def __init__(self, number: str, call_id: str, from_tag: str, sdp: str):
+        self.number = number
+        self.call_id = call_id
+        self.from_tag = from_tag
+        self.sdp = sdp
+        self.cseq = 1
+        self.branch = sip_requests.new_branch()
+
+
 class CallManager:
     """Bound to one LineConfig; holds at most one active call on that line.
     Real audio (via RtpSession) is set up for both inbound and outbound
@@ -215,128 +229,139 @@ class CallManager:
         threading.Thread(target=self._outbound_worker, args=(dial_target, call_id, from_tag), daemon=True).start()
         return {"started": True, "call_id": call_id}
 
-    def _outbound_worker(self, number, call_id, from_tag):
+    # -- placing a call ---------------------------------------------------
+    def _send_invite(self, attempt, auth_header: str = None):
+        self.transport.send(sip_requests.build_invite(
+            self.line, number=attempt.number, call_id=attempt.call_id,
+            from_tag=attempt.from_tag, branch=attempt.branch, cseq=attempt.cseq,
+            sdp=attempt.sdp, auth_header=auth_header))
+
+    def _send_ack(self, attempt, to_header: str):
+        self.transport.send(sip_requests.build_ack(
+            self.line, number=attempt.number, call_id=attempt.call_id,
+            from_tag=attempt.from_tag, branch=sip_requests.new_branch(),
+            cseq=attempt.cseq, to_header=to_header))
+
+    def _retry_invite_with_auth(self, attempt, code: str, headers: dict):
+        """Answers a challenge with a fresh INVITE. It is a new transaction,
+        so it gets the next CSeq and its own branch."""
         line = self.line
-        rtp = self._new_rtp_session()  # payload type finalized once the 200 OK's answer is parsed
+        challenge = parse_auth_challenge(
+            headers.get("www-authenticate" if code == "401" else "proxy-authenticate", ""))
+        realm, nonce = challenge.get("realm", ""), challenge.get("nonce", "")
+        uri = f"sip:{attempt.number}@{line.gateway_host}"
+        digest = digest_response(line.sip_user, realm, line.sip_pass, "INVITE", uri, nonce)
+        attempt.cseq += 1
+        attempt.branch = sip_requests.new_branch()
+        self._send_invite(attempt, sip_requests.authorization_header(
+            line.sip_user, realm, uri, nonce, digest))
+
+    def _cancel_outbound(self, attempt):
+        """Abandoning a pending INVITE requires cancelling it - RFC 3261 -
+        and the CANCEL has to repeat the branch of the request it cancels.
+        Without it the far end goes on ringing long past our own timeout,
+        as an unanswered test call showed."""
+        self.transport.send(sip_requests.build_cancel(
+            self.line, number=attempt.number, call_id=attempt.call_id,
+            from_tag=attempt.from_tag, branch=attempt.branch, cseq=attempt.cseq))
+
+    def _relevant_responses(self, waiter, deadline, attempt):
+        """Yields the responses that say something, and drops the ones that
+        do not: provisional 100/180/183, and anything answering a CSeq this
+        transaction has already moved past. UDP can deliver a duplicate 401
+        late, and acting on it starts a second INVITE while the first is
+        still open - which the gateway then rejects with "491 Request
+        Pending"."""
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return
+            try:
+                resp = waiter.get(timeout=remaining)
+            except queue.Empty:
+                return
+            status_line = resp.split("\r\n", 1)[0]
+            parts = status_line.split(" ", 2)
+            code = parts[1] if len(parts) > 1 else ""
+            headers = parse_sip_headers(resp)
+            answered_cseq = headers.get("cseq", "").split(" ")[0]
+            if answered_cseq.isdigit() and int(answered_cseq) != attempt.cseq:
+                continue
+            if code in ("100", "180", "183"):
+                continue
+            yield code, status_line, headers, resp
+
+    def _connect_outbound(self, attempt, resp: str, headers: dict, rtp):
+        """Turns an answered INVITE into a running call: settle the codec
+        and where media goes, acknowledge, and record the dialog."""
+        line = self.line
+        to_header = headers.get("to", "")
+        match = re.search(r'tag=([^;>\s]+)', to_header)
+        answer_body = extract_sip_body(resp)
+
+        answered_pts = parse_offered_payload_types(answer_body)
+        if answered_pts:
+            rtp.set_payload_type(choose_payload_type(answered_pts))
+        if not line.media_relay_enabled:
+            # Without a relay the peer's own advertised media address is the
+            # only correct target - the one this session was built with is a
+            # guess that holds only when the gateway happens to use the same
+            # port on its own address.
+            media = parse_sdp_media_address(answer_body)
+            if media:
+                rtp.remote_addr = media
+
+        self._send_ack(attempt, to_header)
+
+        remote_contact = headers.get("contact", "")
+        timer = threading.Timer(config.max_call_duration, self.hangup)
+        timer.daemon = True
+        with self.lock:
+            if self.call and self.call["call_id"] == attempt.call_id:
+                self.call["status"] = "connected"
+                self.call["to_tag"] = match.group(1) if match else None
+                self.call["rtp"] = rtp
+                self.call["bye_timer"] = timer
+                if remote_contact:
+                    self.call["remote_contact"] = extract_contact_uri(remote_contact)
+        if line.media_relay_enabled:
+            rtp.send_pcm(np.zeros(rtp.samples_per_packet, dtype=np.int16))  # prime the relay
+        timer.start()
+        self.on_call_connected(call_id=attempt.call_id, direction="outbound", rtp=rtp)
+
+    def _outbound_worker(self, number, call_id, from_tag):
+        """Places one outbound call and follows it to its end: connected,
+        refused, or given up on."""
+        line = self.line
+        rtp = self._new_rtp_session()  # payload type settled once the answer is read
         sdp, _, _ = offer_sdp(line, line.local_rtp_port)
+        attempt = _OutboundAttempt(number, call_id, from_tag, sdp)
 
-        def build_invite(cseq, branch, auth_header=None):
-            return sip_requests.build_invite(
-                line, number=number, call_id=call_id, from_tag=from_tag,
-                branch=branch, cseq=cseq, sdp=sdp, auth_header=auth_header)
-
-        def send_ack(to_header, cseq):
-            self.transport.send(sip_requests.build_ack(
-                line, number=number, call_id=call_id, from_tag=from_tag,
-                branch=sip_requests.new_branch(), cseq=cseq, to_header=to_header))
-
-        cseq = 1
-        last_branch = sip_requests.new_branch()
-        q = self.transport.open_waiter(call_id)
-        self.transport.send(build_invite(cseq, last_branch))
+        waiter = self.transport.open_waiter(call_id)
+        self._send_invite(attempt)
         print(f"[call:{line.id}] Outbound call started to {number}")
+
         deadline = time.time() + config.outbound_call_timeout
-        connected = False
-        final_response_received = False
+        connected = refused = False
         try:
-            while time.time() < deadline:
-                remaining = deadline - time.time()
-                if remaining <= 0:
-                    break
-                try:
-                    resp = q.get(timeout=remaining)
-                except queue.Empty:
-                    break
-                status_line = resp.split("\r\n", 1)[0]
-                parts = status_line.split(" ", 2)
-                code = parts[1] if len(parts) > 1 else ""
-                resp_headers = parse_sip_headers(resp)
-                # UDP does not guarantee ordering or delivery-once - a
-                # retransmitted or delayed response for an earlier CSeq
-                # (e.g. a duplicate 401) must not be reprocessed, or it
-                # triggers a spurious second INVITE while the real one is
-                # still in progress, which the gateway then rejects with
-                # "491 Request Pending".
-                resp_cseq = resp_headers.get("cseq", "").split(" ")[0]
-                if resp_cseq.isdigit() and int(resp_cseq) != cseq:
-                    continue
-                if code == "100":
-                    continue
+            for code, status_line, headers, resp in self._relevant_responses(waiter, deadline, attempt):
                 if code in ("401", "407"):
-                    auth_hdr_name = "www-authenticate" if code == "401" else "proxy-authenticate"
-                    challenge = parse_auth_challenge(resp_headers.get(auth_hdr_name, ""))
-                    realm, nonce = challenge.get("realm", ""), challenge.get("nonce", "")
-                    uri = f"sip:{number}@{line.gateway_host}"
-                    resp_digest = digest_response(line.sip_user, realm, line.sip_pass, "INVITE", uri, nonce)
-                    auth_header = (
-                        f'Authorization: Digest username="{line.sip_user}", realm="{realm}", '
-                        f'nonce="{nonce}", uri="{uri}", response="{resp_digest}", algorithm=MD5'
-                    )
-                    cseq += 1
-                    last_branch = f"z9hG4bK{secrets.token_hex(4)}"
-                    self.transport.send(build_invite(cseq, last_branch, auth_header=auth_header))
-                    continue
-                if code in ("180", "183"):
-                    continue
-                if code == "200":
-                    to_header = resp_headers.get("to", "")
-                    m = re.search(r'tag=([^;>\s]+)', to_header)
-                    to_tag = m.group(1) if m else None
-                    remote_contact = resp_headers.get("contact", "")
-                    answer_body = extract_sip_body(resp)
-                    answered_pts = parse_offered_payload_types(answer_body)
-                    if answered_pts:
-                        rtp.set_payload_type(choose_payload_type(answered_pts))
-                    if not line.media_relay_enabled:
-                        # Without a relay the peer's own advertised media
-                        # address is the only correct target - the address
-                        # this session was constructed with is a guess that
-                        # holds only when the gateway happens to use the
-                        # same port on its own address.
-                        media = parse_sdp_media_address(answer_body)
-                        if media:
-                            rtp.remote_addr = media
-                    send_ack(to_header, cseq)
-                    with self.lock:
-                        if self.call and self.call["call_id"] == call_id:
-                            self.call["status"] = "connected"
-                            self.call["to_tag"] = to_tag
-                            self.call["rtp"] = rtp
-                            if remote_contact:
-                                self.call["remote_contact"] = extract_contact_uri(remote_contact)
-                    if line.media_relay_enabled:
-                        rtp.send_pcm(np.zeros(rtp.samples_per_packet, dtype=np.int16))
-                    timer = threading.Timer(config.max_call_duration, self.hangup)
-                    timer.daemon = True
-                    with self.lock:
-                        if self.call and self.call["call_id"] == call_id:
-                            self.call["bye_timer"] = timer
-                    timer.start()
+                    self._retry_invite_with_auth(attempt, code, headers)
+                elif code == "200":
+                    self._connect_outbound(attempt, resp, headers, rtp)
                     connected = True
-                    self.on_call_connected(call_id=call_id, direction="outbound", rtp=rtp)
                     return
-                if code and code[0] in "456":
-                    # RFC 3261 requires ACKing every final non-2xx response -
-                    # without it the gateway keeps retransmitting it and
-                    # holds the transaction open, causing spurious "486 Busy
-                    # Here" on subsequent calls until it times out on its own.
-                    to_header = resp_headers.get("to", "")
-                    send_ack(to_header, cseq)
-                    final_response_received = True
+                elif code and code[0] in "456":
+                    # RFC 3261 requires acknowledging every final non-2xx.
+                    # Without it the gateway keeps retransmitting and holds
+                    # the transaction open, which shows up as spurious "486
+                    # Busy Here" on later calls until it times out by itself.
+                    self._send_ack(attempt, headers.get("to", ""))
+                    refused = True
                     self.on_call_failed(call_id=call_id, reason=status_line)
                     break
-            if not connected and not final_response_received:
-                # Gave up waiting (deadline reached, or no response at all
-                # within the remaining time) without ever getting a final
-                # response - RFC 3261 requires CANCELling a still-pending
-                # INVITE transaction we're abandoning, or the gateway keeps
-                # ringing/processing a call nobody is listening for anymore
-                # (observed live: an unanswered test call kept the far end
-                # busy well past our own local timeout, with nothing telling
-                # it to stop).
-                self.transport.send(sip_requests.build_cancel(
-                    line, number=number, call_id=call_id, from_tag=from_tag,
-                    branch=last_branch, cseq=cseq))
+            if not connected and not refused:
+                self._cancel_outbound(attempt)
                 self.on_call_failed(call_id=call_id, reason="timeout")
         finally:
             self.transport.close_waiter(call_id)

@@ -15,8 +15,6 @@ daemon.py) and bridges to sip_call.CallManager, whose callbacks fire from
 plain worker threads via asyncio.run_coroutine_threadsafe.
 """
 import asyncio
-import hashlib
-import hmac
 import json
 import re
 import secrets
@@ -25,18 +23,13 @@ import traceback
 
 import websockets
 
+import talk_messages
 import talk_ocs
 from call import DIALOUT, INBOUND, Call
 from call_media import CallMedia
 from config import config
-from room_state import FLAG_IN_CALL, RoomCallState, is_room_wide_call_end
-
-# Call flags, shared by Talk's clients and the signaling server. Talk's own
-# clients only ever subscribe to a participant carrying AUDIO or VIDEO
-# (spreed's webrtc.js: userHasStreams()), which is what makes the
-# distinction below matter rather than being cosmetic.
-FLAG_WITH_AUDIO = 2
-FLAG_WITH_PHONE = 8
+from room_state import RoomCallState, is_room_wide_call_end
+from talk_messages import FLAG_IN_CALL, FLAG_WITH_AUDIO
 
 # A single requestoffer is not enough: the other side's publisher may not
 # exist yet when it goes out, and the signaling server answers that with
@@ -109,28 +102,8 @@ class TalkClient:
                 await asyncio.sleep(config.sip_response_timeout)
 
     async def _hello(self):
-        random_str = secrets.token_hex(32)
-        token = hmac.new(config.internal_secret.encode(), random_str.encode(), hashlib.sha256).hexdigest()
-        await self.ws.send(json.dumps({
-            "id": "bridge-hello", "type": "hello",
-            "hello": {
-                "version": "1.0",
-                # "internal-incall" makes this client responsible for its own
-                # inCall flags (see _set_incall). Without it the server marks
-                # the session as in-call with audio the moment it connects -
-                # so every Talk client in the room asks for this session's
-                # audio stream immediately, long before any call exists,
-                # gets "client_not_found", and then only retries every 10
-                # seconds. That alone keeps the first seconds of a real call
-                # silent. With the flag, the session announces audio only
-                # once its publisher actually exists.
-                "features": ["start-dialout", "internal-incall"],
-                "auth": {
-                    "type": "internal",
-                    "params": {"random": random_str, "token": token, "backend": config.backend_url},
-                },
-            },
-        }))
+        await self.ws.send(json.dumps(
+            talk_messages.hello(config.internal_secret, config.backend_url)))
         await self.ws.recv()  # welcome banner
         resp = json.loads(await self.ws.recv())
         self.own_sessionid = resp["hello"]["sessionid"]
@@ -229,17 +202,9 @@ class TalkClient:
         await self._send_dialout_response(request_id, roomid, call_id=call_id, status="accepted")
 
     async def _send_dialout_response(self, request_id: str, roomid: str, *, call_id: str = None, status: str = None, error: str = None):
-        dialout_payload = {"roomid": roomid}
-        if error is not None:
-            dialout_payload["type"] = "error"
-            dialout_payload["error"] = {"code": "call_failed", "message": error}
-        else:
-            dialout_payload["type"] = "status"
-            dialout_payload["status"] = {"callid": call_id, "status": status}
-        envelope = {"type": "internal", "internal": {"type": "dialout", "dialout": dialout_payload}}
-        if request_id:
-            envelope["id"] = request_id
-        await self.ws.send(json.dumps(envelope))
+        message = (talk_messages.dialout_error(roomid, error, request_id) if error is not None
+                   else talk_messages.dialout_status(roomid, call_id, status, request_id))
+        await self.ws.send(json.dumps(message))
 
     async def _send_dialout_status(self, call_id: str, roomid: str, status: str):
         """Unsolicited status update (ringing/connected/rejected/cleared) -
@@ -272,16 +237,8 @@ class TalkClient:
             if answer_sdp is None:
                 return  # a late duplicate; answering it would reset a working connection
             peer = sender_sessionid
-            await self.ws.send(json.dumps({
-                "id": f"bridge-subanswer-{secrets.token_hex(4)}", "type": "message",
-                "message": {
-                    "recipient": {"type": "session", "sessionid": peer},
-                    "data": {
-                        "to": peer, "type": "answer", "sid": data.get("sid"), "roomType": "video",
-                        "payload": {"type": "answer", "sdp": answer_sdp},
-                    },
-                },
-            }))
+            await self.ws.send(json.dumps(
+                talk_messages.subscribe_answer(peer, data.get("sid"), answer_sdp)))
         elif msg_type == "candidate":
             await media.add_candidate(pc, data.get("payload"))
 
@@ -378,10 +335,7 @@ class TalkClient:
         if self.ws is None:
             return
         try:
-            await self.ws.send(json.dumps({
-                "type": "internal",
-                "internal": {"type": "incall", "incall": {"incall": flags}},
-            }))
+            await self.ws.send(json.dumps(talk_messages.set_incall(flags)))
         except Exception as e:
             print(f"[talk] Could not update inCall flags to {flags}: {e!r}")
 
@@ -401,41 +355,12 @@ class TalkClient:
         to be spelled out because "internal-incall" turns off the server's
         own default for virtual sessions too."""
         virtual_sessionid = f"phone-{secrets.token_hex(8)}"
-        await self.ws.send(json.dumps({
-            "type": "internal",
-            "internal": {
-                "type": "addsession",
-                "addsession": {
-                    "sessionid": virtual_sessionid,
-                    "roomid": roomid,
-                    "incall": FLAG_IN_CALL | FLAG_WITH_PHONE,
-                    # No "options" actor here, which is why Talk shows the
-                    # caller as "Gast": passing actorType/actorId would have
-                    # the signaling server register this session with
-                    # Nextcloud as that actor, but Nextcloud rejects an
-                    # actor that is not already an invited participant of
-                    # the room ("The user is not invited to this room"), and
-                    # the whole addsession fails with it. Naming a caller
-                    # properly needs a real phone attendee in the room
-                    # first, which an inbound call has no way to create.
-                    # displayname is the field Talk renders participants by
-                    # (a real user arrives as user.displayname too) - without
-                    # it the caller shows up as "Gast".
-                    "user": {"type": "phone", "callid": sip_call_id, "number": number,
-                             "displayname": number},
-                },
-            },
-        }))
+        await self.ws.send(json.dumps(talk_messages.add_session(
+            virtual_sessionid, roomid, call_id=sip_call_id, number=number, displayname=number)))
         return virtual_sessionid
 
     async def _remove_virtual_session(self, virtual_sessionid: str, roomid: str):
-        await self.ws.send(json.dumps({
-            "type": "internal",
-            "internal": {
-                "type": "removesession",
-                "removesession": {"sessionid": virtual_sessionid, "roomid": roomid},
-            },
-        }))
+        await self.ws.send(json.dumps(talk_messages.remove_session(virtual_sessionid, roomid)))
 
     # -- publishing SIP call audio into the room --------------------------
     async def _join_room_for_publishing(self, roomid: str) -> None:
@@ -447,28 +372,15 @@ class TalkClient:
         lives (see docs/CONCEPT.md point 3), which is why _teardown_call
         reconnects afterwards."""
         self._room_joined_event.clear()
-        await self.ws.send(json.dumps({"id": "bridge-room", "type": "room", "room": {"roomid": roomid}}))
+        await self.ws.send(json.dumps(talk_messages.join_room(roomid)))
         try:
             await asyncio.wait_for(self._room_joined_event.wait(), timeout=5)
         except asyncio.TimeoutError:
             print(f"[talk] Warning: no room-join confirmation for {roomid} within 5s, publishing anyway")
 
     async def _send_publish_offer(self, sip_call_id: str, sdp: str, display_name: str) -> None:
-        await self.ws.send(json.dumps({
-            "id": f"bridge-offer-{sip_call_id}", "type": "message",
-            "message": {
-                "recipient": {"type": "session", "sessionid": self.own_sessionid},
-                "data": {
-                    "to": self.own_sessionid, "type": "offer", "sid": secrets.token_hex(8),
-                    "roomType": "video",
-                    # This nick names the tile that actually carries the
-                    # call's audio - the phone participant added via
-                    # addsession is a name plate without media.
-                    "payload": {"nick": display_name, "type": "offer", "sdp": sdp},
-                    "audiocodec": "opus",
-                },
-            },
-        }))
+        await self.ws.send(json.dumps(talk_messages.publish_offer(
+            self.own_sessionid, sip_call_id, sdp, display_name)))
 
     async def _publish_call_audio(self, sip_call_id: str, rtp_session, roomid: str, number: str, human_sessionid_hint: str = None):
         await self._join_room_for_publishing(roomid)
@@ -553,13 +465,8 @@ class TalkClient:
             if not still_current:
                 return  # call ended, or a newer subscription replaced this one
             try:
-                await self.ws.send(json.dumps({
-                    "id": f"bridge-reqoffer-{sip_call_id}", "type": "message",
-                    "message": {
-                        "recipient": {"type": "session", "sessionid": human_sessionid},
-                        "data": {"type": "requestoffer", "roomType": "video"},
-                    },
-                }))
+                await self.ws.send(json.dumps(
+                    talk_messages.request_offer(sip_call_id, human_sessionid)))
             except Exception as e:
                 print(f"[talk] Could not request audio from {human_sessionid}: {e!r}")
                 return
@@ -690,7 +597,7 @@ class TalkClient:
             return
 
         self._room_joined_event.clear()
-        await self.ws.send(json.dumps({"id": "bridge-room", "type": "room", "room": {"roomid": roomid}}))
+        await self.ws.send(json.dumps(talk_messages.join_room(roomid)))
         try:
             # Confirmation normally arrives in milliseconds. Waiting longer
             # than this would eat into the caller's patience for no gain -

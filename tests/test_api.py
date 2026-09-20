@@ -113,12 +113,8 @@ class DaemonWiringTest(unittest.TestCase):
         self.assertEqual(missing, set())
 
     def test_call_manager_accepts_all_of_them(self):
-        init_args = set()
-        for node in ast.walk(tree_of("sip_call.py")):
-            if isinstance(node, ast.FunctionDef) and node.name == "__init__":
-                init_args = {a.arg for a in node.args.kwonlyargs}
-                break
-        self.assertTrue(self.CALLBACKS <= init_args, self.CALLBACKS - init_args)
+        self.assertTrue(self.CALLBACKS <= keyword_arguments_of("sip_call.py", "CallManager", "__init__"),
+                        self.CALLBACKS - keyword_arguments_of("sip_call.py", "CallManager", "__init__"))
 
 
 class ControlApiTest(unittest.TestCase):
@@ -172,6 +168,18 @@ class MessageBuilderApiTest(unittest.TestCase):
         self.assertTrue(callable(sip_requests.contact_transport))
         source = (BRIDGE / "sip_requests.py").read_text()
         self.assertEqual(source.count("line.sip_transport"), 2, "derived somewhere else too")
+
+
+def keyword_arguments_of(filename: str, class_name: str, method: str) -> set:
+    """The keyword-only arguments of one method of one class. Scoped to the
+    class on purpose: "the first __init__ in the file" stops meaning what
+    it looks like the moment a second class appears above it."""
+    for node in ast.walk(tree_of(filename)):
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            for item in node.body:
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == method:
+                    return {a.arg for a in item.args.kwonlyargs}
+    raise AssertionError(f"no {class_name}.{method} in {filename}")
 
 
 def assigned_self_attributes(filename: str, *, inside: str = None) -> set:
