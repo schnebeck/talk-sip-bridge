@@ -9,7 +9,11 @@ What the bridge made of them is read back out of its journal.
 This is the path a caller-driven room choice would run on - the events
 have to survive the gateway and the media relay, not just a loopback.
 
-Usage: SIP_PHONE2_PASS=... test_dtmf_over_sip.py [digits] [extension]
+Who calls and who answers are the same settings test_human_call.py takes:
+CALLER_SIP_USER and its ports, and the extension that decides which line
+of the bridge - and which room - receives the call.
+
+Usage: CALLER_SIP_PASS=... test_dtmf_over_sip.py [digits] [extension]
 """
 
 import os

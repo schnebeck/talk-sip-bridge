@@ -29,7 +29,12 @@ and RTP_RELAY_PIPES must contain 40010:40011, which it does.
 Both recordings are written out as WAV files (OUT_WAV, TALK_WAV) - a
 measurement says a tone arrived, the file says what it sounds like.
 
-Usage: SIP_PHONE2_PASS=... test_human_call.py [extension]
+Who calls whom is configuration, not built in: CALLER_SIP_USER and its
+ports say who places the call, the extension argument says which line of
+the bridge answers it - and with it, which room the call is bridged into
+and therefore whose devices ring.
+
+Usage: CALLER_SIP_PASS=... test_human_call.py [extension]
 """
 
 import os
@@ -68,13 +73,19 @@ EXTENSION = sys.argv[1] if len(sys.argv) > 1 else "**621"
 OUT_WAV = os.environ.get("OUT_WAV", f"/tmp/human-call-{int(time.time())}.wav")
 TALK_WAV = os.environ.get("TALK_WAV", OUT_WAV.replace(".wav", "-as-talk-hears-it.wav"))
 
-# The calling line's own half of the relay, alongside the deployed line's.
-CALLER_SIP_PORT = 5093
-CALLER_RTP_PORT = 41000
-CALLER_PROXY_PORT = 5170
-CALLER_CONTACT_PORT = 5170
-CALLER_RELAY_LAN_PORT = 40010
-CALLER_RELAY_OVERLAY_PORT = 40011
+# Who places the call, and through which half of the relay. Every one of
+# these is a setting rather than a constant: which account may call which
+# is a property of the gateway's dial plan, not of this script, and the
+# same script has to serve "sip-phone2 calls the production line" and
+# "some other device calls a line that bridges into a room nobody is
+# sitting in". Defaults are today's arrangement.
+CALLER_SIP_USER = os.environ.get("CALLER_SIP_USER", "sip-phone2")
+CALLER_SIP_PORT = int(os.environ.get("CALLER_SIP_PORT", "5093"))
+CALLER_RTP_PORT = int(os.environ.get("CALLER_RTP_PORT", "41000"))
+CALLER_PROXY_PORT = int(os.environ.get("CALLER_PROXY_PORT", "5170"))
+CALLER_CONTACT_PORT = int(os.environ.get("CALLER_CONTACT_PORT", "5170"))
+CALLER_RELAY_LAN_PORT = int(os.environ.get("CALLER_RELAY_LAN_PORT", "40010"))
+CALLER_RELAY_OVERLAY_PORT = int(os.environ.get("CALLER_RELAY_OVERLAY_PORT", "40011"))
 
 # Long enough that the steady part dominates: the gain control needs a
 # couple of hundred milliseconds to settle on each new level, and a tone
@@ -95,15 +106,22 @@ TALK_RECORD_SECONDS = 18
 
 
 def build_caller() -> LineConfig:
-    """Built from the environment like any other line, rather than by
-    filling in attributes by hand: a line assembled field by field is one
-    field behind the next time LineConfig grows one."""
-    password = os.environ.get("SIP_PHONE2_PASS")
+    """The account this script calls *from*, built from the environment
+    like any other line rather than by filling in attributes by hand: a
+    line assembled field by field is one field behind the next time
+    LineConfig grows one.
+
+    Which account this is, and which extension it dials, are both
+    settings - see CALLER_SIP_USER and the extension argument. The account
+    must be one nothing else is registered with: the gateway remembers a
+    single address per account, so a script registering an account the
+    daemon already holds takes the daemon's incoming calls with it."""
+    password = os.environ.get("CALLER_SIP_PASS") or os.environ.get("SIP_PHONE2_PASS")
     if not password:
-        raise SystemExit("SIP_PHONE2_PASS is required - the second account's password.")
+        raise SystemExit("CALLER_SIP_PASS is required - the calling account's password.")
     deployed = config.lines[0]
     env = {
-        "SIP_USER": "sip-phone2",
+        "SIP_USER": CALLER_SIP_USER,
         "SIP_PASS": password,
         "GATEWAY_HOST": deployed.gateway_host,
         "PROXY_HOST": deployed.proxy_host,
