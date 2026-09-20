@@ -1,0 +1,11 @@
+SIP/2.0 401 Unauthorized
+Via: SIP/2.0/TCP 10.1.1.5:5070;branch=z9hG4bK86b9.3832ca30a6a835d754a612aa23c46390.0;received=192.168.1.10
+Via: SIP/2.0/UDP 10.1.1.1:5096;received=10.1.1.1;rport=5096;branch=z9hG4bK48f55d6a
+From: <sip:sip-phone2@192.168.1.1>;tag=tage5c4c005
+To: <sip:sip-phone2@192.168.1.1>;tag=D53355A18ED5916A
+Call-ID: bridge-reg-a5c22b1b1356@10.1.1.1
+CSeq: 1 REGISTER
+WWW-Authenticate: Digest realm="fritz.box", nonce="33198635BE2A9025"
+User-Agent: FRITZ!OS
+Content-Length: 0
+

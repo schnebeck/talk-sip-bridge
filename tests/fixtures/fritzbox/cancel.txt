@@ -1,0 +1,9 @@
+CANCEL sip:sip-phone@192.168.1.10:5070;transport=tcp SIP/2.0
+Via: SIP/2.0/UDP 10.1.1.5:5070;branch=z9hG4bK56fe.bf0818d2628dc3f636a6c95d54c51f8d.0;i=954
+From: "Handset" <sip:**611@fritz.box>;tag=5B4F8CA3C2B8EDFA
+To: <sip:sip-phone@192.168.1.10:5070>
+Call-ID: 7A9D3D9CB9B87EE8@192.168.1.1
+CSeq: 1 CANCEL
+Max-Forwards: 70
+Content-Length: 0
+

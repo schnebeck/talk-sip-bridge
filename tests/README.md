@@ -28,8 +28,15 @@ BRIDGE_CODE=/opt/fritzbox-talk-bridge \
 | `test_messages.py` | Header parsing, digest authentication, the injection allowlist |
 | `test_sdp.py` | Offer and answer building, codec choice, media-address parsing |
 | `test_requests.py` | The shape of every SIP message this bridge sends |
+| `test_framing.py` | Where one message ends and the next begins in a TCP stream |
+| `test_gateway_messages.py` | The same parsers against messages a real gateway sent, not ones written to be parsed |
 | `test_room_state.py` | Who is in a room's call, replayed from recorded signaling traffic |
+| `test_talk_messages.py` | The shape of every signaling message this bridge sends |
 | `test_talk_ocs.py` | The OCS call sequence, against a recording opener |
+| `test_dialout.py` | Reading a dialout request, the dial plan, and the reply Talk gets |
+| `test_registrar.py` | Registered versus meant-to-be-registered, and recovery from a failed refresh |
+| `test_call.py` | The per-call state the Talk side accumulates |
+| `test_call_media.py` | Which connection a media message belongs to, and teardown of both |
 | `test_media.py` | Resampling between the call's rate and Talk's 48kHz |
 
 Tests that need the media stack (numpy, av, aiortc) skip themselves where it
@@ -43,6 +50,24 @@ ids replaced by the role they had, user names removed, chat payloads reduced
 to their envelope. They are inputs. What the tests assert is the decision
 taken from them, never the bytes we send - a recording of our own output
 would only pin today's behaviour, bugs included.
+
+`fixtures/fritzbox/` is the SIP side of the same idea: whole messages the
+FRITZ!Box this bridge is deployed against actually sent, taken off the
+wire. Only what the gateway itself originated belongs there - a capture
+also holds our own replies and anything a proxy in the path generated, and
+neither says what a gateway does. `Server:`, `User-Agent:` and a tag this
+bridge would have made are what tell them apart, not the direction of
+capture. A
+handset's display name is replaced and the gateway's firmware version is
+dropped from its `User-Agent`; the addresses are the same RFC1918 ones the
+rest of this repository uses as examples, and no message in the set carries
+an `Authorization` header, so there is no digest response to attack. They
+are stored
+with their original CRLF line endings, so read them as bytes -
+`read_text()` translates the line endings and takes the framing with them.
+The directory name is the disclaimer: one gateway's behaviour, not the
+protocol. A second gateway's recordings belong beside it, under its own
+name, with the same tests running over both.
 
 ## hardware/
 

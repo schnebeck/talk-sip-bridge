@@ -1,0 +1,39 @@
+INVITE sip:sip-phone@192.168.1.10:5070;transport=tcp SIP/2.0
+Via: SIP/2.0/TCP 192.168.1.1:44528;branch=z9hG4bKAEDE6C0D73241735;alias
+From: "Handset" <sip:**611@fritz.box>;tag=5B4F8CA3C2B8EDFA
+To: <sip:sip-phone@192.168.1.10:5070>
+Call-ID: 7A9D3D9CB9B87EE8@192.168.1.1
+CSeq: 1 INVITE
+Contact: <sip:C5892C7CB51F2F5F3832DAEAB3B8BF9@192.168.1.1:44528;transport=tcp>
+Max-Forwards: 70
+P-Called-Party-ID: <sip:**9@fritz.box>
+Expires: 120
+Session-Expires: 600;refresher=uac
+Min-SE: 90
+User-Agent: AVM FRITZ!Box 6850 5G
+Supported: 100rel,replaces,timer,199
+Allow-Events: telephone-event,refer
+Allow: INVITE,ACK,OPTIONS,CANCEL,BYE,UPDATE,PRACK,INFO,SUBSCRIBE,NOTIFY,REFER,MESSAGE,PUBLISH
+Content-Type: application/sdp
+Accept: application/sdp, multipart/mixed
+Accept-Encoding: identity
+Content-Length:   415
+
+v=0
+o=user 3786790 3786790 IN IP4 192.168.1.1
+s=call
+c=IN IP4 192.168.1.1
+t=0 0
+m=audio 7078 RTP/AVP 9 8 0 2 102 100 99 101 97 120 121
+a=sendrecv
+a=rtpmap:2 G726-32/8000
+a=rtpmap:102 G726-32/8000
+a=rtpmap:100 G726-40/8000
+a=rtpmap:99 G726-24/8000
+a=rtpmap:101 telephone-event/8000
+a=fmtp:101 0-15
+a=rtpmap:97 iLBC/8000
+a=fmtp:97 mode=30
+a=rtpmap:120 PCMA/16000
+a=rtpmap:121 PCMU/16000
+a=rtcp:7079
