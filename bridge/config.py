@@ -278,6 +278,11 @@ class Config:
         # passing the events on, which this deployment's does; harmless
         # where it does not, since a press reported twice is collapsed.
         self.inband_dtmf = os.environ.get("BRIDGE_INBAND_DTMF", "true").lower() != "false"
+        # Log every key press at the point it is read, with the RTP
+        # timestamp that decides whether it is a new press: which of the
+        # three roads a gateway uses, and which presses never arrive, is
+        # otherwise invisible - the call just misbehaves.
+        self.dtmf_debug = os.environ.get("BRIDGE_DTMF_DEBUG", "false").strip().lower() == "true"
 
         # A recording played to a caller on a conference number instead of
         # the beeps that otherwise ask for a meeting id - 16-bit WAV, any

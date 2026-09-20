@@ -10,7 +10,7 @@ import struct
 import threading
 import time
 
-from dtmf import EVENT_DIGITS, DigitGuard, DtmfEvents
+from dtmf import EVENT_DIGITS, DigitGuard, DtmfEvents, parse_event
 from dtmf_inband import InbandDtmf
 from g711 import alaw_to_linear, linear_to_alaw, linear_to_ulaw, ulaw_to_linear
 from g722 import G722Decoder, G722Encoder
@@ -64,7 +64,8 @@ def bind_socket(sock, address, timeout: float = BIND_RETRY_SECONDS, sleep=time.s
 
 class RtpSession:
     def __init__(self, local_ip: str, local_port: int, remote_ip: str, remote_port: int,
-                 payload_type: int = PT_PCMU, dtmf_payload_type: int = None, on_dtmf=None):
+                 payload_type: int = PT_PCMU, dtmf_payload_type: int = None, on_dtmf=None,
+                 call_id: str = None):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         bind_socket(self.sock, (local_ip, local_port))
         self.sock.settimeout(0.5)
@@ -87,6 +88,12 @@ class RtpSession:
         # packet and is the only way to read a key on such a gateway.
         self._inband = None
         self._guard = DigitGuard()
+        # With dtmf_debug on, everything the far end sends is kept so the
+        # tones it really produces can be measured afterwards - which is
+        # the only way to tell "the detector missed it" from "it was
+        # never sent". Capped, because a call has no length limit.
+        self._capture = [] if config.dtmf_debug else None
+        self._capture_name = f"{call_id or 'call'}"
         self.set_payload_type(payload_type)
         self.recv_thread = threading.Thread(target=self._recv_loop, daemon=True)
         self.recv_thread.start()
@@ -207,6 +214,12 @@ class RtpSession:
             if self.dtmf_payload_type is not None and payload_type == self.dtmf_payload_type:
                 timestamp = struct.unpack("!I", data[4:8])[0]
                 digit = self._dtmf.feed(timestamp, data[12:])
+                if config.dtmf_debug:
+                    parsed = parse_event(data[12:])
+                    print(f"[rtp] event packet ts={timestamp} "
+                          f"digit={parsed[0] if parsed else '?'} "
+                          f"end={parsed[1] if parsed else '?'} "
+                          f"-> {'reported' if digit else 'same press'}")
                 if digit is not None:
                     self.report_digit(digit)
                 continue
@@ -219,7 +232,11 @@ class RtpSession:
             if self._inband is not None:
                 digit = self._inband.feed(pcm)
                 if digit is not None:
+                    if config.dtmf_debug:
+                        print(f"[rtp] inband heard {digit}")
                     self.report_digit(digit)
+            if self._capture is not None and len(self._capture) < 3000:
+                self._capture.append(pcm)
             self.recv_queue.put(pcm)
 
     def report_digit(self, digit: str):
@@ -228,6 +245,8 @@ class RtpSession:
         same press arriving by two of those roads is one press; see
         dtmf.DigitGuard."""
         if not self._guard.accepts(digit, time.monotonic()):
+            if config.dtmf_debug:
+                print(f"[rtp] {digit} dropped as a repeat of the press just reported")
             return
         try:
             self.on_dtmf(digit)
@@ -245,3 +264,20 @@ class RtpSession:
         self.sock.close()
         if self.recv_thread is not threading.current_thread():
             self.recv_thread.join(timeout=2.0)
+        self._write_capture()
+
+    def _write_capture(self):
+        if not self._capture:
+            return
+        import wave
+        path = f"{config.state_dir or '/tmp'}/dtmf-{self._capture_name.replace('@', '-')}.wav"
+        try:
+            with wave.open(path, "wb") as out:
+                out.setnchannels(1)
+                out.setsampwidth(2)
+                out.setframerate(self.sample_rate)
+                out.writeframes(np.concatenate(self._capture).astype(np.int16).tobytes())
+            print(f"[rtp] What the far end sent: {path}")
+        except Exception as e:
+            print(f"[rtp] Could not write the capture: {e!r}")
+        self._capture = []

@@ -106,10 +106,12 @@ class CallManager:
         if line.media_relay_enabled:
             return RtpSession(line.local_ip, line.local_rtp_port, line.relay_overlay_host,
                               line.relay_overlay_port, payload_type=payload_type,
-                              dtmf_payload_type=dtmf_payload_type, on_dtmf=dtmf)
+                              dtmf_payload_type=dtmf_payload_type, on_dtmf=dtmf,
+                              call_id=call_id)
         return RtpSession(line.local_ip, line.local_rtp_port, line.gateway_host,
                           line.local_rtp_port, payload_type=payload_type,
-                          dtmf_payload_type=dtmf_payload_type, on_dtmf=dtmf)
+                          dtmf_payload_type=dtmf_payload_type, on_dtmf=dtmf,
+                          call_id=call_id)
 
     def handle_invite(self, text, headers, call_id, remote_addr):
         body = extract_sip_body(text)

@@ -148,19 +148,33 @@ class RealGatewayTest(unittest.TestCase):
     the high one as little as 0.11.
     """
 
-    def test_every_key_of_a_real_handset(self):
+    def read(self, name: str) -> str:
         import wave
 
-        path = (pathlib.Path(__file__).resolve().parent
-                / "fixtures" / "fritzbox" / "dtmf-keypad.wav")
+        path = pathlib.Path(__file__).resolve().parent / "fixtures" / "fritzbox" / name
         with wave.open(str(path)) as recording:
             rate = recording.getframerate()
             pcm = np.frombuffer(recording.readframes(recording.getnframes()), dtype=np.int16)
         detector = InbandDtmf(rate)
         block = rate // 50
-        heard = [digit for i in range(0, len(pcm) - block, block)
-                 if (digit := detector.feed(pcm[i:i + block]))]
-        self.assertEqual("".join(heard), "1234567890*#")
+        return "".join(digit for i in range(0, len(pcm) - block, block)
+                       if (digit := detector.feed(pcm[i:i + block])))
+
+    def test_every_key_of_a_real_handset(self):
+        self.assertEqual(self.read("dtmf-keypad.wav"), "1234567890*#")
+
+    def test_every_key_of_a_mobile_client(self):
+        """The same box, the same call path, a different thing pressing
+        the keys - and much shorter tones: 60-80ms, arriving as three or
+        four 20ms blocks of which one is routinely unreadable. Against
+        this recording the detector read six keys of twelve and got two
+        of them wrong, which is what "7052318694" turning into "7052318"
+        was.
+
+        dtmf-keypad-app.wav is FRITZ!App Fon's keypad through G.722, off
+        the wire, trimmed to the stretches that read as tones - the
+        double hash at the end is what was typed."""
+        self.assertEqual(self.read("dtmf-keypad-app.wav"), "1234567890*##")
 
 
 if __name__ == "__main__":

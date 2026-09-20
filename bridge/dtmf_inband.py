@@ -42,7 +42,21 @@ MIN_TONE_SHARE = 0.05      # each of them on its own - a single tone fails here
 MIN_GROUP_MARGIN = 4.0     # the winner of a group, against its runner-up
 MAX_OTHER_SHARE = 0.10     # the loudest of the other six
 MIN_LEVEL = 500.0          # peak amplitude; below this it is room noise
-MIN_BLOCKS = 3             # ~60ms at 20ms blocks - shorter is not a key press
+
+# How long a press has to hold, and how much of it may be missing.
+#
+# Two blocks is 40ms, which is the shortest press a receiver has to
+# accept (ITU-T Q.24). Measured against a mobile client's keypad, its
+# tones last 60-80ms and arrive as three or four blocks of which one is
+# routinely unreadable - the onset block often reads as the key one row
+# below, and a block straddling the end of the tone reads as nothing. A
+# detector that demanded three *consecutive* blocks therefore read six
+# keys out of twelve, and read two of them wrong.
+#
+# So a single unreadable block no longer ends the press. What ends it is
+# a different key, or silence lasting longer than that.
+MIN_BLOCKS = 2
+MAX_GAP_BLOCKS = 1
 
 
 def goertzel_power(samples: np.ndarray, frequency: float, sample_rate: int) -> float:
@@ -115,23 +129,34 @@ class InbandDtmf:
     lasting a second is one press, not fifty.
     """
 
-    def __init__(self, sample_rate: int, min_blocks: int = MIN_BLOCKS):
+    def __init__(self, sample_rate: int, min_blocks: int = MIN_BLOCKS,
+                 max_gap_blocks: int = MAX_GAP_BLOCKS):
         self.sample_rate = sample_rate
         self.min_blocks = min_blocks
+        self.max_gap_blocks = max_gap_blocks
         self._candidate = None
         self._blocks = 0
+        self._gap = 0
         self._reported = None
 
     def feed(self, samples: np.ndarray):
         """The digit if this block completes a new press, else None."""
         digit = digit_in_block(samples, self.sample_rate)
+        if digit is None:
+            self._gap += 1
+            if self._gap > self.max_gap_blocks:
+                # Long enough to be the end of the press rather than one
+                # unreadable block inside it.
+                self._candidate = None
+                self._blocks = 0
+                self._reported = None
+            return None
+        self._gap = 0
         if digit != self._candidate:
             self._candidate = digit
             self._blocks = 0
+            self._reported = None          # a different key is a new press
         self._blocks += 1
-        if digit is None:
-            self._reported = None          # silence ends the press
-            return None
         if digit == self._reported or self._blocks < self.min_blocks:
             return None
         self._reported = digit
