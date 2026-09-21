@@ -8,6 +8,7 @@ leaving the line silently deregistered.
 import os
 import secrets
 import threading
+import traceback
 import time
 
 import sip_requests
@@ -115,12 +116,26 @@ class SipRegistrar:
             delay = config.register_expires * 0.6 if self.registered else min(RETRY_INTERVAL, config.register_expires * 0.6)
             if self.stop_event.wait(delay):
                 return  # turned off
-            with self.lock:
-                if not self.wanted:
-                    return
-                was_registered = self.registered
-                self.registered = self._do_register(config.register_expires)
-                error = self.last_error
+            try:
+                with self.lock:
+                    if not self.wanted:
+                        return
+                    was_registered = self.registered
+                    self.registered = self._do_register(config.register_expires)
+                    error = self.last_error
+            except Exception as e:
+                # A refresh that fails is expected and handled by
+                # _do_register; one that *raises* would end this thread,
+                # and then nothing refreshes the registration again. The
+                # line stays reachable until it expires and is then
+                # silently gone - no error, no retry, and everything
+                # about the bridge still looks healthy.
+                print(f"[sip:{self.line.id}] Registration refresh raised {e!r} - retrying")
+                traceback.print_exc()
+                with self.lock:
+                    self.registered = False
+                    self.last_error = repr(e)
+                continue
             if self.registered and not was_registered:
                 print(f"[sip:{self.line.id}] Registration is back")
             elif not self.registered:

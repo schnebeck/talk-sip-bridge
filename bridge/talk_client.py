@@ -107,27 +107,64 @@ class TalkClient:
     def run_forever(self):
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
-        self.loop.run_until_complete(self._serve_both())
+        try:
+            self.loop.run_until_complete(self._serve_both())
+        finally:
+            # Nothing below returns on its own, so reaching this means the
+            # bridge is deaf: the SIP side keeps answering the phone and
+            # nothing it does can reach Talk.
+            print("[talk] ERROR the signaling client stopped - restart the daemon")
 
     async def _serve_both(self):
         """Both connections, each reconnecting on its own. Neither
         depends on the other being up: a dialout can be refused while the
         room side is reconnecting, and a call in progress is not
         disturbed by the dialout side dropping."""
-        await asyncio.gather(self._serve_room(), self._serve_dialout())
+        await asyncio.gather(self._supervise("room", self._serve_room),
+                             self._supervise("dialout", self._serve_dialout))
 
-    async def _serve(self, role: str, features: list, on_hello, handle):
+    async def _supervise(self, role: str, serve):
+        """Keeps one connection's loop alive whatever it does.
+
+        `_serve` loops forever, so nothing should arrive here - but a
+        connection that quietly stops is the worst failure this bridge
+        has: calls keep being answered and none of them reaches Talk,
+        with nothing in the journal to say why. Restarting is always
+        better than the two of them ending together, which is what a
+        bare `gather` would do."""
+        while True:
+            try:
+                await serve()
+                print(f"[talk] ERROR the {role} connection loop ended by itself - restarting")
+            except Exception as e:
+                print(f"[talk] ERROR the {role} connection loop failed: {e!r} - restarting")
+                traceback.print_exc()
+            await asyncio.sleep(config.sip_response_timeout)
+
+    async def _serve(self, role: str, features: list, settled, handle):
         while True:
             try:
                 async with websockets.connect(config.ws_url) as ws:
-                    sessionid = await self._hello(ws, role, features)
-                    on_hello(ws, sessionid)
-                    async for raw in ws:
-                        await handle(json.loads(raw))
+                    settled(ws, await self._hello(ws, role, features))
+                    await self._read(role, ws, handle)
             except Exception as e:
                 print(f"[talk] {role} connection lost ({e!r}), reconnecting ...")
-            on_hello(None, None)
+            settled(None, None)
             await asyncio.sleep(config.sip_response_timeout)
+
+    async def _read(self, role: str, ws, handle):
+        """One message at a time, each costing only itself.
+
+        A message that cannot be handled must not reach the connection:
+        letting it through would reconnect, and a reconnect during a call
+        takes that call's signaling down over a message that had nothing
+        to do with it."""
+        async for raw in ws:
+            try:
+                await handle(json.loads(raw))
+            except Exception as e:
+                print(f"[talk] ERROR handling a {role} message: {e!r}")
+                traceback.print_exc()
 
     async def _serve_room(self):
         def settled(ws, sessionid):
@@ -162,7 +199,10 @@ class TalkClient:
         if msg.get("type") == "internal" and msg.get("internal", {}).get("type") == "dialout":
             await self._handle_dialout(msg)
         else:
-            print(f"[talk] DEBUG dialout connection: {json.dumps(msg)[:500]}")
+            # Nothing else is expected here; if the server starts sending
+            # something new, this is where it surfaces.
+            print(f"[talk] Unhandled message on the dialout connection: "
+                  f"{json.dumps(msg)[:300]}")
 
     # -- incoming messages from the signaling server ---------------------
     async def _handle_room_message(self, msg: dict):
@@ -190,7 +230,9 @@ class TalkClient:
             self._hangup_sip("Hangup control received - ending the active call")
         elif msg_type == "event":
             event = msg.get("event", {})
-            print(f"[talk] DEBUG event target={event.get('target')} type={event.get('type')} raw={json.dumps(event)[:1500]}")
+            if config.signaling_debug:
+                print(f"[talk] event {event.get('target')}/{event.get('type')}: "
+                      f"{json.dumps(event)[:1500]}")
             if event.get("target") == "room" and event.get("type") == "join":
                 self._handle_room_join(event.get("join") or [])
             elif event.get("target") == "room" and event.get("type") == "leave":
@@ -199,8 +241,8 @@ class TalkClient:
                         self._room_roster.pop(sessionid, None)
             elif event.get("target") == "participants" and event.get("type") == "update":
                 await self._handle_participants_update(event.get("update") or {})
-        else:
-            print(f"[talk] DEBUG other message type={msg_type} raw={json.dumps(msg)[:1500]}")
+        elif config.signaling_debug:
+            print(f"[talk] unhandled {msg_type}: {json.dumps(msg)[:1000]}")
 
     def _handle_room_join(self, join_entries: list):
         """Tracks room roster (for finding a human to subscribe to, see
@@ -316,7 +358,12 @@ class TalkClient:
                     media, (pc, is_subscriber) = entry.media, match
                     break
             else:
-                print(f"[talk] DEBUG unmatched webrtc message from sender={sender_sessionid} data.type={data.get('type')}")
+                # Routine: mute, unmute and nick changes are addressed to
+                # the phone by every client in the room, and none of them
+                # belongs to a media connection.
+                if config.signaling_debug:
+                    print(f"[talk] {data.get('type')} from {sender_sessionid[:12]} "
+                          f"belongs to no call")
                 return
 
         msg_type = data.get("type")

@@ -283,6 +283,12 @@ class Config:
         # three roads a gateway uses, and which presses never arrive, is
         # otherwise invisible - the call just misbehaves.
         self.dtmf_debug = os.environ.get("BRIDGE_DTMF_DEBUG", "false").strip().lower() == "true"
+        # Log every signaling message this bridge does not act on. A room
+        # in a call produces a steady stream of them - mute, unmute and
+        # nick changes from every client, addressed to the phone - so
+        # this is off in normal operation and buries the journal when on.
+        self.signaling_debug = (
+            os.environ.get("BRIDGE_SIGNALING_DEBUG", "false").strip().lower() == "true")
 
         # A recording played to a caller on a conference number instead of
         # the beeps that otherwise ask for a meeting id - 16-bit WAV, any

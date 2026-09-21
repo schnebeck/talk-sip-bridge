@@ -9,6 +9,7 @@ import socket
 import struct
 import threading
 import time
+import traceback
 
 from dtmf import EVENT_DIGITS, DigitGuard, DtmfEvents, parse_event
 from dtmf_inband import InbandDtmf
@@ -62,6 +63,10 @@ def bind_socket(sock, address, timeout: float = BIND_RETRY_SECONDS, sleep=time.s
             sleep(BIND_RETRY_INTERVAL)
 
 
+# How long one recurring packet fault stays quiet after it was reported.
+# Fifty packets a second means one fault is fifty journal lines a second.
+PACKET_ERROR_QUIET = 5.0
+
 class RtpSession:
     def __init__(self, local_ip: str, local_port: int, remote_ip: str, remote_port: int,
                  payload_type: int = PT_PCMU, dtmf_payload_type: int = None, on_dtmf=None,
@@ -76,6 +81,8 @@ class RtpSession:
         self.recv_queue = queue.Queue()
         self.stop_event = threading.Event()
         self._reported_pt = None  # payload type already reported as unexpected
+        self._failed_packets = 0
+        self._last_packet_error = 0.0
         # Key presses arrive as their own payload type, negotiated per call
         # (RFC 4733). Without knowing its number they are indistinguishable
         # from a codec nobody agreed on, and get dropped as noise.
@@ -203,41 +210,67 @@ class RtpSession:
                 continue
             except OSError:
                 return
-            if addr[0] != self.remote_addr[0]:
-                # Only accept media from the configured peer - otherwise any
-                # host able to reach this port could inject audio into an
-                # active call.
-                continue
-            if len(data) < 12:
-                continue
-            payload_type = data[1] & 0x7F
-            if self.dtmf_payload_type is not None and payload_type == self.dtmf_payload_type:
-                timestamp = struct.unpack("!I", data[4:8])[0]
-                digit = self._dtmf.feed(timestamp, data[12:])
+            try:
+                self._handle_packet(data, addr)
+            except Exception as e:
+                # One packet may not cost the call. This thread dying
+                # leaves the caller hearing nothing for the rest of the
+                # call, with the rest of the bridge none the wiser -
+                # every other sign of a healthy call stays exactly as it
+                # was. What arrives here is decoded from the wire, so it
+                # is also the one place a malformed packet reaches.
+                self._packet_failed(e)
+
+    def _packet_failed(self, error: Exception):
+        """Says so once, then counts. At fifty packets a second, one
+        recurring fault would otherwise be the only thing in the
+        journal."""
+        self._failed_packets += 1
+        now = time.monotonic()
+        if now - self._last_packet_error < PACKET_ERROR_QUIET:
+            return
+        print(f"[rtp] Dropped a packet: {error!r}"
+              + (f" ({self._failed_packets} so far this call)"
+                 if self._failed_packets > 1 else ""))
+        traceback.print_exc()
+        self._last_packet_error = now
+
+    def _handle_packet(self, data: bytes, addr):
+        if addr[0] != self.remote_addr[0]:
+            # Only accept media from the configured peer - otherwise any
+            # host able to reach this port could inject audio into an
+            # active call.
+            return
+        if len(data) < 12:
+            return
+        payload_type = data[1] & 0x7F
+        if self.dtmf_payload_type is not None and payload_type == self.dtmf_payload_type:
+            timestamp = struct.unpack("!I", data[4:8])[0]
+            digit = self._dtmf.feed(timestamp, data[12:])
+            if config.dtmf_debug:
+                parsed = parse_event(data[12:])
+                print(f"[rtp] event packet ts={timestamp} "
+                      f"digit={parsed[0] if parsed else '?'} "
+                      f"end={parsed[1] if parsed else '?'} "
+                      f"-> {'reported' if digit else 'same press'}")
+            if digit is not None:
+                self.report_digit(digit)
+            return
+        if payload_type != self.payload_type and payload_type != self._reported_pt:
+            print(f"[rtp] Receiving payload type {payload_type} while {self.payload_type} was negotiated")
+            self._reported_pt = payload_type
+        pcm = self._decode(data[12:], payload_type)
+        if pcm is None:
+            return
+        if self._inband is not None:
+            digit = self._inband.feed(pcm)
+            if digit is not None:
                 if config.dtmf_debug:
-                    parsed = parse_event(data[12:])
-                    print(f"[rtp] event packet ts={timestamp} "
-                          f"digit={parsed[0] if parsed else '?'} "
-                          f"end={parsed[1] if parsed else '?'} "
-                          f"-> {'reported' if digit else 'same press'}")
-                if digit is not None:
-                    self.report_digit(digit)
-                continue
-            if payload_type != self.payload_type and payload_type != self._reported_pt:
-                print(f"[rtp] Receiving payload type {payload_type} while {self.payload_type} was negotiated")
-                self._reported_pt = payload_type
-            pcm = self._decode(data[12:], payload_type)
-            if pcm is None:
-                continue
-            if self._inband is not None:
-                digit = self._inband.feed(pcm)
-                if digit is not None:
-                    if config.dtmf_debug:
-                        print(f"[rtp] inband heard {digit}")
-                    self.report_digit(digit)
-            if self._capture is not None and len(self._capture) < 3000:
-                self._capture.append(pcm)
-            self.recv_queue.put(pcm)
+                    print(f"[rtp] inband heard {digit}")
+                self.report_digit(digit)
+        if self._capture is not None and len(self._capture) < 3000:
+            self._capture.append(pcm)
+        self.recv_queue.put(pcm)
 
     def report_digit(self, digit: str):
         """One key press, however it arrived - as an RTP event, as a tone
