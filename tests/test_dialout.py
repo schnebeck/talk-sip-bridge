@@ -141,15 +141,14 @@ class ReplyShapeTest(unittest.TestCase):
         _, client = self.reply_for()
         self.assertEqual(len(client.ws.replies), 1)
 
-    def test_the_room_is_joined_while_the_call_is_still_ringing(self):
-        """Ending a dialout in Talk before anyone answers is announced in
-        the room, and a bridge that is not in it hears nothing: measured,
-        a phone went on ringing for the rest of the outbound timeout
-        because joining only happened once a call connected."""
+    def test_the_room_is_not_joined_while_the_call_rings(self):
+        """An internal client that is in a room is no longer eligible
+        for dialout requests, so joining one while a call rings costs
+        every later dialout - measured, Nextcloud refused every attempt
+        after the first with "the phone number could not be called"."""
         _, client = self.reply_for()
         joins = [m for m in client.ws.sent if m.get("type") == "room"]
-        self.assertEqual(len(joins), 1, "the room was not joined while it rang")
-        self.assertEqual(joins[0]["room"]["roomid"], "room-token")
+        self.assertEqual(joins, [], "joining a room here disables dialout")
 
 
 @needs_media_stack

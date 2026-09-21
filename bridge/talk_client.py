@@ -213,14 +213,13 @@ class TalkClient:
         with self._call_sessions_lock:
             self._call_sessions[call_id] = Call(sip_call_id=call_id, kind=DIALOUT,
                                                 number=number, roomid=roomid)
-        # In the room from the start, not only once the call connects.
-        # A dialout that is still ringing is ended in Talk like any other
-        # call, and the room is where that is announced - measured, a
-        # phone went on ringing for the rest of this bridge's own
-        # timeout because nothing here was listening.
-        # Alongside, not before the reply: the server wants "accepted"
-        # within a fixed timeout, and joining waits for a confirmation.
-        asyncio.ensure_future(self._join_room_for_publishing(roomid))
+        # Deliberately NOT joining the room here, however tempting: an
+        # internal client that is in a room is no longer eligible for
+        # dialout requests (see docs/CONCEPT.md point 3), so joining
+        # while a call rings costs this bridge every later dialout -
+        # measured, Nextcloud then refused every attempt with "the phone
+        # number could not be called". Seeing a hangup during ringing
+        # has to be solved without staying in the room.
 
         # The signaling server expects an "accepted" status synchronously
         # (within a fixed timeout) - actual ring/connect progress is
