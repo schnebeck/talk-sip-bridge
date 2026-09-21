@@ -116,8 +116,13 @@ class HeaderTest(unittest.TestCase):
         cls.files = tracked()
         cls.covered = set(re.findall(r'"([^"]+)"',
                                      (ROOT / "REUSE.toml").read_text()))
+        # LICENSES/ holds the licence texts themselves. They are what the
+        # headers point at, they are quoted verbatim, and the
+        # specification reserves the directory for exactly that - so
+        # neither a header nor a REUSE.toml entry belongs on them.
         cls.headers = {p: header_of(p) for p in cls.files
-                       if p not in cls.covered and p != "REUSE.toml"}
+                       if p not in cls.covered and p != "REUSE.toml"
+                       and not p.startswith("LICENSES/")}
 
     def test_every_file_is_covered(self):
         """Either a header or an entry in REUSE.toml - never neither."""

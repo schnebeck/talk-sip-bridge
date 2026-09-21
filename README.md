@@ -46,6 +46,7 @@ contradicts the specification.
 | [`docs/REFERENCE-CALL.md`](./docs/REFERENCE-CALL.md) | What a working call logs, so a broken one can be held against it |
 | [`deploy/README.md`](./deploy/README.md) | The installation artifacts themselves |
 | [`relay/README.md`](./relay/README.md) | For a gateway the bridge cannot reach directly |
+| [`docs/TESTING.md`](./docs/TESTING.md) | How the tests are built: the three tiers, the helpers, and what a new one has to do to fit |
 | [`tests/README.md`](./tests/README.md) | What is covered offline, and what needs real calls |
 
 ## How it is put together

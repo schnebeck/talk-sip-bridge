@@ -17,6 +17,11 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 # Tests
 
+What each test covers, and what each hardware script needs. How they are
+built - the three dependency tiers, `tests/support.py`, where a fake is
+allowed, and what a new test has to do to fit - is
+[`docs/TESTING.md`](../docs/TESTING.md).
+
 Installed and removed separately from the daemon. Nothing here is needed to
 run the bridge, and removing all of it changes nothing about a deployment:
 
