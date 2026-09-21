@@ -51,6 +51,30 @@ class HumanAudio:
             await asyncio.sleep(delay)
         return None
 
+    async def start_for_late_joiner(self, sip_call_id: str, entered):
+        """Subscribes to somebody who joined after the phone was already
+        publishing.
+
+        `publish` looks for a participant exactly once, at the moment the
+        call connects, because for a dialout there is always somebody
+        there already - they placed the call. A caller who dials in
+        arrives in an empty room, so that one look finds nobody and the
+        phone would never hear Talk at all. Measured: the person joined
+        thirteen seconds after the caller, the bridge announced the
+        phone to them, and never asked for their audio."""
+        with self.client._call_sessions_lock:
+            entry = self.client._call_sessions.get(sip_call_id)
+            media = entry.media if entry else None
+            if media is None or not entry.is_publishing or media.human_sessionid:
+                return  # nothing to publish into, or already listening to somebody
+            joined = next((sessionid for sessionid in entered
+                           if self.client._room_roster.get(sessionid, {}).get("is_human")), None)
+        if joined is None:
+            return
+        print(f"[talk] {joined} joined after {sip_call_id} was already publishing "
+              f"- asking for their audio now")
+        await self.start(sip_call_id, media, joined)
+
     async def start(self, sip_call_id: str, media, human_sessionid: str):
         """Asks for the other side's audio and follows the negotiation to
         audio or to giving up.

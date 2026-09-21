@@ -88,8 +88,11 @@ class RoomPresence:
                     waiting_entry = entry
         if active_call_id is not None and entered:
             # Whoever just joined has heard none of what the phone
-            # announced when the call started.
+            # announced when the call started - and if the phone reached
+            # an empty room, they are also the first person there is to
+            # listen to.
             await self.client.phone.announce_state(active_call_id, peers=entered)
+            await self.client.human_audio.start_for_late_joiner(active_call_id, entered)
 
         if active_call_id is None and waiting_call_id is None and ringing_dialout_id is None:
             return
