@@ -103,6 +103,17 @@ class RoomPresence:
                 elif entry.waiting_for_accept:
                     waiting_call_id = call_id
                     waiting_entry = entry
+        if active_call_id is not None and left:
+            # Somebody who leaves the call takes their stream with them.
+            # Their subscription is then a connection to nothing: it
+            # underruns for the rest of the call, holds a decoder open,
+            # and - because the roster no longer lists them - nothing
+            # else would ever clean it up. A microphone change looks
+            # exactly like this and is why the symmetry matters: they
+            # leave, they come back, and the re-entry below subscribes
+            # again from nothing.
+            await self.client.human_audio.stop_listening(active_call_id, left)
+
         if active_call_id is not None and entered:
             # Whoever just joined has heard none of what the phone
             # announced when the call started - and if the phone reached

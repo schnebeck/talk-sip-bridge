@@ -110,8 +110,8 @@ class HumanAudio:
         with self.client._call_sessions_lock:
             entry = self.client._call_sessions.get(sip_call_id)
             media = entry.media if entry else None
-            if media is None or not entry.is_publishing or media.subscriber_alive:
-                return  # nothing to publish into, or already listening to somebody
+            if media is None or not entry.is_publishing:
+                return  # nothing to publish into yet
             people = [sessionid for sessionid in sorted(entered)
                       if self.client._room_roster.get(sessionid, {}).get("is_human")]
         # Somebody who says they are publishing audio first. A
@@ -122,13 +122,47 @@ class HumanAudio:
         # anybody at all rather than nobody, because the flags are the
         # server's word and this bridge has been wrong about them
         # before.
-        joined = next((s for s in people if self.client._room_call.carries_audio(s)),
-                      people[0] if people else None)
-        if joined is None:
+        people = ([s for s in people if self.client._room_call.carries_audio(s)]
+                  + [s for s in people if not self.client._room_call.carries_audio(s)])
+        # Whom this call is missing. Asked per person, not "is anybody
+        # being listened to": with several carried at once, one arrival
+        # among two that already work would otherwise be ignored - and
+        # so would somebody coming back after a microphone change.
+        missing = [s for s in people if not media.alive_for(s)]
+        if not missing:
             return
-        print(f"[talk] {joined} joined after {sip_call_id} was already publishing "
-              f"- asking for their audio now")
-        await self.start(sip_call_id, media, joined)
+        if not config.mix_participants:
+            # One at a time, and only if there is nobody at all yet.
+            if media.subscriber_alive:
+                return
+            missing = missing[:1]
+        else:
+            room = max(1, config.max_mixed_sources) - len(media.subscribers)
+            missing = missing[:max(0, room)]
+        for joined in missing:
+            print(f"[talk] {joined} joined after {sip_call_id} was already publishing "
+                  f"- asking for their audio now")
+            await self.start(sip_call_id, media, joined)
+
+    async def stop_listening(self, sip_call_id: str, gone):
+        """Stops carrying participants who have left the call.
+
+        Their subscription is a connection to a stream that has ended:
+        it underruns for the rest of the call and holds a decoder open,
+        and with the roster no longer listing them nothing else would
+        take it down."""
+        with self.client._call_sessions_lock:
+            entry = self.client._call_sessions.get(sip_call_id)
+            media = entry.media if entry else None
+            if media is None:
+                return
+            dropping = [s for s in sorted(gone) if s in media.subscribers]
+            for sessionid in dropping:
+                entry.subscriptions.pop(sessionid, None)
+        for sessionid in dropping:
+            print(f"[talk] {sessionid[:8]} left the call - no longer carrying them "
+                  f"for {sip_call_id}")
+            await media.drop_subscriber(sessionid)
 
     async def start(self, sip_call_id: str, media, human_sessionid: str):
         """Asks for the other side's audio and follows the negotiation to

@@ -57,7 +57,12 @@ def client_with_call(*, publishing=True, subscribed=False, roster=None, room=Non
     client = talk_client.TalkClient.__new__(talk_client.TalkClient)
     client._call_sessions_lock = threading.Lock()
     entry = Call(sip_call_id=CALL, kind=INBOUND, number="**620", roomid="room-token")
-    entry.media = mock.Mock(is_publishing=publishing, subscriber_alive=subscribed)
+    entry.media = mock.Mock(is_publishing=publishing, subscriber_alive=subscribed,
+                            subscribers={HUMAN: object()} if subscribed else {})
+    # Per participant, not "is anybody being carried": a Mock answers
+    # every call with something truthy, which would read as "already
+    # listening to them" for everybody and start nothing at all.
+    entry.media.alive_for = lambda sessionid: subscribed
     type(entry).is_publishing = property(lambda self: publishing)
     client._call_sessions = {CALL: entry}
     client._room_roster = roster if roster is not None else {HUMAN: {"is_human": True}}
@@ -298,3 +303,96 @@ class WhoToCarryTest(unittest.TestCase):
     def test_nobody_in_the_room_is_nobody_to_carry(self):
         client = client_with_call(roster={})
         self.assertEqual(human_audio.HumanAudio(client).targets(), [])
+
+
+@needs_media_stack
+class SomebodyLeavesTest(unittest.TestCase):
+    """One participant hanging up, while the call goes on.
+
+    Three things must happen and a fourth must not: their subscription
+    goes, its state machine goes, the others are untouched - and the
+    telephone call does not end, because somebody else is still there.
+    """
+
+    OTHER = "other-person-session"
+
+    def call_carrying(self, *sessions):
+        client = client_with_call()
+        entry = client._call_sessions[CALL]
+        media = mock.Mock()
+        media.subscribers = dict.fromkeys(sessions, None)
+        dropped = []
+        async def drop(sessionid):
+            dropped.append(sessionid)
+            media.subscribers.pop(sessionid, None)
+        media.drop_subscriber = drop
+        entry.media = media
+        for sessionid in sessions:
+            entry.subscriptions[sessionid] = object()
+        return client, entry, dropped
+
+    def leave(self, client, gone):
+        asyncio.new_event_loop().run_until_complete(
+            human_audio.HumanAudio(client).stop_listening(CALL, gone))
+
+    def test_the_one_who_left_is_dropped(self):
+        client, entry, dropped = self.call_carrying(HUMAN, self.OTHER)
+        self.leave(client, {HUMAN})
+        self.assertEqual(dropped, [HUMAN])
+
+    def test_the_others_are_untouched(self):
+        """A call carrying three that dropped all of them because one
+        left would be worse than never mixing at all."""
+        client, entry, dropped = self.call_carrying(HUMAN, self.OTHER)
+        self.leave(client, {HUMAN})
+        self.assertEqual(set(entry.media.subscribers), {self.OTHER})
+        self.assertEqual(set(entry.subscriptions), {self.OTHER})
+
+    def test_their_state_machine_goes_with_them(self):
+        """Left behind, it would be handed to the next subscription for
+        that session - one that has already reached FLOWING and asks
+        for nothing."""
+        client, entry, _ = self.call_carrying(HUMAN)
+        self.leave(client, {HUMAN})
+        self.assertNotIn(HUMAN, entry.subscriptions)
+
+    def test_somebody_who_was_never_carried_is_ignored(self):
+        client, entry, dropped = self.call_carrying(HUMAN)
+        self.leave(client, {"a-stranger"})
+        self.assertEqual(dropped, [])
+
+    def test_a_call_that_has_ended_is_left_alone(self):
+        client, entry, dropped = self.call_carrying(HUMAN)
+        client._call_sessions.clear()
+        self.leave(client, {HUMAN})
+        self.assertEqual(dropped, [])
+
+    def test_they_can_come_back(self):
+        """A microphone change is exactly this: leave, then join. The
+        re-entry has to find nothing in the way."""
+        client, entry, _ = self.call_carrying(HUMAN)
+        self.leave(client, {HUMAN})
+        entry.media.alive_for = lambda sessionid: False
+        entry.media.subscriber_alive = False
+        started = []
+        audio = human_audio.HumanAudio(client)
+        async def start(sip_call_id, media, sessionid):
+            started.append(sessionid)
+        audio.start = start
+        asyncio.new_event_loop().run_until_complete(
+            audio.start_for_late_joiner(CALL, {HUMAN}))
+        self.assertEqual(started, [HUMAN])
+
+    def test_closing_a_subscription_cannot_end_the_call(self):
+        """Only the publisher is watched for the connection dying, and
+        that is what ends a call. A subscription that goes has to be
+        able to go quietly, or one person hanging up would take the
+        telephone call with them."""
+        import inspect
+
+        import call_media
+        watched = [line.strip() for line
+                   in inspect.getsource(call_media.CallMedia).splitlines()
+                   if "_watch(" in line and not line.strip().startswith("def ")]
+        self.assertEqual(watched, ["self._watch(self.publisher)"],
+                         "something other than the publisher is watched for death")
