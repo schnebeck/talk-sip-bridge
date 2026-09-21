@@ -17,22 +17,39 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 # Talk SIP Bridge
 
-**Gives Nextcloud Talk a phone number.** Someone calls it. They type in
-the meeting ID, and a PIN if the meeting has one. Then they are in the
-meeting and can talk. Nextcloud adds them as a participant, so they appear
-with a name, and anyone can mute them or hang up on them. This helps when
-a person has no laptop, a weak connection, or will not install an app.
+A standard Nextcloud installation comes with Talk, and Talk is a capable
+meeting tool. Chat, audio and video calls, screen sharing, guests by link.
+For many teams it does the job of Microsoft Teams.
 
-It works the other way round too. In a conversation, press *Call a phone
-number*, and a phone rings. Both directions carry real audio, and both use
-the phone support Talk already has. No bot, no chat commands, nothing new
-for anyone to learn.
+One thing it cannot do out of the box: let someone join a call by
+telephone. No dial-in number, and no way to ring a phone from a meeting.
 
-**You can set up several numbers.** A number can lead straight to one
-conversation, or it can ask the caller which meeting they want. One phone
-account carries as many such numbers as you like. A second account allows a
-second call at the same time. The gateway, the transport and the dial plan
-are all just settings. A home VoIP box and a business PBX both work.
+Talk's own side of this is finished. It knows what a phone participant is.
+It has a *Call a phone number* button. It gives every invited guest a PIN.
+And the interface a bridge plugs into is public and documented. Only the
+bridge itself is missing. Nextcloud sells one, but it is closed source,
+and no open implementation of that interface has been published.
+
+**This is one.** It fills that gap, and then:
+
+- Someone rings your number. They type the meeting ID, and a PIN if the
+  meeting has one. Now they are in the call and can talk.
+- Or a number leads straight into one conversation, with nothing to type.
+- Someone in a conversation presses *Call a phone number*, and a phone
+  rings.
+- Either way, Nextcloud adds the caller as a participant. They appear with
+  a name, and anyone can mute them or hang up on them.
+
+That covers the people a meeting keeps losing: no laptop to hand, a weak
+connection, or simply unwilling to install an app.
+
+Nobody has to learn anything for this. It is Talk's own interface
+throughout, with no bot and no chat commands.
+
+**You can set up several numbers.** One phone account carries as many
+dial-in numbers as you like. A second account allows a second call at the
+same time. The gateway, the transport and the dial plan are all just
+settings. A home VoIP box and a business PBX both work.
 
 **It is small.** One program, one service file, a few settings. No extra
 server, no database. The line stays off until someone turns it on, from a
