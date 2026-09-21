@@ -327,6 +327,20 @@ class CallManager:
                 from_header=f"{sip_requests.address(line, line.sip_user)};tag={call['from_tag']}",
                 to_header=f"{sip_requests.address(line, call['number'])};tag={call['to_tag']}",
                 branch=sip_requests.new_branch()))
+        elif call.get("status") == "ringing":
+            # An incoming call that was never answered has no dialog
+            # either: only "180 Ringing" went out, and a BYE against
+            # that is answered "481 Call/Transaction Does Not Exist"
+            # while the caller goes on hearing ringback. What ends a
+            # call in this state is a final response to its INVITE.
+            print(f"[call:{line.id}] Declining {call['call_id']} - it was ended here "
+                  f"before anyone answered")
+            self._send_response("603 Decline", call["headers"], call["remote_addr"],
+                                to_tag=call["to_tag"])
+            # Nothing to wait for: a final response ends the transaction,
+            # and the caller's ACK is the gateway's business.
+            self.on_call_ended(call_id=call["call_id"], reason="local_hangup")
+            return
         else:
             headers = call["headers"]
             # Likewise, the caller's own Contact from their INVITE is the

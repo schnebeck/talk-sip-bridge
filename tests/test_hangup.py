@@ -144,5 +144,79 @@ class OutboundHangupTest(unittest.TestCase):
         self.assertFalse(self.sent().startswith("BYE "))
 
 
+@needs_media_stack
+class HangupMatrixTest(unittest.TestCase):
+    """Every state a call can be in, and the request that ends it.
+
+    Written as a table rather than as one case per incident: the states
+    are known in advance, and asking "what does this send here?" for
+    each of them is the kind of question that does not need a broken
+    call to be asked. SIP answers it differently in each row, and
+    getting a row wrong leaves the far end hanging - measured twice.
+    """
+
+    def manager_for(self, direction: str, status: str):
+        from sip_call import _OutboundAttempt
+
+        manager = CallManager(StubLine())
+        manager.transport = FakeTransport()
+        if direction == "inbound":
+            manager.call = {
+                "call_id": "in@gateway", "direction": "inbound", "status": status,
+                "to_tag": OUR_TAG, "bye_timer": None, "rtp": None,
+                "remote_addr": ("192.0.2.1", 5060),
+                "headers": {"from": CALLER, "to": US, "contact": CONTACT,
+                            "call-id": "in@gateway", "cseq": "1 INVITE", "via": []},
+            }
+        else:
+            manager.call = {
+                "call_id": "out@bridge", "direction": "outbound", "status": status,
+                "number": "**611", "from_tag": "fromtag", "to_tag": "theirtag",
+                "bye_timer": None, "rtp": None, "remote_contact": "sip:opaque@192.0.2.1",
+                "attempt": _OutboundAttempt("**611", "out@bridge", "fromtag", "v=0"),
+            }
+        return manager
+
+    def first_line(self, manager):
+        sent = manager.transport.sent
+        return sent[-1].split("\r\n")[0] if sent else ""
+
+    def test_what_each_state_sends(self):
+        """A dialog that exists is ended (BYE). One that does not is
+        withdrawn (CANCEL) or refused (a final response) - never
+        ended, because there is nothing to end and the far end goes on
+        ringing."""
+        expected = {
+            ("outbound", "dialing"): "CANCEL",      # no dialog yet: withdraw the INVITE
+            ("outbound", "connected"): "BYE",       # a dialog: end it
+            ("inbound", "connected"): "BYE",
+        }
+        for (direction, status), request in expected.items():
+            with self.subTest(direction=direction, status=status):
+                manager = self.manager_for(direction, status)
+                manager.hangup()
+                self.assertTrue(self.first_line(manager).startswith(request),
+                                f"{direction}/{status} sent {self.first_line(manager)!r}")
+
+    def test_a_ringing_inbound_call_is_refused_not_ended(self):
+        """The row that has no incident behind it. A call this bridge
+        has only answered "180 Ringing" to has no dialog either: BYE is
+        answered "481 Call/Transaction Does Not Exist" and the caller
+        keeps hearing ringback until the gateway gives up."""
+        manager = self.manager_for("inbound", "ringing")
+        manager.hangup()
+        self.assertFalse(self.first_line(manager).startswith("BYE"),
+                         "a call nobody answered was ended with BYE")
+        self.assertTrue(self.first_line(manager).startswith("SIP/2.0 6"),
+                        f"expected a final response, got {self.first_line(manager)!r}")
+
+    def test_hanging_up_twice_sends_nothing_the_second_time(self):
+        manager = self.manager_for("outbound", "connected")
+        manager.hangup()
+        before = len(manager.transport.sent)
+        manager.hangup()
+        self.assertEqual(len(manager.transport.sent), before)
+
+
 if __name__ == "__main__":
     unittest.main()
