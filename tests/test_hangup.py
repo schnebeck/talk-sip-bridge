@@ -96,5 +96,53 @@ class InboundHangupTest(unittest.TestCase):
         self.assertIn("**611", to_line)
 
 
+@needs_media_stack
+class OutboundHangupTest(unittest.TestCase):
+    """Ending a call this bridge placed, before and after it is
+    answered. The two are different requests, and sending the wrong one
+    leaves the far end ringing: measured, a phone rang for another half
+    minute after the call was hung up in Talk, because a BYE for a
+    dialog that does not exist yet ends nothing."""
+
+    def setUp(self):
+        from sip_call import _OutboundAttempt
+
+        self.manager = CallManager(StubLine())
+        self.manager.transport = FakeTransport()
+        self.attempt = _OutboundAttempt("**611", "out@bridge", "fromtag", "v=0")
+        self.manager.call = {
+            "call_id": "out@bridge", "direction": "outbound", "status": "dialing",
+            "number": "**611", "from_tag": "fromtag", "to_tag": None,
+            "bye_timer": None, "rtp": None, "attempt": self.attempt,
+        }
+
+    def sent(self):
+        return self.manager.transport.sent[-1] if self.manager.transport.sent else ""
+
+    def test_a_ringing_call_is_cancelled(self):
+        self.manager.hangup()
+        self.assertTrue(self.sent().startswith("CANCEL "), self.sent().split("\r\n")[0])
+
+    def test_the_cancel_repeats_the_invites_branch(self):
+        """A CANCEL that names another branch cancels nothing."""
+        self.manager.hangup()
+        via = next(l for l in self.sent().split("\r\n") if l.startswith("Via:"))
+        self.assertIn(self.attempt.branch, via)
+        self.assertIn(f"CSeq: {self.attempt.cseq} CANCEL", self.sent())
+
+    def test_an_answered_call_is_ended_with_bye(self):
+        self.manager.call["status"] = "connected"
+        self.manager.call["to_tag"] = "theirtag"
+        self.manager.call["remote_contact"] = "sip:opaque@192.0.2.1:5060"
+        self.manager.hangup()
+        self.assertTrue(self.sent().startswith("BYE "), self.sent().split("\r\n")[0])
+
+    def test_a_ringing_call_without_an_attempt_sends_nothing_wrong(self):
+        """Nothing to cancel is better than a BYE that ends nothing."""
+        self.manager.call.pop("attempt")
+        self.manager.hangup()
+        self.assertFalse(self.sent().startswith("BYE "))
+
+
 if __name__ == "__main__":
     unittest.main()

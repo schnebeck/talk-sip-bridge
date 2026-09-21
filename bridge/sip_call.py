@@ -303,6 +303,19 @@ class CallManager:
             call["bye_timer"].cancel()
         if call.get("rtp"):
             call["rtp"].close()
+        if call.get("direction") == "outbound" and call.get("status") != "connected":
+            # Still ringing: a call that was never answered has no dialog
+            # to end, and BYE is answered "481 Call/Transaction Does Not
+            # Exist" while the INVITE transaction runs on - measured, the
+            # phone went on ringing until this bridge's own outbound
+            # timeout cancelled it half a minute later. RFC 3261: a
+            # pending INVITE is withdrawn with CANCEL.
+            attempt = call.get("attempt")
+            if attempt is not None:
+                print(f"[call:{line.id}] Cancelling the outbound call to {call['number']} "
+                      f"- it was hung up before anyone answered")
+                self._cancel_outbound(attempt)
+            return
         if call.get("direction") == "outbound":
             # In-dialog requests go to the Contact the gateway gave us in
             # its 200 OK (often an opaque per-dialog URI, not the number we
@@ -519,6 +532,12 @@ class CallManager:
         rtp = self._new_rtp_session(call_id=call_id)
         sdp, _, _ = offer_sdp(line, line.local_rtp_port)
         attempt = _OutboundAttempt(number, call_id, from_tag, sdp)
+        with self.lock:
+            # Kept on the call so a hangup arriving while this is still
+            # ringing can cancel the very INVITE that is outstanding: a
+            # CANCEL has to repeat its branch and CSeq.
+            if self.call and self.call["call_id"] == call_id:
+                self.call["attempt"] = attempt
 
         waiter = self.transport.open_waiter(call_id)
         self._send_invite(attempt)
@@ -540,11 +559,21 @@ class CallManager:
                     # the transaction open, which shows up as spurious "486
                     # Busy Here" on later calls until it times out by itself.
                     self._send_ack(attempt, headers.get("to", ""))
+                    print(f"[call:{line.id}] {attempt.number} refused the call: {status_line}")
                     refused = True
                     self.on_call_failed(call_id=call_id, reason=status_line)
                     break
             if not connected and not refused:
-                self._cancel_outbound(attempt)
+                with self.lock:
+                    abandoned = not (self.call and self.call["call_id"] == call_id)
+                if abandoned:
+                    # Hung up in Talk: hangup() has already cancelled it.
+                    print(f"[call:{line.id}] Outbound call to {attempt.number} was ended "
+                          f"before it was answered")
+                else:
+                    print(f"[call:{line.id}] Nobody answered {attempt.number} within "
+                          f"{config.outbound_call_timeout:.0f}s - cancelling")
+                    self._cancel_outbound(attempt)
                 self.on_call_failed(call_id=call_id, reason="timeout")
         finally:
             self.transport.close_waiter(call_id)
