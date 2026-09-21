@@ -34,6 +34,9 @@ import numpy as np
 
 from config import config
 from media import SipAudioTrack, StreamResampler, frame_to_mono_pcm
+from mix_pump import pump
+from mixer import SAMPLE_RATE as MIX_RATE
+from mixer import Mixer
 
 # aiortc defaults to a public STUN server, which costs a measured 5 seconds
 # of candidate gathering per call before anything can be published - five
@@ -85,6 +88,13 @@ class CallMedia:
         self.relay_task = None
         self._poll_task = None
         self._lost = False
+        # Everything a subscription receives goes in here, and one pump
+        # clocks it out to the phone. With a single source that is a
+        # sum of one - transparent but for the limiter's 20ms of
+        # look-ahead - and it is the same path several sources use, so
+        # the ordinary call exercises it every time.
+        self.mixer = Mixer()
+        self._pump_task = None
 
     # -- publisher: phone -> Talk ----------------------------------------
     def open_publisher(self, peer_sessionid: str, on_talking=None):
@@ -149,7 +159,20 @@ class CallMedia:
                 return
             if on_receiving:
                 on_receiving(track)
-            self.relay_task = asyncio.ensure_future(self._relay(track))
+            self.start_pump()
+            self.relay_task = asyncio.ensure_future(self._relay(track, human_sessionid))
+
+    def start_pump(self):
+        """One clock per call, started by the first track to arrive and
+        not before: a pump running while nobody is subscribed would send
+        a phone silence it has not asked for, and on an inbound call
+        that silence would cover the dial-in prompt."""
+        if self._pump_task is not None:
+            return
+        self._pump_task = asyncio.ensure_future(pump(
+            self.mixer, self.rtp_session, lambda: not self._lost,
+            on_error=lambda e: print(
+                f"[talk] The audio pump for {self.sip_call_id} stopped: {e!r}")))
 
     async def answer_subscriber_offer(self, sdp: str):
         """Answers the offer the server relays for the stream we asked for.
@@ -198,13 +221,12 @@ class CallMedia:
         await replaced.close()
         return True
 
-    async def _relay(self, track):
-        """Reads Talk's audio (48kHz, from whatever the person's device
-        captured) and forwards it to the phone, downsampled to the rate the
-        call negotiated. Ends when the subscriber is closed: track.recv()
+    async def _relay(self, track, source: str):
+        """Reads one participant's audio (48kHz, from whatever their
+        device captured) and puts it in the call's mixer under their own
+        session id. Ends when the subscription is closed: track.recv()
         then raises."""
         resampler = None
-        pending = np.zeros(0, dtype=np.int16)
         # The mirror of the phone-side counters. Without them a silent call
         # in this direction looks identical to a broken one: the track
         # arrives either way, and everything after it is invisible.
@@ -232,18 +254,16 @@ class CallMedia:
                           f"{loop.time() - stats['since']:.0f}s: {stats['frames']} frames, "
                           f"peak {stats['peak']}")
                     stats = {"frames": 0, "peak": 0, "since": loop.time()}
-                if resampler is None or resampler.in_rate != frame.sample_rate:
-                    resampler = StreamResampler(frame.sample_rate, self.rtp_session.sample_rate)
-                # Whole packets only: send_pcm pads a short one with
-                # silence, and a resampler that carries its phase hands
-                # out 159 samples as readily as 160 - padding every one of
-                # those would put back the very artefact it removes.
-                pending = np.concatenate((pending, resampler.process(pcm)))
-                packet = self.rtp_session.samples_per_packet
-                whole = len(pending) - len(pending) % packet
-                if whole:
-                    await asyncio.to_thread(self.rtp_session.send_pcm, pending[:whole])
-                    pending = pending[whole:]
+                # Into the mixer at Talk's own rate, not resampled here:
+                # the sum is built at 48kHz and comes down once, which is
+                # both cheaper and cleaner than resampling every source.
+                # Sending is the pump's job - a relay that sent directly
+                # would be a second writer to the same RTP session.
+                if frame.sample_rate != MIX_RATE:
+                    if resampler is None or resampler.in_rate != frame.sample_rate:
+                        resampler = StreamResampler(frame.sample_rate, MIX_RATE)
+                    pcm = resampler.process(pcm)
+                self.mixer.write(source, pcm)
         except Exception as e:
             print(f"[talk] Human audio relay for {self.sip_call_id} ended ({e!r})")
 
@@ -316,6 +336,9 @@ class CallMedia:
     async def close(self):
         """Stops everything this call had running. Safe to call twice."""
         self._lost = True
+        if self._pump_task:
+            self._pump_task.cancel()
+            self._pump_task = None
         if self.relay_task:
             self.relay_task.cancel()
             self.relay_task = None
