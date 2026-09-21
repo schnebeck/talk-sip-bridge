@@ -17,17 +17,103 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 # Talk SIP Bridge
 
-Connects a SIP phone line to Nextcloud Talk using Talk's native SIP bridge
-protocol: incoming calls appear as real, named "phone" participants in a
-room, and outgoing calls are placed from Talk's own call UI.
+**Puts a telephone line into Nextcloud Talk.** Somebody in a conversation
+presses *Call a phone number* and a phone rings. Somebody on a phone dials
+in, keys in the meeting id, and is in the conversation. Either way they
+appear as a real, named participant everyone can see, mute and hang up on,
+and they can hear and be heard. It uses the telephone support Talk already
+has, so there is no bot, no chat commands and no second interface for
+anyone to learn - people who have used Talk have already used this.
 
-Any SIP registrar will do - which gateway, which transport, which dial-plan
-notation are configuration, one line at a time. What is specific to a
-gateway is named as such: the recorded messages in `tests/fixtures/fritzbox/`
-came off the wire from a FRITZ!Box, which is also what this deployment runs
-against and what `test-peer/` exists to keep honest. The one real dependency
-on it today is digest authentication in its simple form, without `qop` -
-see the known gaps in `docs/CONCEPT.md`.
+**It is small, and it asks for little.** One program, one service file, a
+handful of settings in one file; no extra service to run alongside it, no
+database to keep. The line stays switched off until somebody turns it on -
+from a page in Nextcloud's own admin settings, or one command - and it
+answers **only the numbers you give it**. A line that also carries
+somebody's own number keeps ringing that person, untouched: this will not
+quietly pick up a call that was meant for a human being. It is not fussy
+about equipment either; a home VoIP box and a business PBX are the same
+thing to it, and both have been used.
+
+**What it will not do.** One phone account carries **one call at a time**:
+a second caller hears the busy signal, and two calls at once means a
+second account. Voice only, no video. The telephone half of a call is
+**not encrypted**, so the gateway belongs on a network you trust. And it
+speaks a plain, slightly old-fashioned dialect of the telephone protocol:
+most gateways and providers are happy with it, but a strict one, or a
+chain of telephone proxies, can turn it away. Exactly which dialect, and
+what each limit costs, is spelled out in
+[`CONCEPT.md`](./docs/CONCEPT.md#known-gaps-in-the-sip-implementation) -
+worth two minutes before you commit to it.
+
+**What you need.** A phone account - username, password, address - the
+kind a VoIP box or a telephony provider hands out. A Nextcloud with Talk
+*and* its separate signaling server, the High Performance Backend, since
+the built-in one cannot carry this. And a small Linux machine with Python
+3.10 or newer that can reach both; if it cannot reach the phone gateway
+directly, the [`relay/`](./relay) in this repository joins the two
+networks. That is the whole shopping list.
+
+## Getting one line running
+
+The short path for the ordinary case: one account, a gateway the bridge
+host reaches directly, calls placed from Talk. [`ADMIN.md`](./docs/ADMIN.md)
+is the same path with the reasons, the checks and the failure modes.
+
+**1. Install the daemon.**
+
+```
+useradd --system --no-create-home talk-sip-bridge
+python3 -m venv /opt/talk-sip-bridge-venv
+/opt/talk-sip-bridge-venv/bin/pip install -r bridge/requirements.txt
+install -d -o talk-sip-bridge /opt/talk-sip-bridge
+install -o talk-sip-bridge bridge/*.py /opt/talk-sip-bridge/
+install -d /etc/talk-sip-bridge
+install -m 600 -o talk-sip-bridge deploy/env.example /etc/talk-sip-bridge/env
+install -m 644 deploy/talk-sip-bridge.service /etc/systemd/system/
+```
+
+**2. Fill in seven values** in `/etc/talk-sip-bridge/env`. Nothing else is
+required; every other setting has a working default
+([`CONFIG.md`](./docs/CONFIG.md)).
+
+```
+BRIDGE_SIP_USER=          BRIDGE_WS_URL=ws://127.0.0.1:8080/spreed
+BRIDGE_SIP_PASS=          BRIDGE_INTERNAL_SECRET=
+BRIDGE_GATEWAY_HOST=      BRIDGE_BACKEND_URL=https://cloud.example
+BRIDGE_LOCAL_IP=
+```
+
+If the line never registers and nothing says why, set
+`BRIDGE_SIP_TRANSPORT=tcp`. A FRITZ!Box drops UDP registrations without a
+word, and TCP-only providers are common.
+
+**3. Tell Talk that a SIP bridge exists**, or its call button does not
+appear:
+
+```
+occ config:app:set spreed sip_bridge_shared_secret --value="$(openssl rand -hex 32)"
+occ config:app:set spreed sip_bridge_dialin_info   --value='<the number to call, in your users language>'
+occ config:app:set spreed sip_dialout              --value='yes'
+```
+
+**4. Start it and switch the line on.**
+
+```
+systemctl daemon-reload && systemctl enable --now talk-sip-bridge
+curl -X POST http://127.0.0.1:8765/toggle
+curl -s  http://127.0.0.1:8765/status
+```
+
+`"registered": true, "last_error": null` and the line is up. Open any Talk
+conversation, start a call, *Call a phone number* - the phone rings.
+
+**Then, if you want more.** Callers dialling *in* need one more setting:
+put the number they will ring in `BRIDGE_CONFERENCE_NUMBERS`, and
+`BRIDGE_CONFERENCE_CALLERS` to say who may use it - leaving that empty
+admits everybody. For the admin on/off page, install
+[`nextcloud-app/`](./nextcloud-app). For a gateway on the far side of a
+network boundary, [`relay/`](./relay).
 
 ## The documents
 
@@ -110,14 +196,16 @@ should stay below the cost of the change it guards.
 
 ## Status
 
-- `bridge/` - the daemon: gateway registration, bidirectional real audio
-  (G.722 preferred, then PCMA and PCMU, with automatic gain control on the
-  phone side) for inbound and outbound calls, native Talk dialout integration,
-  reliable call-end detection, dial-in with a spoken meeting id, local HTTP
-  control API (status/toggle). Verified against the production gateway and
-  signaling server: dialout, inbound, dial-in, a caller who joins before
-  anybody is there, and a participant who leaves and comes back mid-call -
-  plus an independent FFT-verified audio check with no phone involved
+Not a prototype: this runs a real telephone line. What has actually been
+confirmed, rather than what is implemented -
+
+- `bridge/` - verified against the production gateway and signaling
+  server: a dialout placed from Talk, an inbound call, a dial-in by
+  meeting id, a caller who reaches the room before anybody is there, and
+  a participant who leaves and comes back mid-call. Audio in both
+  directions, G.722 preferred with PCMA and PCMU behind it and automatic
+  gain control on the phone side; measured, not assumed, by an
+  FFT-verified check with no phone involved
   (`tests/hardware/test_publish_and_verify.py`).
 - `nextcloud-app/talk_sip_bridge/` - admin settings page (status/toggle),
   installed and verified on the production Nextcloud instance.
