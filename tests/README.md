@@ -149,6 +149,7 @@ its docstring.
 | `test_dialin_answer.py` | A running Nextcloud with a mapped dial-in number and `BRIDGE_SIP_SHARED_SECRET` - no gateway and no second account, because `fake_gateway.py` plays the caller |
 | `test_dialin_ivr.py` | The same, plus a SIP-enabled conversation whose token is all digits: dials its meeting id, with a PIN if it wants one, and checks that wrong ids end the call |
 | `test_talk_to_phone.py` | The other direction, with nobody human in it: `talk_participant.py` publishes a tone into the conversation and the tone is measured in the RTP the caller receives |
+| `test_two_publishers.py` | How many participants one call can carry. Two tones play in the room, the bridge is pointed at one, and the caller's audio is searched for both - measured 0 dB and -57.5 dB, so: one |
 | `relay_probe.py` | The media relay on its own, two ends on two hosts: a paced stream in on the overlay side, arrival times and losses out on the LAN side |
 | `ws_dump.py` | Nothing running: reads signaling messages back out of a `tcpdump` capture, unmasking what the browser sent |
 | `send_control.py` | A signaling server: sends a phone one of the control messages Talk's UI sends it - hang up, mute - without a browser |
