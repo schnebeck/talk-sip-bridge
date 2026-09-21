@@ -74,7 +74,7 @@ the daemon side is verified.
    connected and carries nothing.
 
    Publishing also requires the bridge to join the room itself; verified via
-   `bridge/test_publish_and_verify.py`. The room connection joins as soon as
+   `tests/hardware/test_publish_and_verify.py`. The room connection joins as soon as
    there is a call - for a dialout that is while it rings, which is what makes
    "end meeting for everyone" reach this bridge at all - and leaves again when
    the call is over. Nothing expires that membership, and a room still holding
@@ -90,6 +90,14 @@ the daemon side is verified.
    transition rather than a state. The bridge tracks its own virtual session's
    server-assigned room session id for this, so it does not mistake itself for
    another participant still on the call.
+
+   And it is not taken at once. A client that saves a new microphone, or
+   reloads its page, *leaves* the call and rejoins a few seconds later
+   with a new session - measured between 4.8 and 7.1 seconds. Acting on
+   the first empty room ends a live conversation, so an emptying room is
+   given `BRIDGE_EMPTY_ROOM_GRACE` to fill up again. An explicit end
+   waits for nothing: the room-wide broadcast and a hangup aimed at the
+   phone participant both mean what they say.
 5. **Persistent daemon.** The daemon registers with the gateway and accepts
    new calls indefinitely - both signaling and real audio are handled by the
    same long-running process, not a one-shot script.
@@ -106,8 +114,8 @@ the daemon side is verified.
    strings), with a generated German translation in `l10n/de.json` /
    `l10n/de.js` - Nextcloud's standard i18n mechanism, not hardcoded German
    text in the templates.
-8. **Codec negotiation (G.722/"HD-Telefonie", PCMU fallback).** The SIP side
-   offers both (`sip_sdp.py`'s `offer_sdp`/`answer_sdp`), preferring
+8. **Codec negotiation (G.722/"HD-Telefonie", then PCMA and PCMU).** The SIP
+   side offers all three (`sip_sdp.py`'s `offer_sdp`/`answer_sdp`), preferring
    G.722 - real 16kHz audio despite SDP historically labeling it
    `G722/8000` (see `g722.py`). `rtp.py`'s `RtpSession` is codec-agnostic
    past construction (`set_payload_type`), and `media.py`'s
@@ -118,6 +126,12 @@ the daemon side is verified.
    session at the call's negotiated rate. It knows peer connections and not
    the signaling protocol - what goes on the wire stays on the Talk side,
    and reaches the media as SDP and candidates.
+
+   Who to subscribe to is chosen, not assumed: never a virtual session,
+   never one of this bridge's own connections, and preferably one whose
+   flags say it carries audio. Getting it wrong is silent - the
+   negotiation completes, the connection reports connected, and no audio
+   ever arrives.
 
    Who to subscribe to is the session id that accept detection saw entering the
    call. The room roster (`_room_roster`) is only the fallback for dialout

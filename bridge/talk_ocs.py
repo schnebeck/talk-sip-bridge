@@ -106,10 +106,8 @@ def end_room_call(roomid: str, nc_user: str, nc_app_password: str):
 
     The room's call only exists because this bridge started it for an
     inbound call, so it has to end with that call. Without this the person
-    who answered is left alone in a call that no longer has a phone on the
-    other end - Talk then plays its "waiting for someone" tone, which is
-    heard as a call that never stops ringing, and any call notification
-    stays alive with it.
+    who answered is left alone in a call with nobody on the other end, and
+    any call notification that went out for it stays alive with it.
 
     `all` goes in the body, which is where Talk's own client puts it and
     where its controller reads it from; as a query parameter it is ignored.

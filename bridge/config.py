@@ -258,11 +258,11 @@ class Config:
         # How the phone shows up in the room, and what it costs:
         #
         #   phone  a virtual session flagged as a phone, without audio.
-        #          Talk shows the caller's number, but its clients build no
-        #          peer for it and their "waiting for someone" sound never
-        #          stops - measured, every 15s, indefinitely on Android.
+        #          Talk shows the caller's number and builds no peer for
+        #          it, which is right: it can carry none.
         #   audio  the same, flagged as carrying audio. Clients then look
-        #          for a stream the session cannot have.
+        #          for a stream the session cannot have and wait for it
+        #          all call, showing an hourglass on the tile.
         #   none   no virtual session. Measured not to work: Talk's
         #          clients then have nothing to answer and refuse with "a
         #          call to yourself cannot be answered", so the caller

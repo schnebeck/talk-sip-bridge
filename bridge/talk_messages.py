@@ -144,12 +144,13 @@ def add_session(sessionid: str, roomid: str, call_id: str, number: str, displayn
     so announcing WITH_AUDIO points clients at a stream that cannot exist
     and leaves them retrying against a silent tile.
 
-    The cost of leaving it out, measured later: Talk's clients build a
-    peer only for participants carrying audio or video, and their "waiting
-    for someone" sound stops only when a peer appears. A room whose only
-    other participant is a phone therefore keeps playing it. with_audio
-    exists to try the other side of that trade - see
-    config.phone_participant."""
+    with_audio exists because that was once thought to be a trade: Talk's
+    clients build a peer only for a participant carrying audio or video,
+    and the "waiting for someone" sound was believed to repeat for the
+    length of a call without one. Measured again, it does not - the sound
+    is capped at four plays and any arrival stops it, a silent phone
+    included. What announcing audio does buy is an hourglass on a tile
+    waiting for a stream that cannot come. See config.phone_participant."""
     return {
         "type": "internal",
         "internal": {

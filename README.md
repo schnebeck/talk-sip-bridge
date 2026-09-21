@@ -12,10 +12,35 @@ against and what `test-peer/` exists to keep honest. The one real dependency
 on it today is digest authentication in its simple form, without `qop` -
 see the known gaps in `docs/CONCEPT.md`.
 
-See `docs/SIGNALING-API.md` for the Talk signaling and OCS interface this
-builds on and `docs/SIP-API.md` for the phone side, `docs/CONCEPT.md` for the architecture, `docs/CONFIG.md` for
-configuration, `docs/REFERENCE-CALL.md` for what a healthy call logs and
-measures, and `deploy/README.md` for installation.
+## The documents
+
+Two of them define the interfaces, and between them they are meant to be
+enough to write an equivalent bridge from - including the parts that are
+undocumented upstream and the ones where a real gateway or client
+contradicts the specification.
+
+| | |
+|---|---|
+| [`docs/SIGNALING-API.md`](./docs/SIGNALING-API.md) | The Talk side: the signaling server's internal-client protocol and Talk's OCS call API |
+| [`docs/SIP-API.md`](./docs/SIP-API.md) | The phone side: registration, calls in both directions, SDP, RTP, key presses |
+| [`docs/CONCEPT.md`](./docs/CONCEPT.md) | What this bridge does with them, and why each decision went the way it did |
+| [`docs/CONFIG.md`](./docs/CONFIG.md) | Every setting, what it costs either way |
+| [`docs/REFERENCE-CALL.md`](./docs/REFERENCE-CALL.md) | What a working call logs, so a broken one can be held against it |
+| [`deploy/README.md`](./deploy/README.md) | Installation |
+| [`relay/README.md`](./relay/README.md) | For a gateway the bridge cannot reach directly |
+| [`tests/README.md`](./tests/README.md) | What is covered offline, and what needs real calls |
+
+## How it is put together
+
+Two connections to the signaling server, because one cannot do both jobs:
+a session that joins a room stops being a dialout candidate for good. One
+takes dialout requests and never enters a room; the other carries the
+call. Each half of a call is its own module - `inbound_call`, `dialout`,
+`call_audio` (the phone into the room), `human_audio` (the room to the
+phone), `phone_participant` (the name plate, which carries no sound),
+`room_presence` (who is there). `talk_client` is what routes between
+them, `sip_call` owns the one call a line can have, and `signaling` keeps
+the connections up.
 
 ## Tests
 
@@ -53,23 +78,27 @@ should stay below the cost of the change it guards.
 |---|---|
 | `sip_messages`, `sip_sdp`, `sip_requests`, `payload_types` | `tests/` - sub-second, no setup |
 | A module boundary: new module, moved code, changed signature | `tests/` - `test_build` and `test_api` are what catch it |
-| `sip_call`, `sip_registrar`, `sip_transport` | `tests/`, then `test_peer_outbound.py` / `test_peer_inbound.py` against the test peer |
+| `sip_call`, `sip_transport` | `tests/`, then `test_peer_outbound.py` / `test_peer_inbound.py` against the test peer |
+| `sip_registrar` | `tests/`, then `tests/hardware/test_registration_recovery.py` - stops the test peer mid-flight and checks the line returns on its own |
 | `rtp`, `g711`, `g722`, `agc` | `test_audio_quality.py`, and `test_audio_over_sip.py` for the real phone path |
 | `room_state`, `talk_ocs`, `media`, `call`, `call_media` | `tests/` - covered offline, including against recorded signaling traffic |
-| `talk_client` | `tests/`, then `tests/hardware/test_publish_and_verify.py` against a signaling server - it publishes a tone into a room and checks it by FFT, with no phone involved |
-| `sip_registrar` | `tests/`, then `tests/hardware/test_registration_recovery.py` - stops the test peer mid-flight and checks the line returns on its own |
+| `talk_client`, `signaling`, `dialout`, `room_presence` | `tests/`, then a real dialout: place one, let it ring, end the call in Talk - nothing offline covers the two connections against a live server |
+| `call_audio`, `human_audio`, `phone_participant` | `tests/`, then `tests/hardware/test_publish_and_verify.py` against a signaling server - it publishes a tone into a room and checks it by FFT, with no phone involved |
+| `inbound_call`, `dialin_ivr` | `tests/`, then `tests/hardware/test_dialin_ivr.py` - dials a meeting id in and checks that a wrong one ends the call |
 | Anything an inbound call touches | `tests/hardware/test_call_lifecycle.py <sip-phone2-password>` - places a real call at the running bridge and asserts ringing, answering and teardown without anybody present |
 | Deployment, config, the relay host | A real call; nothing offline covers that path |
 
 ## Status
 
 - `bridge/` - the daemon: gateway registration, bidirectional real audio
-  (G.722 preferred, PCMU fallback, with automatic gain control on the phone
-  side) for inbound and outbound calls, native Talk dialout integration,
-  reliable call-end detection, local HTTP control API (status/toggle).
-  Verified against the production gateway and signaling server, including
-  real phone calls and an independent FFT-verified audio check
-  (`bridge/test_publish_and_verify.py`).
+  (G.722 preferred, then PCMA and PCMU, with automatic gain control on the
+  phone side) for inbound and outbound calls, native Talk dialout integration,
+  reliable call-end detection, dial-in with a spoken meeting id, local HTTP
+  control API (status/toggle). Verified against the production gateway and
+  signaling server: dialout, inbound, dial-in, a caller who joins before
+  anybody is there, and a participant who leaves and comes back mid-call -
+  plus an independent FFT-verified audio check with no phone involved
+  (`tests/hardware/test_publish_and_verify.py`).
 - `nextcloud-app/talk_sip_bridge/` - admin settings page (status/toggle),
   installed and verified on the production Nextcloud instance.
 - `relay/` - for a gateway the bridge cannot reach directly: `sip_pipe.py`
