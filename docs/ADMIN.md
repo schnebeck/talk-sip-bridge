@@ -74,7 +74,12 @@ its own pair of signaling connections.
    (`GuestManager::sendEmailInvitation`). It has to say which number to
    call, and it is worth saying so when the answer is "none you can
    reach": a recipient outside the phone system otherwise looks for a
-   number that is not there.
+   number that is not there. It should also say that the meeting id and
+   the PIN are each finished with `#` — the prompt is two beeps, and a
+   beep cannot say that.
+
+   Write it in the language its recipients read. Talk translates the
+   heading above it and the labels beside it, never this text.
 
    While evaluating, restrict who sees the call button with
    `sip_bridge_groups`.
