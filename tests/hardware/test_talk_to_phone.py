@@ -24,7 +24,6 @@ sys.path.insert(0, os.environ.get("BRIDGE_CODE")
                 or str(pathlib.Path(__file__).resolve().parent.parent.parent / "bridge"))
 
 import asyncio
-import time
 
 import numpy as np
 
@@ -124,7 +123,7 @@ async def main() -> int:
         # subscriptions on one call share its negotiation and cancel each
         # other out, so the choosing is taken out of this test - what is
         # under test is the negotiation with a publisher it names.
-        client._find_human_in_room = lambda *a, **kw: _no_human()
+        client.human_audio.find_human = lambda *a, **kw: _no_human()
 
         # When the participant appears decides which negotiation runs.
         # Before the call, the first request succeeds and there is one
@@ -169,7 +168,7 @@ async def main() -> int:
         # the publisher is named here and the machine started over.
         entry.subscription = None
         entry.media.subscriber_receiving = False
-        asyncio.ensure_future(client._subscribe_human_audio(
+        asyncio.ensure_future(client.human_audio.start(
             entry.sip_call_id, entry.media, published))
 
         if JOIN_LATE:

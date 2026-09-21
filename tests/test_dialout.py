@@ -140,7 +140,7 @@ class NumberMappingTest(unittest.TestCase):
 
     def dial(self, number, **line_options):
         manager = FakeCallManager(StubLine(**line_options))
-        run(client_for(manager)._handle_dialout(request(number)))
+        run(client_for(manager).dialout.requested(request(number)))
         return manager.dialled
 
     def test_the_configured_prefix_is_stripped(self):
@@ -164,7 +164,7 @@ class ReplyShapeTest(unittest.TestCase):
     def reply_for(self, result=None, number="+4930622"):
         manager = FakeCallManager(StubLine(dialout_strip_prefix="+4930"), result=result)
         client = client_for(manager)
-        run(client._handle_dialout(request(number)))
+        run(client.dialout.requested(request(number)))
         return client.dialout_ws.sent[0], client
 
     def test_the_reply_echoes_the_request_id(self):
@@ -244,7 +244,7 @@ class CallThatWasNeverAnsweredTest(unittest.TestCase):
             # The SIP side reports this from its own worker thread, so
             # the client needs the loop to hand the work to.
             client.loop = asyncio.get_running_loop()
-            await client._handle_dialout(request("+4930622"))
+            await client.dialout.requested(request("+4930622"))
             await settle()
             client.ws.sent.clear()
             client.dialout_ws.sent.clear()
@@ -295,7 +295,7 @@ class CallBookkeepingTest(unittest.TestCase):
     def accepted_call(self, roomid="room-token"):
         manager = FakeCallManager(StubLine(dialout_strip_prefix="+4930"))
         client = client_for(manager)
-        run(client._handle_dialout(request("+4930622", roomid=roomid)))
+        run(client.dialout.requested(request("+4930622", roomid=roomid)))
         return client
 
     def test_the_call_is_remembered_as_a_dialout(self):
@@ -315,7 +315,7 @@ class CallBookkeepingTest(unittest.TestCase):
     def test_a_refused_call_is_not_remembered(self):
         manager = FakeCallManager(StubLine(), result={"error": "no"})
         client = client_for(manager)
-        run(client._handle_dialout(request("622")))
+        run(client.dialout.requested(request("622")))
         self.assertEqual(client._call_sessions, {})
 
 

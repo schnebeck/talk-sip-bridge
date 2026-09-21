@@ -158,9 +158,9 @@ class ConferenceNumberTest(unittest.TestCase):
     number also rings a person's phone, which are not."""
 
     def is_conference(self, caller, dialled="**621", **line_settings):
-        import talk_client
+        import inbound_call
         line = StubLine(conference_numbers=["**621"], **line_settings)
-        return talk_client.is_conference_call(line, dialled, caller)
+        return inbound_call.is_conference_call(line, dialled, caller)
 
     def test_a_conference_number_is_one_without_a_restriction(self):
         self.assertTrue(self.is_conference('"A Caller" <sip:+4930999@gw>'))
@@ -239,19 +239,19 @@ class InboundRoutingTest(unittest.TestCase):
 
     def route(self, line, dialled, *, secret="sip-secret", room=room()):
         import asyncio
-        import talk_client
+        import inbound_call
         asked = []
 
         def fake_dial_in(number, caller, **kw):
             asked.append((number, caller))
             return room["ocs"]["data"] if room else None
 
-        # The secret is patched on the configuration talk_client is
+        # The secret is patched on the configuration inbound_call is
         # holding, not put in the environment: the module bound that object
         # when it was imported, and a reload gives a new one it never sees.
-        with mock.patch.object(talk_client.config, "sip_shared_secret", secret), \
+        with mock.patch.object(inbound_call.config, "sip_shared_secret", secret), \
                 mock.patch("talk_sip_bridge.direct_dial_in", fake_dial_in):
-            result = asyncio.run(talk_client.TalkClient._room_for_inbound_call(
+            result = asyncio.run(inbound_call.InboundCalls.room_for(
                 mock.Mock(), line, f"<sip:{CALLER}@gw>", dialled))
         return result, asked
 

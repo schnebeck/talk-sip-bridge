@@ -195,7 +195,7 @@ class StreamResamplerTest(unittest.TestCase):
     def test_it_picks_up_where_the_last_packet_ended(self):
         """What makes the difference: the piece before is what the first
         samples of this one are interpolated against."""
-        first, second = tone(440, 16000, seconds=0.02), tone(880, 16000, seconds=0.02)
+        first = tone(440, 16000, seconds=0.02)
         resampler = StreamResampler(16000, 48000)
         resampler.process(first)
         self.assertEqual(resampler.previous, first[-1])

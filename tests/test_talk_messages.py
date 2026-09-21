@@ -317,6 +317,7 @@ class AnnouncedStateTest(unittest.TestCase):
     def announce(self, peers=("person-1",), number='"FritzFon" <sip:**611@fritz.box>'):
         import asyncio
         from unittest import mock
+        import phone_participant
         import talk_client
         from call import Call, INBOUND
 
@@ -334,7 +335,8 @@ class AnnouncedStateTest(unittest.TestCase):
             sent.append(json.loads(raw))
 
         client.ws.send = send
-        asyncio.run(client._announce_phone_state("c1", peers=set(peers)))
+        phone = phone_participant.PhoneParticipant(client)
+        asyncio.run(phone.announce_state("c1", peers=set(peers)))
         return [(msg["message"]["data"]["to"], msg["message"]["data"]["type"],
                  msg["message"]["data"]["payload"]) for msg in sent]
 

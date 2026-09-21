@@ -45,6 +45,7 @@ from aiortc import RTCPeerConnection, RTCSessionDescription
 
 from config import config
 from rtp import RtpSession, PT_G722, PT_PCMU
+import talk_messages
 from talk_client import TalkClient
 from test_publish_and_verify import internal_hello, parse_candidate, to_mono
 
@@ -273,11 +274,12 @@ async def main():
     async with websockets.connect(config.ws_url) as ws:
         client.ws = ws
         client.loop = asyncio.get_event_loop()
-        await client._hello()
-        loop_task = asyncio.ensure_future(client._message_loop())
+        client.own_sessionid = await client._hello(ws, "room", talk_messages.ROOM_FEATURES)
+        loop_task = asyncio.ensure_future(
+            client._read("room", ws, client._handle_room_message))
         client._call_sessions["quality-test"] = Call(sip_call_id="quality-test", kind=INBOUND, number="quality-test")
         publish = asyncio.ensure_future(
-            client._publish_call_audio("quality-test", receiver, roomid, "quality-test"))
+            client.audio.publish("quality-test", receiver, roomid, "quality-test"))
         await asyncio.sleep(2)
         threading.Thread(target=send_signal, args=(sender, signal), daemon=True).start()
         pcm, rate = await subscribe_and_record(client.own_sessionid, duration - 2)

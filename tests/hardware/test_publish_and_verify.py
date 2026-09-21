@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Verifies TalkClient's audio-publish path (room join, self-addressed
 WebRTC offer, addsession) without any SIP call or gateway involved: a local
-RTP loopback feeds a test tone into _publish_call_audio(), and a second
+RTP loopback feeds a test tone into CallAudio.publish(), and a second
 internal client in the same process subscribes and checks it via FFT. Both
 run in the same process with no gap between publish and subscribe - Janus
 closes an unsubscribed publisher's connection after a short idle period, so
@@ -34,6 +34,7 @@ from aiortc import RTCIceCandidate, RTCPeerConnection, RTCSessionDescription
 
 from config import config
 from rtp import RtpSession
+import talk_messages
 from talk_client import TalkClient
 
 LOOPBACK_IP = "127.0.0.1"
@@ -211,14 +212,15 @@ async def main():
     async with websockets.connect(config.ws_url) as ws:
         client.ws = ws
         client.loop = asyncio.get_event_loop()
-        await client._hello()
-        message_loop_task = asyncio.ensure_future(client._message_loop())
+        client.own_sessionid = await client._hello(ws, "room", talk_messages.ROOM_FEATURES)
+        message_loop_task = asyncio.ensure_future(
+            client._read("room", ws, client._handle_room_message))
 
         # Register the call the way on_incoming_call does: publishing stops
         # as soon as this entry is gone, which is how a torn-down call
         # aborts a publish that is still gathering ICE.
         client._call_sessions["test-call-1"] = Call(sip_call_id="test-call-1", kind=INBOUND, number="loopback-test")
-        publish_task = asyncio.ensure_future(client._publish_call_audio("test-call-1", receiver, roomid, "loopback-test"))
+        asyncio.ensure_future(client.audio.publish("test-call-1", receiver, roomid, "loopback-test"))
         await asyncio.sleep(1.5)  # a head start; verify() keeps re-requesting until the publisher exists
 
         result = {"success": False}

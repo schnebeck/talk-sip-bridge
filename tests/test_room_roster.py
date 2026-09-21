@@ -17,6 +17,7 @@ import unittest
 from tests.support import needs_media_stack
 
 try:
+    import room_presence
     import talk_client
     import talk_messages
     from call import DIALOUT, Call
@@ -53,7 +54,7 @@ def phone(sessionid="Qc1WhHDNFszqW48r", call_id="call-1", number="620"):
 
 
 def roster_of(client, *entries):
-    client._handle_room_join(list(entries))
+    room_presence.RoomPresence(client).joined(list(entries))
     return {sessionid: state["is_human"] for sessionid, state in client._room_roster.items()}
 
 
@@ -129,14 +130,14 @@ class PhoneSessionTest(unittest.TestCase):
         client.own_sessionid = OWN_ROOM_SESSION
         client._call_sessions["call-1"] = Call(sip_call_id="call-1", kind=DIALOUT,
                                                number="620", roomid="room-token")
-        client._handle_room_join([phone(sessionid="server-chosen", call_id="call-1")])
+        room_presence.RoomPresence(client).joined([phone(sessionid="server-chosen", call_id="call-1")])
         self.assertEqual(client._call_sessions["call-1"].virtual_room_sessionid,
                          "server-chosen")
 
     def test_a_phone_for_a_call_that_is_gone_is_ignored(self):
         client = talk_client.TalkClient(call_manager=None)
         client.own_sessionid = OWN_ROOM_SESSION
-        client._handle_room_join([phone(call_id="a-call-that-ended")])
+        room_presence.RoomPresence(client).joined([phone(call_id="a-call-that-ended")])
         self.assertEqual(client._call_sessions, {})
 
 

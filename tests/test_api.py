@@ -232,11 +232,11 @@ class HardwareScriptTest(unittest.TestCase):
 
 class SubscriptionWiringTest(unittest.TestCase):
     """The negotiation's decisions live in subscription.py and its doing
-    in talk_client.py. A repair that acts without asking the machine is
+    in human_audio.py. A repair that acts without asking the machine is
     how two of them ran at once."""
 
     def test_the_client_asks_the_machine_before_repairing(self):
-        source = (BRIDGE / "talk_client.py").read_text()
+        source = (BRIDGE / "human_audio.py").read_text()
         for decision in ("state.start()", "state.offer(", "state.refused()",
                          "state.no_publisher()", "state.media_arrived()"):
             with self.subTest(decision=decision):
@@ -245,8 +245,8 @@ class SubscriptionWiringTest(unittest.TestCase):
     def test_no_second_retry_loop_survives_beside_it(self):
         """The old loop counted its own attempts; two counters mean two
         budgets and neither knows when to stop."""
-        source = (BRIDGE / "talk_client.py").read_text()
-        self.assertNotIn("for attempt in range(SUBSCRIBE_MAX_ATTEMPTS)", source)
+        source = (BRIDGE / "human_audio.py").read_text()
+        self.assertNotIn("for attempt in range(MAX_ATTEMPTS)", source)
         self.assertNotIn("subscribe_retries", source)
 
     def test_the_machine_needs_nothing_from_the_bridge(self):

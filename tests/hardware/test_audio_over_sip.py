@@ -26,7 +26,6 @@ import asyncio
 import threading
 import time
 
-import numpy as np
 
 from config import config, LineConfig
 from sip_call import CallManager

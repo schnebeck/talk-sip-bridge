@@ -6,7 +6,6 @@ whatever rate the SIP call negotiated, and Talk always at 48kHz.
 """
 import asyncio
 import fractions
-import time
 
 import numpy as np
 from aiortc.mediastreams import AudioStreamTrack
