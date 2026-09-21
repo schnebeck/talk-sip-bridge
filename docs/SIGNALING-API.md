@@ -611,6 +611,38 @@ belong together.
   silent for someone already in the call. Neither is a fault of the caller.
 - The account used must already be a member of the room.
 
+### What ends somebody else's call
+
+A participant leaving never ends anyone else's call, and that includes the
+phone: when a call is hung up on the phone, the person in Talk stays in the
+call, alone, until they leave it themselves. Two things override that, and a
+bridge can reach only one of them.
+
+| Trigger | Effect on a Talk client | Reachable by a bridge |
+|---|---|---|
+| Dialout status `rejected` | Leaves the call (`all: true`) and says "Call rejected" — **only** in a phone conversation | yes: it is a dialout status update |
+| Chat system message `call_ended_everyone` | Leaves the call — unless the conversation is `TYPE_ONE_TO_ONE` or the client itself caused it | no |
+
+The second one is a control channel that is invisible from the signaling
+interface: Talk's clients watch the chat for `call_started`, `call_missed`,
+`call_ended` and `call_ended_everyone`, and act on the last of those.
+`call_ended` — the message posted when a call is over — deliberately does
+**not** end anything.
+
+The `TYPE_ONE_TO_ONE` exception does not apply to phone conversations. Those
+are `TYPE_GROUP` marked with an object type (`phone_legacy`,
+`phone_persistent`, `phone_temporary`) and an object id (`phone_incoming`,
+`phone_outgoing`); it is that pair, not the room type, that Talk's clients test
+for when they treat a conversation as a phone call.
+
+`call_ended_everyone` comes from `ParticipantService::endCallForEveryone`,
+reachable through `DELETE /call/{token}?all=true` as a moderator, and through
+no SIP-bridge-authenticated endpoint — those are `GET /room/{token}`,
+`GET /room/{token}/pin/{pin}`, `verify-dialin`, `direct-dial-in`,
+`verify-dialout`, `open-dial-in` and `DELETE /room/{token}/rejected-dialout`,
+none of which ends a call. A bridge whose own account is not a member of the
+conversation therefore cannot end the call it was part of.
+
 ## Room association for inbound calls
 
 The signaling protocol carries a room id for dialout only; an inbound SIP call
