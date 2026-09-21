@@ -63,6 +63,21 @@ costs, is spelled out in
 [`CONCEPT.md`](./docs/CONCEPT.md#known-gaps-in-the-sip-implementation) -
 worth two minutes before you commit to it.
 
+**What it has been tried on.** One setup, and it is worth knowing which:
+a FRITZ!Box with a **single external line** and several internal SIP
+devices - a DECT handset, a softphone, a second account standing in for a
+caller. Everything stated as confirmed below was confirmed there. Against
+a second SIP implementation, an Asterisk 20 in a container, the protocol
+side is exercised too, which is what keeps "works with my box" and
+"speaks SIP" apart. But a provider's SIP trunk, a PBX with several
+external lines, a real public dial-in number, and more than one account
+running at once have **never been tried** - multiple accounts are covered
+by offline tests and by design, not by a telephone. None of that is known
+to fail; it is simply unproven, and the protocol work is deliberately
+gateway-independent so that it has a fair chance. If you try one, the
+recordings in `tests/fixtures/` are how a second gateway's behaviour gets
+written down.
+
 **What you need.** A phone account - username, password, address - the
 kind a VoIP box or a telephony provider hands out. A Nextcloud with Talk
 *and* its separate signaling server, the High Performance Backend, since

@@ -38,7 +38,14 @@ and [`SIP-API.md`](./SIP-API.md); for why it is built this way,
 
 **One line carries one call at a time.** Everything below is per line. A
 second concurrent call needs a second SIP account, with its own ports and
-its own pair of signaling connections.
+its own pair of signaling connections (`BRIDGE_LINES`).
+
+Two things to know before planning on that. **No deployment has yet run
+more than one line against real hardware** - the configuration is covered
+by offline tests, the telephony is not. And the lines are **not a pool**:
+which one a dialout request reaches is the signaling server's choice, and
+a request handed to a busy line is refused rather than passed to a free
+one.
 
 ## Installing
 
