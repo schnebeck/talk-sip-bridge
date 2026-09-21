@@ -15,3 +15,19 @@
 
 __pycache__/
 *.pyc
+
+# Assistant working files. They live outside this repository today; these
+# lines are so that a stray copy created inside it is never published.
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+.claude/
+.cursor/
+memory/
+
+# Local environment files. The templates are deploy/*.example - a real one
+# carries the SIP password and the signaling server's internal secret.
+.env
+*.env
+!*.env.example
+/etc-*
