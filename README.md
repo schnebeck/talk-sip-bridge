@@ -17,32 +17,49 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 # Talk SIP Bridge
 
-**Puts a telephone line into Nextcloud Talk.** Somebody in a conversation
-presses *Call a phone number* and a phone rings. Somebody on a phone dials
-in, keys in the meeting id, and is in the conversation. Either way they
-appear as a real, named participant everyone can see, mute and hang up on,
-and they can hear and be heard. It uses the telephone support Talk already
-has, so there is no bot, no chat commands and no second interface for
-anyone to learn - people who have used Talk have already used this.
+**Gives Nextcloud Talk a telephone number.** People ring it, key in the
+meeting id they were sent and a PIN if the conversation wants one, and they
+are in the meeting - from a mobile in a car park, from a hotel phone, from
+a customer who will not install anything. Nextcloud makes them a
+participant of that conversation itself, so they arrive named, and everyone
+can see, mute and hang up on them like anybody else. It works the other way
+round too: somebody in a conversation presses *Call a phone number* and a
+phone rings. Both directions carry real audio, and both use the telephone
+support Talk already has - no bot, no chat commands, no second interface
+for anyone to learn.
 
-**It is small, and it asks for little.** One program, one service file, a
-handful of settings in one file; no extra service to run alongside it, no
+**Numbers are configured one at a time, and there can be several.** Each
+one is either a dial-in number that lands in a particular conversation, or
+a conference number that asks the caller which meeting they want - one
+phone account can carry a whole set of them, and a second account adds a
+second call that can run at the same time. Everything else about a number
+is configuration too: which gateway, which transport, which dial-plan
+notation. A home VoIP box and a business PBX are the same thing here, and
+both have been used.
+
+**It is small, and it stays out of the way.** One program, one service
+file, a handful of settings; no extra service to run alongside it, no
 database to keep. The line stays switched off until somebody turns it on -
 from a page in Nextcloud's own admin settings, or one command - and it
-answers **only the numbers you give it**. A line that also carries
-somebody's own number keeps ringing that person, untouched: this will not
-quietly pick up a call that was meant for a human being. It is not fussy
-about equipment either; a home VoIP box and a business PBX are the same
-thing to it, and both have been used.
+answers **only the numbers you give it**, from **only the callers you
+allow**. An account that also carries somebody's own number keeps ringing
+that person, untouched: this will not quietly pick up a call meant for a
+human being.
 
 **What it will not do.** One phone account carries **one call at a time**:
-a second caller hears the busy signal, and two calls at once means a
-second account. Voice only, no video. The telephone half of a call is
-**not encrypted**, so the gateway belongs on a network you trust. And it
-speaks a plain, slightly old-fashioned dialect of the telephone protocol:
-most gateways and providers are happy with it, but a strict one, or a
-chain of telephone proxies, can turn it away. Exactly which dialect, and
-what each limit costs, is spelled out in
+a second caller hears the busy signal. More accounts mean more
+simultaneous calls, but they are not yet a pool - a call is refused if the
+account it was handed to is busy, even when another is free. **Outgoing
+calls cannot yet show a per-user number**: Talk's request says which
+conversation the call is for, but not who pressed the button, so "everyone
+in sales dials out as the sales number" is not something this can do today
+(per conversation would be the next step; see below). Voice only, no
+video. The telephone half of a call is **not encrypted**, so the gateway
+belongs on a network you trust. And it speaks a plain, slightly
+old-fashioned dialect of the telephone protocol: most gateways and
+providers are happy with it, but a strict one, or a chain of telephone
+proxies, can turn it away. Exactly which dialect, and what each limit
+costs, is spelled out in
 [`CONCEPT.md`](./docs/CONCEPT.md#known-gaps-in-the-sip-implementation) -
 worth two minutes before you commit to it.
 
@@ -54,10 +71,10 @@ the built-in one cannot carry this. And a small Linux machine with Python
 directly, the [`relay/`](./relay) in this repository joins the two
 networks. That is the whole shopping list.
 
-## Getting one line running
+## Getting the first number running
 
-The short path for the ordinary case: one account, a gateway the bridge
-host reaches directly, calls placed from Talk. [`ADMIN.md`](./docs/ADMIN.md)
+The short path: one phone account, a gateway the bridge host reaches
+directly, calls placed from Talk. Dial-in is the section after this one. [`ADMIN.md`](./docs/ADMIN.md)
 is the same path with the reasons, the checks and the failure modes.
 
 **1. Install the daemon.**
@@ -108,10 +125,42 @@ curl -s  http://127.0.0.1:8765/status
 `"registered": true, "last_error": null` and the line is up. Open any Talk
 conversation, start a call, *Call a phone number* - the phone rings.
 
-**Then, if you want more.** Callers dialling *in* need one more setting:
-put the number they will ring in `BRIDGE_CONFERENCE_NUMBERS`, and
-`BRIDGE_CONFERENCE_CALLERS` to say who may use it - leaving that empty
-admits everybody. For the admin on/off page, install
+## Letting people dial in
+
+The step most installations actually want. Two kinds of number, and one
+account can carry both:
+
+| | |
+|---|---|
+| `BRIDGE_CONFERENCE_NUMBERS` | **One number, any meeting.** A call to it is answered and asked which conversation it wants; the caller keys in the meeting id, and a PIN if that conversation has one. `**900`, say, or a real number your provider routes to you. |
+| `BRIDGE_DIALIN_NUMBERS` | **One number, one meeting.** `4930622=4930622` maps a number straight into the conversation Nextcloud has registered for it (`occ talk:phone-number:add`), with no keypad step at all. Several numbers, several conversations, one account. |
+
+**`BRIDGE_CONFERENCE_CALLERS` decides who gets that far** - a regular
+expression the caller's own number must match in full. Leaving it empty
+admits every caller in the world, which is the right setting for a number
+that exists to be dialled and the wrong one for anything else.
+
+Nextcloud does the rest: it creates a participant for the caller, so they
+appear by number rather than as an anonymous guest, and the PIN it shows
+each invited person is the one the prompt asks for. Recorded prompts in
+your own languages come from
+[`deploy/make-ivr-prompts.sh`](./deploy/make-ivr-prompts.sh); without them
+the caller hears two beeps, which nobody can act on unaided.
+
+## More than one number at a time
+
+`BRIDGE_LINES` gives each phone account its own settings, ports and
+connections in one daemon, so several calls can run at once - one per
+account. Dial-in numbers are cheaper than that: a single account carries as
+many of them as you like, because only one call occupies it at a time
+either way. [`deploy/test-multiline.env.example`](./deploy/test-multiline.env.example)
+is a ten-account template.
+
+What is **not** there yet: choosing the outgoing number per Nextcloud user,
+and treating the accounts as a pool that skips a busy one. The first needs
+something Talk does not send today; the second is ours to do.
+
+**Two more optional pieces.** For the admin on/off page, install
 [`nextcloud-app/`](./nextcloud-app). For a gateway on the far side of a
 network boundary, [`relay/`](./relay).
 
@@ -171,9 +220,12 @@ Tests live outside `bridge/` and are installed - or removed - separately from
 the daemon; `bridge/` carries the runtime and nothing else. See
 [`tests/README.md`](./tests/README.md).
 
-`test-peer/` is an Asterisk in a container to point the bridge at instead of
-the FritzBox, so that "works with the FritzBox" and "speaks SIP" stay
-distinguishable. It runs only while a test needs it.
+`test-peer/` is an Asterisk in a container to point the bridge at instead
+of whatever gateway a deployment happens to use, so that "works with my
+box" and "speaks SIP" stay distinguishable. The recordings in
+`tests/fixtures/fritzbox/` came off the wire from a FRITZ!Box because that
+is what the first deployment ran against; a second gateway's recordings
+belong beside them under its own name. It runs only while a test needs it.
 
 ### Which of these to run
 
