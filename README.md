@@ -213,11 +213,25 @@ provider's trunk for outside calls.
 is a ten-account template, and [`CONFIG.md`](./docs/CONFIG.md#single-line-vs-multiple-lines)
 lists every setting that can be prefixed.
 
-Two things are missing here. You cannot pick the outgoing number per
-Nextcloud user, because Talk does not tell the bridge who started the
-call. And the accounts are not a pool: a call handed to a busy account
-fails instead of moving to a free one. The first needs a change in Talk.
-The second is ours to fix.
+**You can keep an account off the incoming side.** A call only reaches
+Talk if that account has a dial-in number, a conference number, a default
+room or auto-answer. Leave all four empty and an incoming call just rings
+there, as it did before the bridge existed.
+
+**You cannot keep one off the outgoing side.** Every account offers
+itself to the signaling server for outgoing calls, and the server picks
+which one gets a request. So "these two are for dial-in, those two for
+dial-out" is not something you can set today.
+
+Two more limits follow from that. The accounts are **not a pool**: a
+request handed to a busy account fails instead of moving to a free one.
+And you cannot give a Nextcloud user their **own outgoing number**. Talk
+tells the bridge which conversation a call is for, but not who started
+it, and the number the other side sees is the account's own.
+
+Per conversation would be possible, since the conversation is in the
+request: "the sales conversation always calls out as the sales number".
+That is work in this bridge. Per user needs a change in Talk.
 
 **Two optional parts.** Install [`nextcloud-app/`](./nextcloud-app) for
 the admin page that switches the line on and off. Use

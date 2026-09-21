@@ -50,6 +50,18 @@ set per line as
 have no default in this form and must be set explicitly and distinctly per
 line (unlike the flat single-line form, where they default to 5060/40000).
 
+**Which line takes an incoming call is decided by that line's own
+configuration; which line takes an outgoing one is not.** A line brings
+an inbound call into Talk only if it has `DIALIN_NUMBERS`,
+`CONFERENCE_NUMBERS`, a `DEFAULT_ROOM` or `AUTO_ANSWER` - leave all four
+unset and calls arriving there are left ringing, which is how a line is
+kept out of the inbound path. There is no equivalent for dialout: every
+line opens a `start-dialout` connection unconditionally
+(`talk_client.py`, `_serve_both`), so every line is a candidate and the
+signaling server chooses. Setting `DIALOUT_NUMBER_ALLOWLIST` to
+something that matches nothing does not redirect the request to another
+line - it makes that request fail.
+
 Each line gets its own registration, its own `CallManager` (one call at a
 time, per line), and its own dedicated connection to the Talk signaling
 server - see `docs/CONCEPT.md` point 3 for why a shared connection across
