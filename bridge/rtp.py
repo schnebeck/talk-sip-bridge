@@ -208,7 +208,7 @@ class RtpSession:
         while not self.stop_event.is_set():
             try:
                 data, addr = self.sock.recvfrom(2048)
-            except socket.timeout:
+            except TimeoutError:
                 continue
             except OSError:
                 return

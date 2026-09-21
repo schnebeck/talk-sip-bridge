@@ -51,7 +51,7 @@ class WireFormatTest(unittest.TestCase):
                 lines = header_lines(message)
                 for header in ("Via", "Max-Forwards", "From", "To", "Call-ID", "CSeq",
                                "Content-Length"):
-                    starting = [l for l in lines if l.startswith(header + ": ")]
+                    starting = [line for line in lines if line.startswith(header + ": ")]
                     self.assertEqual(len(starting), 1, f"{header} in {name}")
 
     def test_request_line_names_the_method_and_ends_with_the_version(self):
@@ -185,7 +185,7 @@ class ResponseTest(unittest.TestCase):
     def test_every_via_is_echoed_in_order(self):
         """Dropping one breaks the path back through the relay."""
         message = build_response("200 OK", self.REQUEST)
-        vias = [l[len("Via: "):] for l in header_lines(message) if l.startswith("Via: ")]
+        vias = [line[len("Via: "):] for line in header_lines(message) if line.startswith("Via: ")]
         self.assertEqual(vias, self.REQUEST["via"])
 
     def test_a_single_via_string_is_accepted_too(self):

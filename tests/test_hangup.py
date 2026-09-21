@@ -80,18 +80,18 @@ class InboundHangupTest(unittest.TestCase):
         """The one that was missing. Our tag was invented when the call
         was answered and appeared only in the responses; a BYE without it
         names no dialog the far end knows."""
-        from_line = next(l for l in self.bye.split("\r\n") if l.startswith("From:"))
+        from_line = next(line for line in self.bye.split("\r\n") if line.startswith("From:"))
         self.assertIn(f";tag={OUR_TAG}", from_line)
 
     def test_their_tag_is_in_the_to_header(self):
-        to_line = next(l for l in self.bye.split("\r\n") if l.startswith("To:"))
+        to_line = next(line for line in self.bye.split("\r\n") if line.startswith("To:"))
         self.assertIn(";tag=CALLERTAG", to_line)
 
     def test_the_two_are_not_swapped(self):
         """From is us, To is them - the other way round names a dialog
         that exists nowhere."""
-        from_line = next(l for l in self.bye.split("\r\n") if l.startswith("From:"))
-        to_line = next(l for l in self.bye.split("\r\n") if l.startswith("To:"))
+        from_line = next(line for line in self.bye.split("\r\n") if line.startswith("From:"))
+        to_line = next(line for line in self.bye.split("\r\n") if line.startswith("To:"))
         self.assertIn("sip-phone", from_line)
         self.assertIn("**611", to_line)
 
@@ -126,7 +126,7 @@ class OutboundHangupTest(unittest.TestCase):
     def test_the_cancel_repeats_the_invites_branch(self):
         """A CANCEL that names another branch cancels nothing."""
         self.manager.hangup()
-        via = next(l for l in self.sent().split("\r\n") if l.startswith("Via:"))
+        via = next(line for line in self.sent().split("\r\n") if line.startswith("Via:"))
         self.assertIn(self.attempt.branch, via)
         self.assertIn(f"CSeq: {self.attempt.cseq} CANCEL", self.sent())
 

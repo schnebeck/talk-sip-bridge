@@ -1,0 +1,27 @@
+# Style checking for the daemon and its tests. Python has no Nextcloud
+# standard to adopt - Nextcloud writes PHP and JavaScript, and its
+# published rulesets cover those - so this is PEP 8 with the two
+# deliberate departures below.
+#
+# Checking only: nothing here reformats code. A formatter would rewrite
+# comment-heavy files that are laid out the way they read best, and in
+# this project the comments are half the point.
+
+line-length = 110
+
+[lint]
+# E, W  pycodestyle - layout and whitespace
+# F     pyflakes - names used but not defined, imports never used
+# B     bugbear - the mistakes that pass every other check
+# UP    pyupgrade - constructs this interpreter has a better form for
+select = ["E", "W", "F", "B", "UP"]
+
+# E501 is off because line-length above is already generous and the
+# remaining long lines are log messages and tables, where breaking them
+# costs more than it gains.
+ignore = ["E501"]
+
+[lint.per-file-ignores]
+# The test package puts the code under test on the import path before any
+# test module runs, so its own import of that machinery looks unused.
+"tests/support.py" = ["F401"]

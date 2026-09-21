@@ -60,14 +60,15 @@ ANSWER_TIMEOUT = 120      # a person needs longer than a script
 # CANCEL while the person is still reaching for the browser.
 os.environ.setdefault("BRIDGE_OUTBOUND_CALL_TIMEOUT", str(ANSWER_TIMEOUT + 20))
 
-from config import config, LineConfig
-from sip_call import CallManager
-from sip_registrar import SipRegistrar
-from sip_transport import SipTransport
+# After the environment above, not before it: config reads it at import.
+from config import config, LineConfig                        # noqa: E402
+from sip_call import CallManager                             # noqa: E402
+from sip_registrar import SipRegistrar                       # noqa: E402
+from sip_transport import SipTransport                       # noqa: E402
 # Subscribing to a publisher and finding the bridge's own session are the
 # same job here as in the scripts that already do them.
-from test_audio_quality import SIDEBAND_LIMIT, subscribe_and_record
-from test_audio_over_sip import find_bridge_session
+from test_audio_quality import SIDEBAND_LIMIT, subscribe_and_record  # noqa: E402
+from test_audio_over_sip import find_bridge_session           # noqa: E402
 
 EXTENSION = sys.argv[1] if len(sys.argv) > 1 else "**621"
 OUT_WAV = os.environ.get("OUT_WAV", f"/tmp/human-call-{int(time.time())}.wav")
@@ -244,7 +245,7 @@ def steady_parts(pcm: np.ndarray, rate: int):
         starts.insert(0, 0)
     if loud[-1]:
         ends.append(len(loud) - 1)
-    for start, end in zip(starts, ends):
+    for start, end in zip(starts, ends, strict=True):
         first = start + int(rate * TONE_SETTLING)
         last = end - int(rate * 0.05)
         core = pcm[first:last]

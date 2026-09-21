@@ -99,7 +99,9 @@ class CallManagerToTransportTest(unittest.TestCase):
         shared = methods_of("sip_transport.py", "_SipTransportBase")
         udp = methods_of("sip_transport.py", "UdpSipTransport") | shared
         tcp = methods_of("sip_transport.py", "TcpSipTransport") | shared
-        public = lambda names: {n for n in names if not n.startswith("_")}
+        def public(names):
+            return {n for n in names if not n.startswith("_")}
+
         self.assertEqual(public(udp), public(tcp))
 
 

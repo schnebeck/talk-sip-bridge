@@ -77,7 +77,7 @@ def main():
         media path. systemd stops this service with SIGTERM, so without
         handling it every restart during a call leaves such a stream
         behind."""
-        for registrar, call_manager in lines.values():
+        for _registrar, call_manager in lines.values():
             try:
                 call_manager.hangup()
             except Exception as e:

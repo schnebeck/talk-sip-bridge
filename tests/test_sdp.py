@@ -13,7 +13,7 @@ class OfferTest(unittest.TestCase):
         """Both halves of G.711 are offered, not just one: which of them a
         registrar speaks is regional, and some speak only one."""
         sdp, host, port = offer_sdp(StubLine(), 40000)
-        media = [l for l in sdp.split("\r\n") if l.startswith("m=audio")][0]
+        media = [line for line in sdp.split("\r\n") if line.startswith("m=audio")][0]
         self.assertEqual(media,
                          f"m=audio 40000 RTP/AVP {PT_G722} {PT_PCMA} {PT_PCMU} {PT_TELEPHONE_EVENT}")
         self.assertIn(f"a=rtpmap:{PT_G722} G722/8000", sdp)
@@ -47,7 +47,7 @@ class OfferTest(unittest.TestCase):
 class AnswerTest(unittest.TestCase):
     def test_answer_names_exactly_one_codec(self):
         sdp, _, _ = answer_sdp(StubLine(), 40000, PT_G722)
-        media = [l for l in sdp.split("\r\n") if l.startswith("m=audio")][0]
+        media = [line for line in sdp.split("\r\n") if line.startswith("m=audio")][0]
         self.assertEqual(media, f"m=audio 40000 RTP/AVP {PT_G722}")
         self.assertIn(f"a=rtpmap:{PT_G722} G722/8000", sdp)
         self.assertNotIn("PCMU", sdp)
@@ -68,14 +68,14 @@ class TelephoneEventTest(unittest.TestCase):
         """Their number, not ours: it is the only one they will send
         events under."""
         sdp, _, _ = answer_sdp(StubLine(), 40000, PT_G722, dtmf_payload_type=96)
-        media = [l for l in sdp.split("\r\n") if l.startswith("m=audio")][0]
+        media = [line for line in sdp.split("\r\n") if line.startswith("m=audio")][0]
         self.assertEqual(media, f"m=audio 40000 RTP/AVP {PT_G722} 96")
         self.assertIn("a=rtpmap:96 telephone-event/8000", sdp)
 
     def test_an_answer_claims_no_events_that_were_not_offered(self):
         sdp, _, _ = answer_sdp(StubLine(), 40000, PT_G722)
         self.assertNotIn("telephone-event", sdp)
-        self.assertEqual([l for l in sdp.split("\r\n") if l.startswith("m=audio")][0],
+        self.assertEqual([line for line in sdp.split("\r\n") if line.startswith("m=audio")][0],
                          f"m=audio 40000 RTP/AVP {PT_G722}")
 
     def test_the_number_is_read_from_the_offer(self):

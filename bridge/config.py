@@ -42,7 +42,9 @@ def _seconds(name: str, default: float) -> float:
     try:
         value = float(raw)
     except ValueError:
-        raise RuntimeError(f"{name} must be a number of seconds, not {raw!r}")
+        # from None: what float() says about the string adds nothing to
+        # what this message already says about it.
+        raise RuntimeError(f"{name} must be a number of seconds, not {raw!r}") from None
     if value <= 0:
         raise RuntimeError(f"{name} must be greater than zero, not {value}")
     return value
@@ -156,7 +158,8 @@ class LineConfig:
         try:
             re.compile(self.conference_callers)
         except re.error as e:
-            raise RuntimeError(f"{env_prefix}CONFERENCE_CALLERS is not a valid regex: {e}")
+            raise RuntimeError(
+                f"{env_prefix}CONFERENCE_CALLERS is not a valid regex: {e}") from e
 
         both = sorted(set(self.conference_numbers) & set(self.dialin_numbers))
         if both:

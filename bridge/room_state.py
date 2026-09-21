@@ -89,11 +89,10 @@ class RoomCallState:
         self._flags = current
         if previous is None:
             return set(), set()
-        in_call = lambda flags: bool(flags & FLAG_IN_CALL)
         entered = {s for s, now in current.items()
-                   if in_call(now) and not in_call(previous.get(s, 0))}
+                   if now & FLAG_IN_CALL and not previous.get(s, 0) & FLAG_IN_CALL}
         left = {s for s, was in previous.items()
-                if in_call(was) and not in_call(current.get(s, 0))}
+                if was & FLAG_IN_CALL and not current.get(s, 0) & FLAG_IN_CALL}
         return entered, left
 
     def accepted_by(self, entered: set, ours: set):

@@ -58,7 +58,7 @@ class RecordingOpener:
 
     @property
     def calls(self):
-        return [(r["method"], p) for r, p in zip(self.requests, self.paths)]
+        return [(r["method"], p) for r, p in zip(self.requests, self.paths, strict=True)]
 
 
 def join_reply(session_id="session-1"):

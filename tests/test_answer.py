@@ -129,10 +129,10 @@ class AnswerTest(unittest.TestCase):
     def test_a_reinvite_keeps_the_tag_the_call_was_answered_with(self):
         """A different tag is a different dialog to the far end."""
         self.answer()
-        first = [l for l in self.manager.transport.sent[-1].split("\r\n") if l.startswith("To:")][0]
+        first = [line for line in self.manager.transport.sent[-1].split("\r\n") if line.startswith("To:")][0]
         headers = parse_sip_headers(invite())
         self.manager.handle_invite(invite(), headers, headers["call-id"], ("192.0.2.1", 5060))
-        second = [l for l in self.manager.transport.sent[-1].split("\r\n") if l.startswith("To:")][0]
+        second = [line for line in self.manager.transport.sent[-1].split("\r\n") if line.startswith("To:")][0]
         self.assertEqual(first.split("tag=")[1], second.split("tag=")[1])
 
     def test_a_reinvite_that_moves_the_audio_is_followed(self):

@@ -92,7 +92,7 @@ def receive(ip: str, port: int, relay: tuple, seconds: float, report: str):
     while time.monotonic() < deadline:
         try:
             data, _ = sock.recvfrom(2048)
-        except socket.timeout:
+        except TimeoutError:
             continue
         if len(data) < 12:
             continue
@@ -100,9 +100,9 @@ def receive(ip: str, port: int, relay: tuple, seconds: float, report: str):
         sequences.append(struct.unpack("!H", data[2:4])[0])
     sock.close()
 
-    gaps = [b - a for a, b in zip(arrivals, arrivals[1:])]
+    gaps = [b - a for a, b in zip(arrivals, arrivals[1:], strict=False)]
     lost = 0
-    for previous, current in zip(sequences, sequences[1:]):
+    for previous, current in zip(sequences, sequences[1:], strict=False):
         step = (current - previous) & 0xFFFF
         if step > 1:
             lost += step - 1
@@ -117,7 +117,7 @@ def receive(ip: str, port: int, relay: tuple, seconds: float, report: str):
     }
     late = [arrivals[i + 1] for i, g in enumerate(gaps) if g > 1.5 * PACKET_SECONDS]
     if len(late) > 1:
-        spacing = [b - a for a, b in zip(late, late[1:])]
+        spacing = [b - a for a, b in zip(late, late[1:], strict=False)]
         result["long_gaps_every_s"] = round(sum(spacing) / len(spacing), 2)
     if report:
         with open(report, "w") as f:

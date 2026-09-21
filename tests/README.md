@@ -15,10 +15,14 @@ independent of each other.
 
 No phone gateway, no signaling server, no network, no sockets.
 
-`test_static.py` needs one thing the others do not - `pyflakes`, from
+`test_static.py` needs one thing the others do not - `ruff`, from
 `tests/requirements.txt` - and skips itself without it. It is the only
 check that sees a name missing *inside* a function, which is a module
-that imports perfectly and fails the moment that line runs.
+that imports perfectly and fails the moment that line runs; the rules
+it applies are in `ruff.toml` at the top of the repository. It also
+covers `tests/hardware/`, which the suite never runs, so it is what
+notices when a refactor leaves one of those scripts calling a method
+that moved.
 
 ```
 python3 -m unittest discover -s tests -t .                       # in a checkout
@@ -59,7 +63,7 @@ BRIDGE_CODE=/opt/talk-sip-bridge \
 | `test_sip_bridge_api.py` | Talk's SIP endpoints as this bridge calls them, and which number reaches which conversation |
 | `test_empty_room.py` | A room that looks empty for a moment - saving a microphone setting is a leave and a join, not the end of a conversation |
 | `test_late_joiner.py` | Somebody joining after the phone is already publishing - the dial-in case, where the caller reaches an empty room |
-| `test_static.py` | Names used but never defined, and imports never used - what an importable module still gets wrong inside a function |
+| `test_static.py` | What the suite cannot see: names used but never defined, imports never used, and the layout rules in `ruff.toml` |
 
 Tests that need the media stack (numpy, av, aiortc) skip themselves where it
 is absent, so the suite is meaningful on a bare interpreter and complete in

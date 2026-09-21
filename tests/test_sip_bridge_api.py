@@ -46,6 +46,10 @@ class RecordingOpener:
         return FakeResponse(json.dumps(self.payload or {"ocs": {"data": {}}}).encode())
 
 
+# A default that "no answer at all" can be told apart from.
+UNSET = object()
+
+
 def room(token="abc123", actor_type="guests", actor_id="guest-hash"):
     return {"ocs": {"data": {"token": token, "actorType": actor_type,
                              "actorId": actor_id, "displayName": CALLER}}}
@@ -237,14 +241,17 @@ class InboundRoutingTest(unittest.TestCase):
     as the bridge's, so this decision is the whole safety property: an
     unmapped number must never take the dial-in path, which answers."""
 
-    def route(self, line, dialled, *, secret="sip-secret", room=room()):
+    def route(self, line, dialled, *, secret="sip-secret", answer=UNSET):
+        """`answer` is what Nextcloud replies with; UNSET means the usual
+        one, None means it declined to place the caller."""
         import asyncio
         import inbound_call
+        answer = room() if answer is UNSET else answer
         asked = []
 
         def fake_dial_in(number, caller, **kw):
             asked.append((number, caller))
-            return room["ocs"]["data"] if room else None
+            return answer["ocs"]["data"] if answer else None
 
         # The secret is patched on the configuration inbound_call is
         # holding, not put in the environment: the module bound that object
@@ -280,7 +287,7 @@ class InboundRoutingTest(unittest.TestCase):
 
     def test_a_number_nextcloud_will_not_place_falls_back_to_the_room(self):
         line = StubLine(dialin_numbers={"**622": "4930622"}, default_room_token="standing")
-        self.assertEqual(self.route(line, "**622", room=None)[0], ("standing", None))
+        self.assertEqual(self.route(line, "**622", answer=None)[0], ("standing", None))
 
 
 if __name__ == "__main__":

@@ -2,4 +2,4 @@
 # this is absent. Deliberately not in bridge/requirements.txt: nothing
 # the daemon runs needs it, and a deployment venv should carry nothing
 # it does not run.
-pyflakes
+ruff

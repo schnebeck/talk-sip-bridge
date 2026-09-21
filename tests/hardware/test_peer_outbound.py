@@ -72,12 +72,12 @@ registrar = SipRegistrar(lambda: holder["t"], line)
 holder["t"] = SipTransport(manager, line)
 manager.transport = holder["t"]
 
-print(f"\n== registration ==")
+print("\n== registration ==")
 record("registers against the peer", registrar.turn_on(), registrar.last_error or "")
 if not registrar.registered:
     sys.exit(1)
 
-print(f"\n== outbound to 100 (answers and echoes) ==")
+print("\n== outbound to 100 (answers and echoes) ==")
 started = manager.dial("100")
 record("dial accepted", "call_id" in started, started.get("error", ""))
 event = wait_for("connected", 15)
@@ -127,14 +127,14 @@ if event:
     record("hangup ends the call", wait_for("ended", 5) is not None)
 
 time.sleep(1)
-print(f"\n== outbound to 500 (rejects immediately) ==")
+print("\n== outbound to 500 (rejects immediately) ==")
 manager.dial("500")
 event = wait_for("failed", 15)
 record("busy is reported as a failure", event is not None,
        event[1].get("reason", "") if event else "no callback")
 
 time.sleep(1)
-print(f"\n== outbound to 400 (never answers) ==")
+print("\n== outbound to 400 (never answers) ==")
 manager.dial("400")
 event = wait_for("failed", 40)
 record("unanswered call gives up", event is not None,
