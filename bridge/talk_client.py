@@ -213,6 +213,15 @@ class TalkClient:
         with self._call_sessions_lock:
             self._call_sessions[call_id] = Call(sip_call_id=call_id, kind=DIALOUT,
                                                 number=number, roomid=roomid)
+        # In the room from the start, not only once the call connects.
+        # A dialout that is still ringing is ended in Talk like any other
+        # call, and the room is where that is announced - measured, a
+        # phone went on ringing for the rest of this bridge's own
+        # timeout because nothing here was listening.
+        # Alongside, not before the reply: the server wants "accepted"
+        # within a fixed timeout, and joining waits for a confirmation.
+        asyncio.ensure_future(self._join_room_for_publishing(roomid))
+
         # The signaling server expects an "accepted" status synchronously
         # (within a fixed timeout) - actual ring/connect progress is
         # reported later via separate, unsolicited status updates.
@@ -314,8 +323,13 @@ class TalkClient:
             active_call_id = None
             waiting_call_id = None
             waiting_entry = None
+            ringing_dialout_id = None
             for call_id, entry in self._call_sessions.items():
                 ours |= entry.own_session_ids()
+                if entry.kind == DIALOUT and not entry.is_publishing:
+                    # Placed, not answered yet: there is no media and no
+                    # virtual session, but there is a phone ringing.
+                    ringing_dialout_id = call_id
                 if entry.is_publishing:
                     active_call_id = call_id
                 elif entry.waiting_for_accept:
@@ -326,7 +340,7 @@ class TalkClient:
             # announced when the call started.
             await self._announce_phone_state(active_call_id, peers=entered)
 
-        if active_call_id is None and waiting_call_id is None:
+        if active_call_id is None and waiting_call_id is None and ringing_dialout_id is None:
             return
 
         if waiting_call_id is not None:
@@ -365,6 +379,11 @@ class TalkClient:
         if update.get("all"):
             if is_room_wide_call_end(update):
                 self._hangup_sip("Room call ended - ending SIP side")
+            return
+
+        if ringing_dialout_id is not None and left and not self._room_call.anyone_in_call_besides(ours):
+            # The last person left while the phone was still ringing.
+            self._hangup_sip("Nobody is left in the call - withdrawing the outbound call")
             return
 
         if not left:

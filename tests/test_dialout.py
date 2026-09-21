@@ -136,8 +136,20 @@ class ReplyShapeTest(unittest.TestCase):
         self.assertNotIn("status", dialout)
 
     def test_exactly_one_reply_is_sent(self):
+        """One reply, whatever else goes out alongside it - a second one
+        for the same request is a protocol error."""
         _, client = self.reply_for()
-        self.assertEqual(len(client.ws.sent), 1)
+        self.assertEqual(len(client.ws.replies), 1)
+
+    def test_the_room_is_joined_while_the_call_is_still_ringing(self):
+        """Ending a dialout in Talk before anyone answers is announced in
+        the room, and a bridge that is not in it hears nothing: measured,
+        a phone went on ringing for the rest of the outbound timeout
+        because joining only happened once a call connected."""
+        _, client = self.reply_for()
+        joins = [m for m in client.ws.sent if m.get("type") == "room"]
+        self.assertEqual(len(joins), 1, "the room was not joined while it rang")
+        self.assertEqual(joins[0]["room"]["roomid"], "room-token")
 
 
 @needs_media_stack
