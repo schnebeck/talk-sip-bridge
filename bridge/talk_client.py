@@ -17,9 +17,6 @@ plain worker threads via asyncio.run_coroutine_threadsafe.
 import asyncio
 import json
 import threading
-import traceback
-
-import websockets
 
 import talk_messages
 import talk_ocs
@@ -31,29 +28,11 @@ from human_audio import HumanAudio
 from inbound_call import InboundCalls, is_conference_call
 from phone_participant import PhoneParticipant
 from room_presence import RoomPresence
+import background
+import signaling
 from room_state import RoomCallState
 
 
-
-
-def _run_coro_logged(coro, loop, label: str):
-    """asyncio.run_coroutine_threadsafe() returns a concurrent.futures.Future
-    whose exception is silently dropped unless something calls .result() on
-    it - unlike a plain asyncio Task, it does NOT log on garbage collection.
-    Every sip_call.CallManager callback in this module schedules its async
-    work this way from a plain worker thread, so without this wrapper any
-    exception anywhere in that coroutine (offer/answer negotiation, codec
-    setup, ...) simply vanishes with zero trace, no matter how bad."""
-    future = asyncio.run_coroutine_threadsafe(coro, loop)
-
-    def _log_if_failed(f):
-        exc = f.exception()
-        if exc is not None:
-            print(f"[talk] ERROR in {label}: {exc!r}")
-            traceback.print_exception(type(exc), exc, exc.__traceback__)
-
-    future.add_done_callback(_log_if_failed)
-    return future
 
 
 class TalkClient:
@@ -89,7 +68,7 @@ class TalkClient:
         the loop out of the callers' hands, which is worth something:
         handing the wrong one over is silent, and the work simply never
         runs."""
-        return _run_coro_logged(coro, self.loop, label)
+        return background.run_logged(coro, self.loop, label)
 
     def run_forever(self):
         self.loop = asyncio.new_event_loop()
@@ -107,51 +86,11 @@ class TalkClient:
         depends on the other being up: a dialout can be refused while the
         room side is reconnecting, and a call in progress is not
         disturbed by the dialout side dropping."""
-        await asyncio.gather(self._supervise("room", self._serve_room),
-                             self._supervise("dialout", self._serve_dialout))
+        await asyncio.gather(signaling.supervise("room", self._serve_room),
+                             signaling.supervise("dialout", self._serve_dialout))
 
-    async def _supervise(self, role: str, serve):
-        """Keeps one connection's loop alive whatever it does.
 
-        `_serve` loops forever, so nothing should arrive here - but a
-        connection that quietly stops is the worst failure this bridge
-        has: calls keep being answered and none of them reaches Talk,
-        with nothing in the journal to say why. Restarting is always
-        better than the two of them ending together, which is what a
-        bare `gather` would do."""
-        while True:
-            try:
-                await serve()
-                print(f"[talk] ERROR the {role} connection loop ended by itself - restarting")
-            except Exception as e:
-                print(f"[talk] ERROR the {role} connection loop failed: {e!r} - restarting")
-                traceback.print_exc()
-            await asyncio.sleep(config.sip_response_timeout)
 
-    async def _serve(self, role: str, features: list, settled, handle):
-        while True:
-            try:
-                async with websockets.connect(config.ws_url) as ws:
-                    settled(ws, await self._hello(ws, role, features))
-                    await self._read(role, ws, handle)
-            except Exception as e:
-                print(f"[talk] {role} connection lost ({e!r}), reconnecting ...")
-            settled(None, None)
-            await asyncio.sleep(config.sip_response_timeout)
-
-    async def _read(self, role: str, ws, handle):
-        """One message at a time, each costing only itself.
-
-        A message that cannot be handled must not reach the connection:
-        letting it through would reconnect, and a reconnect during a call
-        takes that call's signaling down over a message that had nothing
-        to do with it."""
-        async for raw in ws:
-            try:
-                await handle(json.loads(raw))
-            except Exception as e:
-                print(f"[talk] ERROR handling a {role} message: {e!r}")
-                traceback.print_exc()
 
     async def _serve_room(self):
         def settled(ws, sessionid):
@@ -161,23 +100,16 @@ class TalkClient:
             self._room_call = RoomCallState()
             self._room_roster = {}
 
-        await self._serve("room", talk_messages.ROOM_FEATURES, settled, self._handle_room_message)
+        await signaling.serve("room", talk_messages.ROOM_FEATURES, settled,
+                              self._handle_room_message)
 
     async def _serve_dialout(self):
         def settled(ws, _sessionid):
             self.dialout_ws = ws
 
-        await self._serve("dialout", talk_messages.DIALOUT_FEATURES, settled,
-                          self.dialout.handle_message)
+        await signaling.serve("dialout", talk_messages.DIALOUT_FEATURES, settled,
+                              self.dialout.handle_message)
 
-    async def _hello(self, ws, role: str, features: list) -> str:
-        await ws.send(json.dumps(
-            talk_messages.hello(config.internal_secret, config.backend_url, features)))
-        await ws.recv()  # welcome banner
-        resp = json.loads(await ws.recv())
-        sessionid = resp["hello"]["sessionid"]
-        print(f"[talk] {role} connection up as internal client, session {sessionid}")
-        return sessionid
 
 
     # -- incoming messages from the signaling server ---------------------
@@ -248,42 +180,7 @@ class TalkClient:
 
 
 
-    # -- the room this bridge is in --------------------------------------
-    async def _join_room_for_publishing(self, roomid: str) -> None:
-        """Puts the room connection in the room. Two things need it, and
-        they happen at different moments: publishing the call's audio -
-        being in the room is what makes the server route this session's
-        self-addressed offer to the room's Janus, which addsession alone
-        does not - and hearing what the room does, which has to start
-        while the phone is still ringing.
 
-        Only ever the room connection: this costs a connection its
-        dialout eligibility for good (see docs/CONCEPT.md point 3)."""
-        if self.ws is None:
-            print(f"[talk] No room connection to join {roomid} with")
-            return
-        self._room_joined_event.clear()
-        await self.ws.send(json.dumps(talk_messages.join_room(roomid)))
-        try:
-            await asyncio.wait_for(self._room_joined_event.wait(), timeout=5)
-        except asyncio.TimeoutError:
-            print(f"[talk] Warning: no room-join confirmation for {roomid} within 5s, carrying on")
-
-    async def _leave_room(self) -> None:
-        """Leaves whatever room the room connection is in, once the call
-        it was there for is over. Staying would leave the bridge counted
-        among the room's sessions long after the call - and a room that
-        still holds a session is a room Nextcloud thinks somebody is
-        in."""
-        if self.ws is None:
-            return
-        try:
-            await self.ws.send(json.dumps(talk_messages.leave_room()))
-        except Exception as e:
-            print(f"[talk] Could not leave the room: {e!r}")
-            return
-        self._room_call = RoomCallState()
-        self._room_roster = {}
 
 
 
@@ -327,7 +224,7 @@ class TalkClient:
             line = self.call_manager.line
             await asyncio.to_thread(talk_ocs.end_room_call, roomid,
                                     line.notify_user, line.notify_app_password)
-        await self._leave_room()
+        await self.presence.leave()
 
     def _entry_roomid(self, call_id: str) -> str:
         # Dialout calls carry their own room id, learned from the request

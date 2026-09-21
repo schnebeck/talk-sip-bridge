@@ -16,8 +16,11 @@ dialout from a room", "Add/update/remove virtual session"). Everything marked
 signaling server's Go source or from observed server behavior.
 
 This document describes the interface. For why this bridge uses it the way it
-does, see [`CONCEPT.md`](./CONCEPT.md); the authoritative implementation is
-`bridge/talk_client.py`.
+does, see [`CONCEPT.md`](./CONCEPT.md). The implementation is split by job:
+`talk_client.py` holds the two connections and what they route to,
+`signaling.py` keeps them up, and each half of a call has its own module -
+`inbound_call.py`, `dialout.py`, `call_audio.py`, `human_audio.py`,
+`phone_participant.py`, `room_presence.py`.
 
 ## Endpoints
 

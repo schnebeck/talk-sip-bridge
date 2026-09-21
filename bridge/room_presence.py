@@ -12,12 +12,14 @@ change (see room_state.RoomCallState). The server keeps listing
 sessions whose clients are long gone, and reading state cannot tell
 that from somebody picking up.
 """
+import asyncio
+import json
 import traceback
 
 import talk_messages
 
 from call import DIALOUT
-from room_state import is_room_wide_call_end
+from room_state import RoomCallState, is_room_wide_call_end
 
 
 class RoomPresence:
@@ -140,3 +142,39 @@ class RoomPresence:
             return
         if not self.client._room_call.anyone_in_call_besides(ours):
             self.client._hangup_sip(f"Everyone but this bridge left the call ({len(left)} session(s)) - ending SIP side")
+
+    async def join(self, roomid: str) -> None:
+        """Puts the room connection in the room. Two things need it, and
+        they happen at different moments: publishing the call's audio -
+        being in the room is what makes the server route this session's
+        self-addressed offer to the room's Janus, which addsession alone
+        does not - and hearing what the room does, which has to start
+        while the phone is still ringing.
+
+        Only ever the room connection: this costs a connection its
+        dialout eligibility for good (see docs/CONCEPT.md point 3)."""
+        if self.client.ws is None:
+            print(f"[talk] No room connection to join {roomid} with")
+            return
+        self.client._room_joined_event.clear()
+        await self.client.ws.send(json.dumps(talk_messages.join_room(roomid)))
+        try:
+            await asyncio.wait_for(self.client._room_joined_event.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            print(f"[talk] Warning: no room-join confirmation for {roomid} within 5s, carrying on")
+
+    async def leave(self) -> None:
+        """Leaves whatever room the room connection is in, once the call
+        it was there for is over. Staying would leave the bridge counted
+        among the room's sessions long after the call - and a room that
+        still holds a session is a room Nextcloud thinks somebody is
+        in."""
+        if self.client.ws is None:
+            return
+        try:
+            await self.client.ws.send(json.dumps(talk_messages.leave_room()))
+        except Exception as e:
+            print(f"[talk] Could not leave the room: {e!r}")
+            return
+        self.client._room_call = RoomCallState()
+        self.client._room_roster = {}

@@ -12,6 +12,7 @@ import time
 import traceback
 
 from dtmf import EVENT_DIGITS, DigitGuard, DtmfEvents, parse_event
+from dtmf_capture import DtmfCapture
 from dtmf_inband import InbandDtmf
 from g711 import alaw_to_linear, linear_to_alaw, linear_to_ulaw, ulaw_to_linear
 from g722 import G722Decoder, G722Encoder
@@ -99,9 +100,10 @@ class RtpSession:
         # tones it really produces can be measured afterwards - which is
         # the only way to tell "the detector missed it" from "it was
         # never sent". Capped, because a call has no length limit.
-        self._capture = [] if config.dtmf_debug else None
-        self._capture_name = f"{call_id or 'call'}"
         self.set_payload_type(payload_type)
+        # After the codec: a capture is written at the sample rate the
+        # call settled on, which set_payload_type is what decides.
+        self._capture = DtmfCapture(call_id, self.sample_rate)
         self.recv_thread = threading.Thread(target=self._recv_loop, daemon=True)
         self.recv_thread.start()
 
@@ -268,8 +270,7 @@ class RtpSession:
                 if config.dtmf_debug:
                     print(f"[rtp] inband heard {digit}")
                 self.report_digit(digit)
-        if self._capture is not None and len(self._capture) < 3000:
-            self._capture.append(pcm)
+        self._capture.add(pcm)
         self.recv_queue.put(pcm)
 
     def report_digit(self, digit: str):
@@ -297,20 +298,5 @@ class RtpSession:
         self.sock.close()
         if self.recv_thread is not threading.current_thread():
             self.recv_thread.join(timeout=2.0)
-        self._write_capture()
+        self._capture.write()
 
-    def _write_capture(self):
-        if not self._capture:
-            return
-        import wave
-        path = f"{config.state_dir or '/tmp'}/dtmf-{self._capture_name.replace('@', '-')}.wav"
-        try:
-            with wave.open(path, "wb") as out:
-                out.setnchannels(1)
-                out.setsampwidth(2)
-                out.setframerate(self.sample_rate)
-                out.writeframes(np.concatenate(self._capture).astype(np.int16).tobytes())
-            print(f"[rtp] What the far end sent: {path}")
-        except Exception as e:
-            print(f"[rtp] Could not write the capture: {e!r}")
-        self._capture = []

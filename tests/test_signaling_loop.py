@@ -19,6 +19,7 @@ import unittest
 from tests.support import needs_media_stack
 
 try:
+    import signaling
     import talk_client
 except ImportError:  # no media stack; every test here is skipped
     talk_client = None
@@ -38,13 +39,9 @@ class FakeSocket:
         return messages()
 
 
-def client():
-    return talk_client.TalkClient(call_manager=None)
-
-
 def read(socket, handle):
     return asyncio.new_event_loop().run_until_complete(
-        client()._read("room", socket, handle))
+        signaling.read("room", socket, handle))
 
 
 @needs_media_stack
@@ -92,7 +89,6 @@ class SupervisorTest(unittest.TestCase):
     def run_supervisor(self, serve, rounds=3):
         """Runs the supervisor until `serve` has been called `rounds`
         times, with the reconnect wait taken out of the way."""
-        c = client()
         calls = []
         done = asyncio.Event()
 
@@ -103,19 +99,19 @@ class SupervisorTest(unittest.TestCase):
             return await serve()
 
         async def scenario():
-            task = asyncio.ensure_future(c._supervise("room", counted))
+            task = asyncio.ensure_future(signaling.supervise("room", counted))
             try:
                 await asyncio.wait_for(done.wait(), timeout=5)
             finally:
                 task.cancel()
 
         loop = asyncio.new_event_loop()
-        original = talk_client.config.sip_response_timeout
-        talk_client.config.sip_response_timeout = 0
+        original = signaling.config.sip_response_timeout
+        signaling.config.sip_response_timeout = 0
         try:
             loop.run_until_complete(scenario())
         finally:
-            talk_client.config.sip_response_timeout = original
+            signaling.config.sip_response_timeout = original
             loop.close()
         return calls
 

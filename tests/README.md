@@ -15,6 +15,11 @@ independent of each other.
 
 No phone gateway, no signaling server, no network, no sockets.
 
+`test_static.py` needs one thing the others do not - `pyflakes`, from
+`tests/requirements.txt` - and skips itself without it. It is the only
+check that sees a name missing *inside* a function, which is a module
+that imports perfectly and fails the moment that line runs.
+
 ```
 python3 -m unittest discover -s tests -t .                       # in a checkout
 BRIDGE_CODE=/opt/talk-sip-bridge \
@@ -43,6 +48,16 @@ BRIDGE_CODE=/opt/talk-sip-bridge \
 | `test_call_media.py` | Which connection a media message belongs to, and teardown of both |
 | `test_ws_dump.py` | Reading signaling messages back out of a capture - masked frames, split frames, two in one packet |
 | `test_media.py` | Resampling between the call's rate and Talk's 48kHz |
+| `test_answer.py` | Answering an inbound call: the codec chosen, and where the caller's audio is actually sent |
+| `test_hangup.py` | Every way a call can end, in both directions - and which SIP message each of them is |
+| `test_subscription.py` | The negotiation for another participant's audio, transition by transition |
+| `test_subscription_properties.py` | The same machine against thousands of sequences nobody wrote down |
+| `test_dialout_teardown.py` | A dialout that never connected: what has to be taken back, and on which connection |
+| `test_phone_participant.py` | What the bridge announces about a call it is carrying - which name, to whom, with which state |
+| `test_signaling_loop.py` | The two connections staying up: a message that cannot be handled costs only itself, a loop that ends is started again |
+| `test_resilience.py` | The same promise for the media receiver and the registration keepalive, where a dead thread is invisible from everywhere else |
+| `test_sip_bridge_api.py` | Talk's SIP endpoints as this bridge calls them, and which number reaches which conversation |
+| `test_static.py` | Names used but never defined, and imports never used - what an importable module still gets wrong inside a function |
 
 Tests that need the media stack (numpy, av, aiortc) skip themselves where it
 is absent, so the suite is meaningful on a bare interpreter and complete in

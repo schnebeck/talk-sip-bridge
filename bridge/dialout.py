@@ -86,7 +86,7 @@ class Dialout:
         # never takes a dialout, so being in a room costs it nothing.
         # Alongside the reply, not before it: waiting for the join
         # confirmation would hold up an answer the server times out on.
-        asyncio.ensure_future(self.client._join_room_for_publishing(roomid))
+        asyncio.ensure_future(self.client.presence.join(roomid))
 
     async def reply(self, request_id: str, roomid: str, *, call_id: str = None, status: str = None, error: str = None):
         """Always on the dialout connection: the server matches a reply

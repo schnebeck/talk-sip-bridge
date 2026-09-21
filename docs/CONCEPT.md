@@ -112,7 +112,7 @@ the daemon side is verified.
    (`call_media.py`): a publisher carrying the phone into the room, and a
    subscriber carrying the room back, relaying decoded frames into the RTP
    session at the call's negotiated rate. It knows peer connections and not
-   the signaling protocol - what goes on the wire stays in `talk_client.py`,
+   the signaling protocol - what goes on the wire stays on the Talk side,
    and reaches the media as SDP and candidates.
 
    Who to subscribe to is the session id that accept detection saw entering the

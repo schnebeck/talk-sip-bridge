@@ -74,7 +74,7 @@ class CallAudio:
             self.client.own_sessionid, sip_call_id, sdp, display_name)))
 
     async def publish(self, sip_call_id: str, rtp_session, roomid: str, number: str, human_sessionid_hint: str = None):
-        await self.client._join_room_for_publishing(roomid)
+        await self.client.presence.join(roomid)
         if not self.client._call_still_running(sip_call_id):
             print(f"[talk] {sip_call_id} ended before publishing started - nothing to publish")
             return
