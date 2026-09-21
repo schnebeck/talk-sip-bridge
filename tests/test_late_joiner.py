@@ -22,6 +22,7 @@ try:
     import human_audio
     import talk_client
     from call import INBOUND, Call
+    from room_state import FLAG_IN_CALL, FLAG_WITH_AUDIO, RoomCallState
 except ImportError:  # no media stack; every test here is skipped
     talk_client = None
 
@@ -29,7 +30,14 @@ HUMAN = "8Td-GS0EtQpgYvlozxrA8UPtN6nLyoVqimLy0fsP4fKEIyRKc22F"
 CALL = "dialin-1"
 
 
-def client_with_call(*, publishing=True, listening_to=None, roster=None):
+def in_call(**flags):
+    """A room whose sessions are in the call with the given flags."""
+    state = RoomCallState()
+    state.apply({"users": [{"sessionId": s, "inCall": f} for s, f in flags.items()]})
+    return state
+
+
+def client_with_call(*, publishing=True, listening_to=None, roster=None, room=None):
     client = talk_client.TalkClient.__new__(talk_client.TalkClient)
     client._call_sessions_lock = threading.Lock()
     entry = Call(sip_call_id=CALL, kind=INBOUND, number="**620", roomid="room-token")
@@ -37,6 +45,7 @@ def client_with_call(*, publishing=True, listening_to=None, roster=None):
     type(entry).is_publishing = property(lambda self: publishing)
     client._call_sessions = {CALL: entry}
     client._room_roster = roster if roster is not None else {HUMAN: {"is_human": True}}
+    client._room_call = room if room is not None else in_call(**{HUMAN: FLAG_IN_CALL | FLAG_WITH_AUDIO})
     return client
 
 
@@ -89,6 +98,45 @@ class LateJoinerTest(unittest.TestCase):
         client = client_with_call(roster={"phone-1": {"is_human": False},
                                           HUMAN: {"is_human": True}})
         self.assertEqual(catch_up(client, {"phone-1", HUMAN}), [(CALL, HUMAN)])
+
+
+@needs_media_stack
+class WhoIsWorthListeningToTest(unittest.TestCase):
+    """Several people can arrive in one event. A participant whose
+    permissions do not let them speak joins without the audio flag, and
+    subscribing to them spends the attempts on a stream that will never
+    exist."""
+
+    OTHER = "other-person-session"
+
+    def client(self, **flags):
+        return client_with_call(
+            roster={self.OTHER: {"is_human": True}, HUMAN: {"is_human": True}},
+            room=in_call(**flags))
+
+    def test_the_one_carrying_audio_is_preferred(self):
+        client = self.client(**{self.OTHER: FLAG_IN_CALL,
+                                HUMAN: FLAG_IN_CALL | FLAG_WITH_AUDIO})
+        self.assertEqual(catch_up(client, {self.OTHER, HUMAN}), [(CALL, HUMAN)])
+
+    def test_somebody_silent_is_still_better_than_nobody(self):
+        """The flags are the server's word, and this bridge has been
+        wrong about them before - so a participant without the flag is
+        the fallback, not a reason to give up."""
+        client = self.client(**{self.OTHER: FLAG_IN_CALL})
+        self.assertEqual(catch_up(client, {self.OTHER}), [(CALL, self.OTHER)])
+
+    def test_the_choice_does_not_depend_on_set_ordering(self):
+        """Two arriving together must resolve the same way twice, or a
+        retry picks a different peer than the attempt before it."""
+        flags = {self.OTHER: FLAG_IN_CALL, HUMAN: FLAG_IN_CALL}
+        picks = {catch_up(self.client(**flags), {self.OTHER, HUMAN})[0][1]
+                 for _ in range(10)}
+        self.assertEqual(len(picks), 1, f"picked {picks}")
+
+    def test_a_room_that_knows_nothing_yet_still_yields_somebody(self):
+        client = client_with_call(room=RoomCallState())
+        self.assertEqual(catch_up(client, {HUMAN}), [(CALL, HUMAN)])
 
 
 if __name__ == "__main__":

@@ -17,13 +17,21 @@ here takes the set of session ids that belong to the bridge.
 # The in-call bit the signaling server sets; the remaining bits say what
 # media a session carries.
 FLAG_IN_CALL = 1
+FLAG_WITH_AUDIO = 2
+
+
+def as_flags(raw) -> int:
+    """The flags of one entry, or none at all. The field is missing as
+    often as it is present, and arrives as a string as often as a
+    number."""
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 0
 
 
 def has_in_call_flag(raw) -> bool:
-    try:
-        return bool(int(raw) & FLAG_IN_CALL)
-    except (TypeError, ValueError):
-        return False
+    return bool(as_flags(raw) & FLAG_IN_CALL)
 
 
 def is_room_wide_call_end(update: dict) -> bool:
@@ -44,11 +52,14 @@ class RoomCallState:
     """The in-call membership of one room, updated event by event."""
 
     def __init__(self):
-        self._in_call = None  # None until the first update seeds it
+        # session id -> its in-call flags. None until the first update
+        # seeds it. The flags rather than a yes/no, because which media a
+        # session carries decides whom there is any point listening to.
+        self._flags = None
 
     @property
     def seeded(self) -> bool:
-        return self._in_call is not None
+        return self._flags is not None
 
     def apply(self, update: dict) -> tuple[set, set]:
         """Folds one `participants`/`update` into the model and reports what
@@ -56,7 +67,7 @@ class RoomCallState:
 
         The first update after connecting carries the room's membership
         rather than a change, so it seeds the model and reports nothing."""
-        previous = self._in_call
+        previous = self._flags
         current = dict(previous or {})
 
         users = update.get("users")
@@ -68,18 +79,21 @@ class RoomCallState:
             for user in users:
                 session_id = _session_id(user)
                 if session_id:
-                    current[session_id] = has_in_call_flag(user.get("inCall"))
+                    current[session_id] = as_flags(user.get("inCall"))
 
         for item in update.get("changed") or []:
             session_id = _session_id(item)
             if session_id and "inCall" in item:
-                current[session_id] = has_in_call_flag(item["inCall"])
+                current[session_id] = as_flags(item["inCall"])
 
-        self._in_call = current
+        self._flags = current
         if previous is None:
             return set(), set()
-        entered = {s for s, now in current.items() if now and not previous.get(s)}
-        left = {s for s, was in previous.items() if was and not current.get(s)}
+        in_call = lambda flags: bool(flags & FLAG_IN_CALL)
+        entered = {s for s, now in current.items()
+                   if in_call(now) and not in_call(previous.get(s, 0))}
+        left = {s for s, was in previous.items()
+                if in_call(was) and not in_call(current.get(s, 0))}
         return entered, left
 
     def accepted_by(self, entered: set, ours: set):
@@ -90,9 +104,15 @@ class RoomCallState:
     def others_in_call(self, ours: set) -> set:
         """Everyone in the call who is not this bridge - who to tell what
         the phone's microphone is doing."""
-        return {session_id for session_id, flag in (self._in_call or {}).items()
-                if flag and session_id not in ours}
+        return {session_id for session_id, flags in (self._flags or {}).items()
+                if flags & FLAG_IN_CALL and session_id not in ours}
 
     def anyone_in_call_besides(self, ours: set) -> bool:
-        return any(flag for session_id, flag in (self._in_call or {}).items()
+        return any(flags & FLAG_IN_CALL for session_id, flags in (self._flags or {}).items()
                    if session_id not in ours)
+
+    def carries_audio(self, session_id: str) -> bool:
+        """Whether that session says it is publishing audio. A
+        participant whose permissions do not let them speak joins
+        without the flag, and there is nothing to take from them."""
+        return bool((self._flags or {}).get(session_id, 0) & FLAG_WITH_AUDIO)

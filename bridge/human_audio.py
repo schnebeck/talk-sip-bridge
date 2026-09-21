@@ -67,8 +67,18 @@ class HumanAudio:
             media = entry.media if entry else None
             if media is None or not entry.is_publishing or media.human_sessionid:
                 return  # nothing to publish into, or already listening to somebody
-            joined = next((sessionid for sessionid in entered
-                           if self.client._room_roster.get(sessionid, {}).get("is_human")), None)
+            people = [sessionid for sessionid in sorted(entered)
+                      if self.client._room_roster.get(sessionid, {}).get("is_human")]
+        # Somebody who says they are publishing audio first. A
+        # participant whose permissions do not let them speak joins
+        # without that flag, and subscribing to them spends the
+        # attempts on a stream that will never exist. Sorted, so that
+        # several arriving at once resolve the same way twice; and
+        # anybody at all rather than nobody, because the flags are the
+        # server's word and this bridge has been wrong about them
+        # before.
+        joined = next((s for s in people if self.client._room_call.carries_audio(s)),
+                      people[0] if people else None)
         if joined is None:
             return
         print(f"[talk] {joined} joined after {sip_call_id} was already publishing "
