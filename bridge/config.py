@@ -289,6 +289,13 @@ class Config:
         # this is off in normal operation and buries the journal when on.
         self.signaling_debug = (
             os.environ.get("BRIDGE_SIGNALING_DEBUG", "false").strip().lower() == "true")
+        # How long a room that looks empty is given to fill up again
+        # before the phone call is ended. Saving a new microphone in
+        # Talk leaves the call and rejoins - measured at 7.1s on this
+        # deployment, and a slower machine or a mobile client will take
+        # longer. Waiting too long costs a caller some silence on a line
+        # that is busy anyway; waiting too little costs the call.
+        self.empty_room_grace = _seconds("BRIDGE_EMPTY_ROOM_GRACE", 30)
 
         # A recording played to a caller on a conference number instead of
         # the beeps that otherwise ask for a meeting id - 16-bit WAV, any

@@ -63,14 +63,14 @@ def confirm(c, comes_back=None, grace=0.02):
             c._room_call = room_with(comes_back)
         await task
 
-    original = room_presence.EMPTY_ROOM_GRACE
-    room_presence.EMPTY_ROOM_GRACE = grace
     loop = asyncio.new_event_loop()
-    try:
-        loop.run_until_complete(scenario())
-    finally:
-        room_presence.EMPTY_ROOM_GRACE = original
-        loop.close()
+    # Patched on the object room_presence is holding: the module bound it
+    # at import, and reloading config gives a new one it never sees.
+    with mock.patch.object(room_presence.config, "empty_room_grace", grace):
+        try:
+            loop.run_until_complete(scenario())
+        finally:
+            loop.close()
     return reasons
 
 
@@ -81,7 +81,8 @@ class EmptyRoomTest(unittest.TestCase):
 
     def test_a_room_that_fills_up_again_does_not(self):
         """The one this exists for: saving a microphone setting is a
-        leave and a join, not the end of a conversation."""
+        leave and a join, not the end of a conversation - measured at
+        7.1 seconds between the two."""
         self.assertEqual(confirm(client(room_with()), comes_back=HUMAN), [])
 
     def test_the_bridges_own_sessions_do_not_count_as_company(self):
@@ -105,16 +106,15 @@ class EmptyRoomTest(unittest.TestCase):
         async def scenario():
             room_presence.RoomPresence(c).hang_up_if_still_empty("everyone left")
             decided_at_once = list(reasons)
-            await asyncio.sleep(room_presence.EMPTY_ROOM_GRACE + 0.05)
+            await asyncio.sleep(room_presence.config.empty_room_grace + 0.05)
             return decided_at_once, list(reasons)
 
-        room_presence.EMPTY_ROOM_GRACE = 0.02
         loop = asyncio.new_event_loop()
-        try:
-            at_once, eventually = loop.run_until_complete(scenario())
-        finally:
-            room_presence.EMPTY_ROOM_GRACE = 5.0
-            loop.close()
+        with mock.patch.object(room_presence.config, "empty_room_grace", 0.02):
+            try:
+                at_once, eventually = loop.run_until_complete(scenario())
+            finally:
+                loop.close()
         self.assertEqual(at_once, [], "the call was ended before anyone could return")
         self.assertEqual(eventually, ["everyone left"], "and then never ended at all")
 
