@@ -66,6 +66,38 @@ import talk_messages                                       # noqa: E402
 FEATURES = ["internal-incall"]
 
 
+# What each session last looked like, so an update can be reported as
+# what changed rather than as everything it repeats. The question these
+# runs ask is whether a field moves while somebody speaks, and that is
+# invisible in a wall of identical lines.
+LAST = {}
+
+# Not decoded to names: the point of a run is often to find out what a
+# field means, and a guess printed as a name is a guess that gets
+# believed. The bits this bridge itself sets are in talk_messages.
+INTERESTING = ("inCall", "flags", "speaking", "audio", "video", "talking", "level")
+
+
+def who(user: dict) -> str:
+    return (user.get("actorId")
+            or ("virtual" if user.get("virtual")
+                else "internal" if user.get("internal") else "?"))
+
+
+def changes(user: dict) -> str:
+    """One session's update, reduced to the fields that are new or
+    different since the last time it was mentioned."""
+    key = user.get("sessionId") or user.get("sessionid") or who(user)
+    before = LAST.get(key, {})
+    now = {k: v for k, v in user.items() if k in INTERESTING or k not in before}
+    moved = {k: v for k, v in now.items() if before.get(k) != v}
+    LAST[key] = {**before, **now}
+    name = f"{who(user)}/{str(key)[:6]}"
+    if not moved:
+        return f"{name} (unchanged)"
+    return name + " " + " ".join(f"{k}={v!r}" for k, v in sorted(moved.items()))
+
+
 def summarise(message: dict) -> str:
     """The one line that says what happened, with the detail that
     matters for the question being asked."""
@@ -79,10 +111,7 @@ def summarise(message: dict) -> str:
                 return (f"participants/update ALL incall={update.get('incall')}"
                         "   <- this is 'end meeting for everyone'")
             users = update.get("users") or []
-            who = ", ".join(
-                f"{u.get('actorId') or ('virtual' if u.get('virtual') else 'internal' if u.get('internal') else '?')}"
-                f":{u.get('inCall')}" for u in users)
-            return f"participants/update [{who}]"
+            return "participants/update " + " | ".join(changes(u) for u in users)
         return f"event/{target}/{etype}"
     if kind == "room":
         return f"room -> {message.get('room', {}).get('roomid')}"

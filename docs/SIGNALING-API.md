@@ -508,6 +508,40 @@ That is the whole check (`hub.go`). Same room, both in the call — **no
 moderator rights, no permission, and no difference between a signed-in user
 and a guest**. Anyone allowed to join the call is allowed to be listened to.
 
+### The server does not say who is speaking
+
+**Measured, not assumed.** An internal client sat in a room while a
+signed-in user joined the call, spoke several times with pauses between
+them, muted the microphone and unmuted it again. Over those 25 seconds
+the server sent that client **nothing at all** about the participant.
+
+The only field that ever moved for them was `inCall`, and only at the
+edges of the call:
+
+```
+ 57.2  participants/update  schnebeck  inCall=3   <- joined the call
+ 83.7  participants/update  schnebeck  inCall=0   <- left
+100.9  participants/update  schnebeck  inCall=3
+126.2  participants/update  schnebeck  inCall=0
+```
+
+Two consequences, and both are structural rather than a gap in this
+bridge:
+
+- **There is no speaking indication to subscribe to.** A bridge cannot
+  follow the active speaker, because nothing tells it who that is. The
+  flags this bridge sends with `updatesession` (see
+  `phone_participant.publish_talking`) inform Talk's clients about the
+  phone; the traffic does not come back the other way.
+- **Mute state is not in the signaling either.** `inCall` stayed `3`
+  (`IN_CALL|WITH_AUDIO`) across muting and unmuting. Talk carries that
+  between peers over their WebRTC data channels, which a bridge
+  subscribing to one participant never sees for the others.
+
+A client that wants to know who is speaking has to listen to them and
+measure it. That is the same cost as carrying them, so the only way for
+a caller to hear more than one person is to subscribe to each and mix.
+
 ### Choosing whom to listen to
 
 A bridge carries one direction of the call by publishing and the other by
