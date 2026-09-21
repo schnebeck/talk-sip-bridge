@@ -39,10 +39,14 @@ the daemon side is verified.
    needs no relay at all (`config.media_relay_enabled`).
 2. **Native dialout integration**, through Talk's own "call a phone number"
    UI rather than a custom chat command.
-   - The connection declares `start-dialout` and `internal-incall`. Owning the
-     in-call flags is what lets this client announce audio only once its
-     publisher exists, instead of from the moment it connects - the difference
-     is a real call's first seconds of audio.
+   - Two connections to the signaling server, one per role: the **dialout
+     connection** declares `start-dialout` and never enters a room, the **room
+     connection** declares `internal-incall` and carries the call. They cannot
+     be one, because a `start-dialout` session that joins any room is dropped
+     from the server's dialout candidates and only a fresh hello puts it back.
+     Owning the in-call flags is what lets the room connection announce audio
+     only once its publisher exists, instead of from the moment it connects -
+     the difference is a real call's first seconds of audio.
    - Each request carries the room it is for, so nothing is assumed about which
      room a dialout belongs to.
    - Nextcloud validates any number before the request reaches this bridge at
@@ -60,12 +64,17 @@ the daemon side is verified.
    the protocol, and naming the caller as a real Nextcloud actor is not
    available for someone who is not already invited to the room.
 
+   The virtual session goes up when the call is **answered**, never while a
+   dialout still rings: it is announced as being in the call, which stops
+   Talk's ringback and leaves the caller in front of a line that looks
+   connected and carries nothing.
+
    Publishing also requires the bridge to join the room itself; verified via
-   `bridge/test_publish_and_verify.py`. Since joining costs dialout eligibility
-   permanently for that connection, the bridge deliberately closes and
-   reconnects once a call ends, handled by the existing reconnect loop in
-   `_connect_and_serve`. That is acceptable because one line handles one call at
-   a time.
+   `bridge/test_publish_and_verify.py`. The room connection joins as soon as
+   there is a call - for a dialout that is while it rings, which is what makes
+   "end meeting for everyone" reach this bridge at all - and leaves again when
+   the call is over. Nothing expires that membership, and a room still holding
+   a session is a room Nextcloud counts somebody in.
 4. **Call-end detection.** Ending a call in Talk's UI does not tear down this
    bridge's publisher - confirmed in the signaling server's own logs, only the
    human's publisher and room membership are destroyed. Watching the bridge's
@@ -119,10 +128,10 @@ the daemon side is verified.
 11. **Multiple lines.** Each SIP account/number (`config.LineConfig`) gets
     its own `SipTransport`/`SipRegistrar`/`CallManager` (still one call at a
     time per line) and its own dedicated `TalkClient` - i.e. its own
-    connection to the signaling server, not a shared one. That is necessary,
-    not just simpler: publishing a call's audio costs that connection its
-    dialout eligibility (point 3), so lines sharing one connection would make
-    each other's dialout unavailable whenever either has a call in progress.
+    pair of connections to the signaling server, not shared ones. That is
+    necessary, not just simpler: a line's room connection is in that line's
+    room for the duration of a call, and a session can only be in one room at
+    a time, so lines sharing one would evict each other.
     `daemon.py` starts one full set per configured line; `control_api.py`
     aggregates their status and accepts an optional `?line=<id>` on `/toggle`
     and `/hangup` (defaulting to the first line, so a single-line deployment is
@@ -157,9 +166,8 @@ the daemon side is verified.
     wins the race instead - a physical phone in the same FritzBox parallel-ring
     group, say - the gateway cancels this INVITE as usual
     (`CallManager.handle_cancel`), which leaves the ring-trigger session the
-    same way. This room-join carries the same dialout-eligibility cost as a
-    real call's publish (point 3) and is cleaned up the same way, by a forced
-    reconnect once the call ends, whether it was accepted or cancelled.
+    same way. The room is left when the call ends, whether it was accepted or
+    cancelled.
 
 ## Known gaps in the SIP implementation
 

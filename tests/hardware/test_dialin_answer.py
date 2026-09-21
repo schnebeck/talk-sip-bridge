@@ -183,7 +183,7 @@ async def main() -> int:
         room = entry.roomid if entry else ""
         record_result("Nextcloud made a conversation for the call", bool(room),
                       room or "none - the call took the line's own room")
-        actor = (entry.dialin_actor or {}) if entry else {}
+        actor = (entry.actor or {}) if entry else {}
         record_result("the caller is a participant of it",
                       bool(actor.get("actorType") and actor.get("actorId")),
                       f"{actor.get('actorType')}/{str(actor.get('actorId'))[:12]}"

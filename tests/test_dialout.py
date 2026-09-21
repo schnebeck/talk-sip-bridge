@@ -21,11 +21,51 @@ except ImportError:  # no media stack; every test here is skipped
     talk_client = None
 
 
+async def settle():
+    """Waits for everything the handler started alongside itself.
+
+    The name plate for a ringing call goes up in a task of its own, so
+    that the "accepted" reply the server waits for is never held up
+    behind it. A test that stopped when the handler returned would not
+    see it at all.
+
+    Work handed over from a worker thread does not even become a task
+    until the loop has turned once, so this waits for quiet rather than
+    for the tasks that happen to exist right now."""
+    quiet = 0
+    while quiet < 3:
+        await asyncio.sleep(0)
+        pending = [task for task in asyncio.all_tasks()
+                   if task is not asyncio.current_task()]
+        if pending:
+            await asyncio.gather(*pending)
+            quiet = 0
+        else:
+            quiet += 1
+
+
 def run(coro):
-    return asyncio.new_event_loop().run_until_complete(coro)
+    async def scenario():
+        result = await coro
+        await settle()
+        return result
+
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(scenario())
+    finally:
+        loop.close()
 
 
-def request(number: str, roomid: str = "room-token", request_id: str = "req-1") -> dict:
+# What Talk puts in a dialout request's options: the phone attendee it
+# made for the number before asking for the call
+# (BackendNotifier::dialOutToAttendee), plus options this bridge has no
+# use for.
+OPTIONS = {"attendeeId": 42, "actorType": "phones", "actorId": "abc123token"}
+
+
+def request(number: str, roomid: str = "room-token", request_id: str = "req-1",
+            options: dict = None) -> dict:
     """A dialout request in the shape the signaling server sends."""
     return {
         "id": request_id,
@@ -35,18 +75,27 @@ def request(number: str, roomid: str = "room-token", request_id: str = "req-1") 
             "dialout": {
                 "roomid": roomid,
                 "backend": "https://nextcloud.example",
-                "request": {"number": number, "options": {}},
+                "request": {"number": number,
+                            "options": OPTIONS if options is None else options},
             },
         },
     }
 
 
 class FakeWebSocket:
-    def __init__(self):
+    """Records what was sent, and confirms a room join the way the
+    server does - without that the bridge waits out its five-second
+    join timeout on every call."""
+
+    def __init__(self, client=None):
         self.sent = []
+        self.client = client
 
     async def send(self, raw):
-        self.sent.append(json.loads(raw))
+        message = json.loads(raw)
+        self.sent.append(message)
+        if message.get("type") == "room" and self.client is not None:
+            self.client._room_joined_event.set()
 
     @property
     def replies(self):
@@ -68,8 +117,16 @@ class FakeCallManager:
 
 
 def client_for(manager):
+    """A client with both its connections faked.
+
+    They are separate on purpose: the dialout connection carries the
+    requests and their answers and never enters a room, the room
+    connection does everything else. A message on the wrong one is the
+    failure this split exists to prevent - the server matches a dialout
+    reply against the session it asked."""
     client = talk_client.TalkClient(manager)
-    client.ws = FakeWebSocket()
+    client.ws = FakeWebSocket(client)     # the room connection
+    client.dialout_ws = FakeWebSocket()   # the dialout connection
     client.own_sessionid = "own-session"
     return client
 
@@ -108,7 +165,7 @@ class ReplyShapeTest(unittest.TestCase):
         manager = FakeCallManager(StubLine(dialout_strip_prefix="+4930"), result=result)
         client = client_for(manager)
         run(client._handle_dialout(request(number)))
-        return client.ws.sent[0], client
+        return client.dialout_ws.sent[0], client
 
     def test_the_reply_echoes_the_request_id(self):
         """Without it the server cannot match the answer to its request."""
@@ -139,16 +196,98 @@ class ReplyShapeTest(unittest.TestCase):
         """One reply, whatever else goes out alongside it - a second one
         for the same request is a protocol error."""
         _, client = self.reply_for()
-        self.assertEqual(len(client.ws.replies), 1)
+        self.assertEqual(len(client.dialout_ws.replies), 1)
 
-    def test_the_room_is_not_joined_while_the_call_rings(self):
+    def test_the_dialout_connection_never_enters_a_room(self):
         """An internal client that is in a room is no longer eligible
-        for dialout requests, so joining one while a call rings costs
-        every later dialout - measured, Nextcloud refused every attempt
-        after the first with "the phone number could not be called"."""
+        for dialout requests, and only a fresh hello puts it back - so
+        one room join on this connection costs every later dialout.
+        Measured before the two connections existed: Nextcloud refused
+        every attempt after the first with "the phone number could not
+        be called"."""
         _, client = self.reply_for()
-        joins = [m for m in client.ws.sent if m.get("type") == "room"]
+        joins = [m for m in client.dialout_ws.sent if m.get("type") == "room"]
         self.assertEqual(joins, [], "joining a room here disables dialout")
+
+    def test_the_room_connection_goes_in_while_the_call_rings(self):
+        """Ending the call in Talk reaches the room's sessions and
+        nothing else, so being there before anyone answers is the only
+        way a caller who gives up is heard."""
+        _, client = self.reply_for()
+        joins = [m["room"]["roomid"] for m in client.ws.sent if m.get("type") == "room"]
+        self.assertEqual(joins, ["room-token"])
+
+    def test_the_answer_goes_out_before_the_room_is_joined(self):
+        """The server times the "accepted" out; waiting for a join
+        confirmation first would miss it."""
+        _, client = self.reply_for()
+        self.assertTrue(client.dialout_ws.sent, "nothing answered the request")
+
+
+@needs_media_stack
+class CallThatWasNeverAnsweredTest(unittest.TestCase):
+    """What has to happen when a dialout ends without ever connecting -
+    refused, unanswered, or hung up while it rang.
+
+    Nothing else will do it: on_call_ended belongs to calls that were
+    established, so a call that never was reaches only on_call_failed.
+    While that did nothing but report the status, every such call left
+    its entry behind - and an entry is what says a call is still worth
+    working on, so the bridge went on believing in a call that had been
+    over for minutes."""
+
+    def failed(self, reason="SIP/2.0 603 Decline"):
+        manager = FakeCallManager(StubLine(dialout_strip_prefix="+4930"))
+        client = client_for(manager)
+
+        async def scenario():
+            # The SIP side reports this from its own worker thread, so
+            # the client needs the loop to hand the work to.
+            client.loop = asyncio.get_running_loop()
+            await client._handle_dialout(request("+4930622"))
+            await settle()
+            client.ws.sent.clear()
+            client.dialout_ws.sent.clear()
+            client.on_call_failed(call_id="call-1", reason=reason)
+            await settle()
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(scenario())
+        finally:
+            loop.close()
+        return client
+
+    def test_the_call_is_forgotten(self):
+        """Its entry is what says a call is still worth working on."""
+        self.assertEqual(self.failed()._call_sessions, {})
+
+    def test_the_status_is_one_talk_clears_the_ringing_on(self):
+        client = self.failed()
+        status = [m["internal"]["dialout"] for m in client.dialout_ws.sent
+                  if m.get("internal", {}).get("type") == "dialout"][0]
+        self.assertEqual(status["status"]["status"], "rejected")
+        self.assertEqual(status["status"]["callid"], "call-1")
+
+    def test_the_room_is_left_again(self):
+        """Nothing expires the membership, and a room that still holds a
+        session is a room Nextcloud counts somebody in - which stops it
+        noticing when the conversation's call empties."""
+        rooms = [m["room"]["roomid"] for m in self.failed().ws.sent
+                 if m.get("type") == "room"]
+        self.assertEqual(rooms[-1], "", "the bridge stayed in the room")
+
+    def test_the_dialout_connection_is_kept(self):
+        """It is the one thing that must survive every call: only a
+        fresh hello makes a connection dialout-eligible, so throwing it
+        away costs the next call."""
+        client = self.failed()
+        self.assertIsNotNone(client.dialout_ws)
+
+    def test_an_unanswered_call_is_torn_down_like_a_refused_one(self):
+        """Nobody picking up leaves exactly as much behind."""
+        client = self.failed(reason="timeout")
+        self.assertEqual(client._call_sessions, {})
 
 
 @needs_media_stack

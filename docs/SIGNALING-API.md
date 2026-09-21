@@ -89,6 +89,38 @@ in the room immediately asks this session for an audio stream, receives
 `client_not_found`, and backs off to one retry every 10 seconds — which costs a
 real call its first seconds of audio.
 
+### Two connections, one per role
+
+**The two features cannot share a connection.** A `start-dialout` session is
+removed from the server's dialout candidates the moment it joins *any* room,
+and the only code path that puts a session back is a fresh `hello` — leaving
+the room does not (`hub.go`, `delete(h.dialoutSessions, session)` on join,
+`h.dialoutSessions[session] = true` on hello). A bridge that publishes media on
+the same connection it receives dialout requests on is therefore eligible for
+exactly one dialout, after which Nextcloud reports "the phone number could not
+be called" until that connection reconnects.
+
+So a bridge keeps two, with disjoint jobs:
+
+| | Dialout connection | Room connection |
+|---|---|---|
+| Features | `start-dialout` | `internal-incall` |
+| Joins rooms | **never** | per call, leaves again afterwards |
+| Sends | dialout replies and status updates | `room`, `addsession`/`updatesession`/`removesession`, `incall`, offers/answers/candidates |
+| Receives | dialout requests | room and participant events, `control`, subscription errors |
+| Lifetime | permanent | permanent; reconnects independently |
+
+They are independent: a dialout can be refused while the room connection is
+reconnecting, and a call in progress is unaffected by the dialout connection
+dropping. A dialout **reply must go back on the connection that was asked** —
+the server matches it against its own pending request, and that bookkeeping is
+per session (`ClientSession.ProcessResponse`).
+
+Verified against a live server: while the room connection sat in a room, the
+dialout connection still received and placed a dialout; the room connection
+received the room-wide end-of-call broadcast 0.4 s after the button was
+pressed.
+
 ## Message envelopes
 
 Every message is a JSON object with a `type` and a same-named payload key.
@@ -109,16 +141,73 @@ Every message is a JSON object with a `type` and a same-named payload key.
 {"id": "bridge-room", "type": "room", "room": {"roomid": "<token>"}}
 ```
 
+An empty `roomid` leaves whatever room the session is in:
+
+```json
+{"id": "bridge-room", "type": "room", "room": {"roomid": ""}}
+```
+
 - A successful join is answered with a `room` message carrying the same `id`.
 - Re-joining a room this session is already in returns `error` with code
-  **`already_joined`** instead. That is equivalent to success — a session that
-  never explicitly leaves will meet this on every subsequent call.
-- **Joining a room permanently costs dialout eligibility.** The server removes
-  any `start-dialout` session from its dialout candidates as soon as it joins a
-  room, and there is no code path that restores it — leaving the room again does
-  not. The only way back is a **new connection with a fresh hello**. Any client
-  that both publishes media and accepts dialout requests must therefore
-  reconnect between calls.
+  **`already_joined`** instead. That is equivalent to success, and is the normal
+  answer when a call is joined for twice (once while it rings, once to publish).
+- A session can be in **one room at a time**; joining another leaves the first.
+- **An internal client may join any room, and doing so creates nothing in
+  Nextcloud.** The server short-circuits the backend request for internal
+  clients (`hub.go`: *"Internal clients can join any room"*), so there is no
+  attendee, no row in `oc_talk_sessions`, and no entry in the conversation. The
+  session exists only inside the signaling server's room.
+- **Joining a room permanently costs dialout eligibility** — see
+  [Two connections, one per role](#two-connections-one-per-role). Leaving does
+  not restore it.
+- **Leave when the call is over.** Nothing expires the membership, and a room
+  that still holds a session is a room the server still counts somebody in.
+
+## Who is told what
+
+Three different notions of "participant" overlap here, and a message reaches
+one of them and not the others. Most of the effort in building a bridge goes
+into getting this right, so it is worth stating flatly.
+
+| | Nextcloud attendee | Real session (`ClientSession`) | Virtual session |
+|---|---|---|---|
+| Exists in | `oc_talk_attendees` | the signaling server | the signaling server |
+| Created by | Nextcloud (adding a participant) | a `hello` | `addsession` |
+| Carries media | — | yes | **never** |
+| Receives room events | — | **yes** | **no** |
+| Receives messages addressed to it | — | yes | yes, relayed to its owner |
+| Shown in Talk's call grid | — | yes, unless `internal` | yes |
+
+What follows from that:
+
+- **Room-wide events reach real sessions only.** Only a `ClientSession`
+  registers as a listener on the room's channel (`clientsession.go`), and
+  `Room.PublishUsersInCallChangedAll` builds its recipient list by asserting
+  each session to `*ClientSession` (`room.go`). A client that owns a virtual
+  session in a room but is not in the room itself is told **nothing** about
+  that room.
+- **A virtual session relays only three things to its owner**
+  (`virtualsession.go`): a `message` addressed to it, a `control` addressed to
+  it, and a `roomlist`/`disinvite` naming its room — which the server turns
+  into a `control`/`hangup`. Nothing else.
+- **Internal sessions are in the room's user list but not in Talk's grid.**
+  They appear in `participants`/`update` with `"internal": true`, and Talk
+  filters them out of the call view unless they carry video
+  (`callParticipantModels`). Virtual sessions carry `"virtual": true` and are
+  **not** filtered — a phone left in a room after its call stays visible.
+- **Nextcloud's signaling backend answers three request types**: `auth`, `room`
+  and `ping` (`SignalingController::backend`). Everything else is rejected as
+  `unknown_type`. In particular the `session` request the server sends for an
+  `addsession` **without** an actor is discarded, so such a session is invisible
+  to Nextcloud: no participant, nothing to disinvite, and no cleanup when the
+  owning connection dies. An `addsession` **with** an actor is announced as a
+  `room` request instead, which Nextcloud does handle.
+- **Nextcloud never announces a `phones` attendee to the signaling server.**
+  `BackendNotifier::roomInCallChanged` skips every actor type but `users`,
+  `guests`, `emails` and `federated_users`, so a phone appears in
+  `participants`/`update` only as the bare virtual entry the signaling server
+  appends itself (`sessionId`, `inCall`, `lastPing`, `virtual`) — with no
+  `actorId` and no `nextcloudSessionId` to tie it to the attendee.
 
 ## In-call flags
 
@@ -181,23 +270,67 @@ Properties that are not obvious and cost real debugging time:
   virtual sessions.
 - **`user.displayname` is the field Talk renders participants by.** Without it
   the caller shows as "Gast".
-- **`options.actorType` / `options.actorId` need a participant that already
-  exists.** The signaling server registers such a session with Nextcloud as
-  that actor, and Nextcloud looks the room up *by* the actor
-  (`Manager::getRoomByActor`); an actor that is not a participant fails the
-  whole `addsession` with "The user is not invited to this room". The caller
-  therefore has to be made a participant first — see [Direct dial-in](#direct-dial-in),
-  which is how Nextcloud's own SIP bridge does it.
+- **Name an actor whenever one exists.** `options.actorType` /
+  `options.actorId` is what makes the session visible to Nextcloud at all: with
+  it the server announces the session as a `room` request, which Nextcloud
+  answers by creating a session for that attendee
+  (`SignalingController::backendRoom` → `createSessionForAttendee`); without it
+  the announcement is a `session` request, which Nextcloud rejects as
+  `unknown_type`. Two things follow only from having the actor: Talk's
+  participant list gets a session id for the phone, and the server's cleanup on
+  a dying connection reaches Nextcloud (`notifyBackendRemoved` sends
+  `Action: "leave"` **only** when an actor is set).
+- **The actor has to be a participant already.** Nextcloud looks the room up
+  *by* the actor (`Manager::getRoomByActor`); an actor that is not a
+  participant fails the whole `addsession` with "The user is not invited to
+  this room". Where each one comes from:
+
+  | Call | Actor |
+  |---|---|
+  | Dialout | `options.attendeeId` / `actorType` / `actorId` in the dialout request — Talk creates the `phones` attendee before asking |
+  | Direct dial-in | the participant Nextcloud creates for the caller — see [Direct dial-in](#direct-dial-in) |
+  | Anything else | none; the session is then a name plate the signaling server knows and Nextcloud does not |
+
 - **The server assigns its own room session id**, unrelated to the chosen
   `sessionid`. It arrives in a `room`/`join` event and is the id that appears in
   room rosters. Match it back via `user.callid`, which round-trips unchanged.
+  With an actor it is also the id Nextcloud stores in `oc_talk_sessions`, and
+  therefore the one Talk's UI addresses a `control` to.
 
-Removal:
+### Lifetime
+
+A virtual session outlives its call unless something removes it:
 
 ```json
 {"type": "internal", "internal": {"type": "removesession",
  "removesession": {"sessionid": "...", "roomid": "..."}}}
 ```
+
+- Remove it on **every** way a call can end, including the ways that are not a
+  call ending: a dialout refused with a SIP final response, one nobody answers,
+  one hung up while it still rings. Each of those leaves a phone in the room
+  otherwise, visible in Talk's grid, and the next call adds another beside it.
+- A room holding such a leftover counts as occupied for Nextcloud
+  (`hasActiveSessionsInCall` asks only for `in_call <> 0` and a recent ping), so
+  leaving the call no longer resets the conversation's call state.
+- Closing the owning connection removes them too — the server closes every
+  virtual session of a `ClientSession` that goes away — but only reaches
+  Nextcloud for sessions that named an actor.
+
+### A phone that is only ringing
+
+Announcing the phone while the call is still being placed is **wrong**, even
+though `WITH_PHONE` is nominally the state for it. A virtual session is
+announced as being *in the call*, and that has two effects a caller notices
+immediately: Talk stops the ringback, so the line looks connected and carries
+nothing, and the room counts as occupied. Announce the phone when the call is
+answered.
+
+There is nothing to gain from announcing it early either: the gesture that
+ends a ringing dialout in Talk is "end meeting for everyone", and that reaches
+the room's real sessions only (see [Who is told what](#who-is-told-what)).
+Being there for it means having the **room connection** in the room while the
+phone rings — not a virtual session.
 
 ## Dialout
 
@@ -334,16 +467,92 @@ only the one that moves counts.
 {"type": "control", "control": {"data": {"type": "hangup"}}}
 ```
 
-Sent when a call's virtual phone session is disinvited (the participant hung up
-in Talk, or the room's call ended) or when the session is explicitly targeted
-with a hangup. The server rewrites the recipient to the owning client's session
-either way.
+Reaches the owner of a virtual session in exactly two cases, and the server
+rewrites the recipient to the owning client's session in both:
 
-Note that ending a call in Talk's UI does **not** tear down an internal client's
-own publisher, and produces no explicit hangup for it. The reliable end-of-call
-signal is the `participants`/`update` broadcast above; the publisher's WebRTC
-`connectionState` is a useful secondary check (`iceConnectionState` alone is
-not — it does not reliably move on a DTLS-level teardown).
+1. **The session is explicitly targeted with a hangup.** This is what Talk's
+   "hang up phone" button next to a phone participant sends, addressed to the
+   session id Nextcloud holds for that attendee. Internal clients may send it
+   too — `isAllowedToControl` admits any internal client, no moderator rights
+   and no room membership needed — which makes it testable without a browser.
+2. **The session is disinvited**, i.e. Nextcloud sends a `disinvite` naming its
+   room session id, which the server turns into this message
+   (`virtualsession.go`). Nextcloud does that when an attendee is removed or a
+   guest's session leaves the room — **not** when a call ends.
+
+Things that produce no hangup, and are frequently assumed to:
+
+- **Ending the call in Talk** (for oneself or for everyone). It tears down no
+  internal client's publisher and disinvites nobody. The signal is the
+  `participants`/`update` broadcast above, which only reaches sessions that are
+  **in the room**.
+- **The last person leaving a call** while a dialout rings.
+  `CallController::leaveCall` resets the conversation's call state only if
+  `hasActiveSessionsInCall` is false, and a phone announced as in-call makes it
+  true.
+
+The publisher's WebRTC `connectionState` is a useful secondary check
+(`iceConnectionState` alone is not — it does not reliably move on a DTLS-level
+teardown).
+
+## Call sequences
+
+The order is not free. Each step below either enables the next or is the only
+moment at which the thing it does still works; the "why" column says which.
+**D** is the dialout connection, **R** the room connection.
+
+### Outbound: Talk calls a phone
+
+| # | On | Do | Condition / why |
+|---|---|---|---|
+| 1 | D | receive `internal`/`dialout` | Carries `roomid` and `request.options` (the `phones` attendee). Both are needed later and available nowhere else. |
+| 2 | — | map the number to the gateway's dial plan | Nextcloud sent E.164; an internal extension has to be recovered from it. |
+| 3 | — | place the SIP call, keep its call id | The call id is what every later status names. |
+| 4 | D | reply `status: accepted`, echoing the request `id` | **Synchronously**, within the server's timeout. Same connection as step 1. On failure reply `type: error` instead and stop. |
+| 5 | R | `room` join `roomid` | Not before step 4 — waiting for the join confirmation would miss the timeout. From here the room's end-of-call broadcast is heard. |
+| 6 | R | on `participants`/`update` with `all: true, incall: 0` → hang up the SIP call | Only while the call is unanswered is this the caller giving up. |
+| | | *— the phone answers —* | |
+| 7 | R | `addsession` with the actor from step 1, `incall: IN_CALL` | Not earlier: a session announced while it rings stops Talk's ringback. |
+| 8 | R | `updatesession` with the full flags | A *change* is what puts the session into the room's in-call set; a value equal to step 7's is not a change. |
+| 9 | R | publish: offer addressed to R's own session id | Needs the room join from step 5. |
+| 10 | R | `incall` = `IN_CALL \| WITH_AUDIO` for R's own session | Only once the publisher exists, or clients chase a stream that is not there. |
+| 11 | R | `requestoffer` to a human, answer the offer that comes back | Both sides must be in the call first, which step 10 completes. |
+
+### Outbound: the call ends
+
+Every one of these paths must run the teardown; they are not variations of one
+signal.
+
+| The call ends because | Reaches the bridge as | Notes |
+|---|---|---|
+| the phone answers, then hangs up | SIP `BYE` | |
+| the phone refuses | SIP final response `4xx`/`5xx`/`6xx` | No `on_call_ended` equivalent — this is the only notification. |
+| nobody answers | the bridge's own timeout | Same. |
+| Talk ends the call for everyone | `participants`/`update`, `all: true, incall: 0` | Only if R is in the room — step 5. |
+| the phone participant is hung up in Talk | `control`/`hangup` | |
+| the last person leaves the call | `participants`/`update` without them | Read as a transition, not as state. |
+
+Teardown, in this order:
+
+| # | On | Do | Why here |
+|---|---|---|---|
+| 1 | R | close the media | Before removing what advertises it. |
+| 2 | R | `removesession` | Or the phone stays in Talk's grid and keeps the room occupied. |
+| 3 | R | `incall` = 0 for R's own session | Stops clients asking for a publisher that is gone. |
+| 4 | D | `status: cleared` (or `rejected`), no `id` | Talk clears the attendee's ringing state on either. |
+| 5 | R | `room` leave (empty `roomid`) | Nothing expires the membership. |
+
+### Inbound: a phone calls in
+
+| # | On | Do | Condition / why |
+|---|---|---|---|
+| 1 | — | answer or ring, per the dialled number | The protocol has no inbound ringing exchange; see [Room association](#room-association-for-inbound-calls). |
+| 2 | — | find the room | Direct dial-in yields a room **and** an actor; a PIN or a spoken meeting id yields a room only. |
+| 3 | R | `room` join | As step 5 above. |
+| 4 | R | `addsession` (+ actor if there is one), then `updatesession` | As steps 7–8 above. |
+| 5 | R | publish, then `incall` with audio, then subscribe | As steps 9–11 above. |
+
+Teardown is the same as for an outbound call, minus the dialout status.
 
 ## Talk OCS call API
 

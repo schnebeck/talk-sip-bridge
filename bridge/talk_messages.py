@@ -21,26 +21,35 @@ FLAG_IN_CALL = 1
 FLAG_WITH_AUDIO = 2
 FLAG_WITH_PHONE = 8
 
-# What this client declares it can do. "start-dialout" makes it a
-# candidate for dialout requests; "internal-incall" hands it responsibility
-# for its own in-call flags, without which the server announces audio from
-# the moment it connects and every Talk client asks for a stream that does
-# not exist yet.
-FEATURES = ["start-dialout", "internal-incall"]
+# What a connection declares it can do, per role. The bridge keeps two,
+# because one connection cannot hold both: the server drops a
+# "start-dialout" session from its dialout candidates the moment it joins
+# any room, and puts it back only on a fresh hello (hub.go).
+#
+# "start-dialout" makes a connection a candidate for dialout requests;
+# "internal-incall" hands it responsibility for its own in-call flags,
+# without which the server announces audio from the moment it connects
+# and every Talk client asks for a stream that does not exist yet.
+DIALOUT_FEATURES = ["start-dialout"]
+ROOM_FEATURES = ["internal-incall"]
 
 ROOM_REQUEST_ID = "bridge-room"
 
 
-def hello(internal_secret: str, backend_url: str, request_id: str = "bridge-hello") -> dict:
+def hello(internal_secret: str, backend_url: str, features: list = None,
+          request_id: str = "bridge-hello") -> dict:
     """Authenticates as an internal client. `backend` is required and is
-    documented nowhere - it comes from the signaling server's own source."""
+    documented nowhere - it comes from the signaling server's own source.
+
+    `features` is what this connection is for: DIALOUT_FEATURES or
+    ROOM_FEATURES."""
     random_str = secrets.token_hex(32)
     token = hmac.new(internal_secret.encode(), random_str.encode(), hashlib.sha256).hexdigest()
     return {
         "id": request_id, "type": "hello",
         "hello": {
             "version": "1.0",
-            "features": list(FEATURES),
+            "features": list(features if features is not None else ROOM_FEATURES),
             "auth": {"type": "internal",
                      "params": {"random": random_str, "token": token, "backend": backend_url}},
         },
@@ -49,9 +58,23 @@ def hello(internal_secret: str, backend_url: str, request_id: str = "bridge-hell
 
 def join_room(roomid: str) -> dict:
     """Joining is what makes the server route this client's own offer to
-    the room's Janus. It also costs the connection its dialout eligibility
-    for good - see docs/CONCEPT.md point 3."""
+    the room's Janus, and what makes the connection a member of the room
+    for events - only a real client session is told when the call ends
+    for everyone (room.go).
+
+    It also costs the connection its dialout eligibility for good, which
+    is why only the room connection ever sends this - see
+    docs/CONCEPT.md point 3."""
     return {"id": ROOM_REQUEST_ID, "type": "room", "room": {"roomid": roomid}}
+
+
+def leave_room() -> dict:
+    """An empty room id leaves whatever room the connection is in. A
+    session can only be in one room at a time, so this matters less for
+    the next call than for not lingering in a conversation that is over:
+    the server counts the connection among the room's sessions until it
+    goes."""
+    return {"id": ROOM_REQUEST_ID, "type": "room", "room": {"roomid": ""}}
 
 
 def set_incall(flags: int) -> dict:
@@ -75,7 +98,12 @@ FLAG_TALKING = 4            # speaking right now
 
 
 def incall_flags(with_audio: bool = False, actor: dict = None) -> int:
-    """What the phone's session announces about itself."""
+    """What the phone's session announces about itself.
+
+    FLAG_WITH_PHONE is the state Talk renders for a call still being
+    placed, so it is wrong for a caller Nextcloud already knows: they
+    are in the room because the call went through. The actor is what
+    says so."""
     return (FLAG_IN_CALL
             | (0 if actor else FLAG_WITH_PHONE)
             | (FLAG_WITH_AUDIO if with_audio else 0))
@@ -224,6 +252,21 @@ def peer_state(peer_sessionid: str, state: str, payload: dict) -> dict:
                      "type": state, "payload": payload},
         },
     }
+
+
+def dialout_actor(options: dict) -> dict:
+    """Who Nextcloud means by the number in a dialout request.
+
+    Talk makes a "phones" attendee before it asks for the call and names
+    it here (`SIPDialOutService`/`BackendNotifier::dialOutToAttendee`),
+    alongside options this bridge has no use for. Passing it back on the
+    virtual session is what makes Nextcloud aware of the phone at all:
+    an addsession that names an actor is announced to the backend as a
+    "room" request, which Talk answers by creating a session for that
+    attendee, and only a participant it holds a session for can be
+    disinvited when the call ends."""
+    actor = {"actorType": options.get("actorType"), "actorId": options.get("actorId")}
+    return actor if actor["actorType"] and actor["actorId"] else None
 
 
 def dialout_status(roomid: str, call_id: str, status: str, request_id: str = "") -> dict:

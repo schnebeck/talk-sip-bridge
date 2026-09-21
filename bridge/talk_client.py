@@ -33,7 +33,7 @@ from config import config
 from dialin_ivr import DialInIvr
 from room_state import RoomCallState, is_room_wide_call_end
 from subscription import Action, Subscription
-from talk_messages import FLAG_IN_CALL, FLAG_WITH_AUDIO
+from talk_messages import FLAG_IN_CALL, FLAG_WITH_AUDIO, dialout_actor
 
 # A single requestoffer is not enough: the other side's publisher may not
 # exist yet when it goes out, and the signaling server answers that with
@@ -88,8 +88,14 @@ def _run_coro_logged(coro, loop, label: str):
 class TalkClient:
     def __init__(self, call_manager):
         self.call_manager = call_manager
-        self.ws = None
-        self.own_sessionid = None
+        # Two connections, because one cannot do both jobs. The server
+        # drops a "start-dialout" session from its dialout candidates the
+        # moment it joins any room and only a fresh hello puts it back
+        # (hub.go), so the connection that takes dialout requests must
+        # never enter a room, and the one that carries a call must.
+        self.ws = None              # the room connection: media, room events
+        self.own_sessionid = None   # ... and its session, which publishes the audio
+        self.dialout_ws = None      # the dialout connection: never in a room
         self.loop = None
         self._call_sessions = {}  # sip call_id -> Call
         self._call_sessions_lock = threading.Lock()  # entries are written from both the asyncio loop and SIP worker threads
@@ -101,71 +107,100 @@ class TalkClient:
     def run_forever(self):
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
-        self.loop.run_until_complete(self._connect_and_serve())
+        self.loop.run_until_complete(self._serve_both())
 
-    async def _connect_and_serve(self):
+    async def _serve_both(self):
+        """Both connections, each reconnecting on its own. Neither
+        depends on the other being up: a dialout can be refused while the
+        room side is reconnecting, and a call in progress is not
+        disturbed by the dialout side dropping."""
+        await asyncio.gather(self._serve_room(), self._serve_dialout())
+
+    async def _serve(self, role: str, features: list, on_hello, handle):
         while True:
             try:
                 async with websockets.connect(config.ws_url) as ws:
-                    self.ws = ws
-                    await self._hello()
-                    await self._message_loop()
+                    sessionid = await self._hello(ws, role, features)
+                    on_hello(ws, sessionid)
+                    async for raw in ws:
+                        await handle(json.loads(raw))
             except Exception as e:
-                print(f"[talk] Connection lost ({e!r}), reconnecting ...")
-                self.ws = None
-                await asyncio.sleep(config.sip_response_timeout)
+                print(f"[talk] {role} connection lost ({e!r}), reconnecting ...")
+            on_hello(None, None)
+            await asyncio.sleep(config.sip_response_timeout)
 
-    async def _hello(self):
-        await self.ws.send(json.dumps(
-            talk_messages.hello(config.internal_secret, config.backend_url)))
-        await self.ws.recv()  # welcome banner
-        resp = json.loads(await self.ws.recv())
-        self.own_sessionid = resp["hello"]["sessionid"]
-        self._room_call = RoomCallState()  # a new connection knows nothing about any room yet
-        print(f"[talk] Connected as internal client, session {self.own_sessionid}")
+    async def _serve_room(self):
+        def settled(ws, sessionid):
+            self.ws = ws
+            self.own_sessionid = sessionid
+            # A new connection is in no room and knows nothing about one.
+            self._room_call = RoomCallState()
+            self._room_roster = {}
+
+        await self._serve("room", talk_messages.ROOM_FEATURES, settled, self._handle_room_message)
+
+    async def _serve_dialout(self):
+        def settled(ws, _sessionid):
+            self.dialout_ws = ws
+
+        await self._serve("dialout", talk_messages.DIALOUT_FEATURES, settled,
+                          self._handle_dialout_message)
+
+    async def _hello(self, ws, role: str, features: list) -> str:
+        await ws.send(json.dumps(
+            talk_messages.hello(config.internal_secret, config.backend_url, features)))
+        await ws.recv()  # welcome banner
+        resp = json.loads(await ws.recv())
+        sessionid = resp["hello"]["sessionid"]
+        print(f"[talk] {role} connection up as internal client, session {sessionid}")
+        return sessionid
+
+    async def _handle_dialout_message(self, msg: dict):
+        """The dialout connection carries one kind of traffic in each
+        direction: requests from Talk, and this bridge's answers about
+        the call they started."""
+        if msg.get("type") == "internal" and msg.get("internal", {}).get("type") == "dialout":
+            await self._handle_dialout(msg)
+        else:
+            print(f"[talk] DEBUG dialout connection: {json.dumps(msg)[:500]}")
 
     # -- incoming messages from the signaling server ---------------------
-    async def _message_loop(self):
-        async for raw in self.ws:
-            msg = json.loads(raw)
-            msg_type = msg.get("type")
-            if msg_type == "internal" and msg.get("internal", {}).get("type") == "dialout":
-                await self._handle_dialout(msg)
-            elif msg_type == "message":
-                await self._handle_webrtc_message(msg["message"])
-            elif msg_type == "room" and msg.get("id") == "bridge-room":
-                self._room_joined_event.set()
-            elif msg_type == "error" and msg.get("id") == "bridge-room" and msg.get("error", {}).get("code") == "already_joined":
-                # Our own internal session never explicitly leaves a room
-                # between calls (see _handle_incoming_ring/_publish_call_audio),
-                # so a later join attempt for the same room routinely hits
-                # this instead of a real join confirmation - it means we are
-                # in the room already, which is just as good.
-                self._room_joined_event.set()
-            elif msg_type == "error" and str(msg.get("id", "")).startswith("bridge-subanswer-"):
-                await self._subscription_answer_refused(
-                    str(msg.get("id"))[len("bridge-subanswer-"):], msg.get("error", {}))
-            elif msg_type == "control" and msg.get("control", {}).get("data", {}).get("type") == "hangup":
-                # Sent when the call's virtual phone session is disinvited
-                # (the room participant hung up in Talk, or the room's call
-                # ended) or targeted with an explicit hangup control message
-                # - the server rewrites the recipient to our own session
-                # either way. Only one call is ever active, so there is
-                # nothing else to disambiguate against.
-                self._hangup_sip("Hangup control received - ending the active call")
-            elif msg_type == "event":
-                event = msg.get("event", {})
-                print(f"[talk] DEBUG event target={event.get('target')} type={event.get('type')} raw={json.dumps(event)[:1500]}")
-                if event.get("target") == "room" and event.get("type") == "join":
-                    self._handle_room_join(event.get("join") or [])
-                elif event.get("target") == "room" and event.get("type") == "leave":
-                    with self._call_sessions_lock:
-                        for sessionid in event.get("leave") or []:
-                            self._room_roster.pop(sessionid, None)
-                elif event.get("target") == "participants" and event.get("type") == "update":
-                    await self._handle_participants_update(event.get("update") or {})
-            else:
-                print(f"[talk] DEBUG other message type={msg_type} raw={json.dumps(msg)[:1500]}")
+    async def _handle_room_message(self, msg: dict):
+        msg_type = msg.get("type")
+        if msg_type == "message":
+            await self._handle_webrtc_message(msg["message"])
+        elif msg_type == "room" and msg.get("id") == "bridge-room":
+            self._room_joined_event.set()
+        elif msg_type == "error" and msg.get("id") == "bridge-room" and msg.get("error", {}).get("code") == "already_joined":
+            # Joining twice - a dialout joins when it starts ringing
+            # and the publisher joins again when it is answered - is
+            # answered with this instead of a confirmation. It means
+            # we are in the room already, which is just as good.
+            self._room_joined_event.set()
+        elif msg_type == "error" and str(msg.get("id", "")).startswith("bridge-subanswer-"):
+            await self._subscription_answer_refused(
+                str(msg.get("id"))[len("bridge-subanswer-"):], msg.get("error", {}))
+        elif msg_type == "control" and msg.get("control", {}).get("data", {}).get("type") == "hangup":
+            # Sent when the call's virtual phone session is disinvited
+            # (the room participant hung up in Talk, or the room's call
+            # ended) or targeted with an explicit hangup control message
+            # - the server rewrites the recipient to our own session
+            # either way. Only one call is ever active, so there is
+            # nothing else to disambiguate against.
+            self._hangup_sip("Hangup control received - ending the active call")
+        elif msg_type == "event":
+            event = msg.get("event", {})
+            print(f"[talk] DEBUG event target={event.get('target')} type={event.get('type')} raw={json.dumps(event)[:1500]}")
+            if event.get("target") == "room" and event.get("type") == "join":
+                self._handle_room_join(event.get("join") or [])
+            elif event.get("target") == "room" and event.get("type") == "leave":
+                with self._call_sessions_lock:
+                    for sessionid in event.get("leave") or []:
+                        self._room_roster.pop(sessionid, None)
+            elif event.get("target") == "participants" and event.get("type") == "update":
+                await self._handle_participants_update(event.get("update") or {})
+        else:
+            print(f"[talk] DEBUG other message type={msg_type} raw={json.dumps(msg)[:1500]}")
 
     def _handle_room_join(self, join_entries: list):
         """Tracks room roster (for finding a human to subscribe to, see
@@ -200,7 +235,9 @@ class TalkClient:
         request_id = msg.get("id", "")
         dialout = msg["internal"]["dialout"]
         roomid = dialout.get("roomid", "")
-        number = dialout.get("request", {}).get("number", "")
+        request = dialout.get("request", {})
+        number = request.get("number", "")
+        actor = dialout_actor(request.get("options") or {})
         line = self.call_manager.line
         if line.dialout_strip_prefix and number.startswith(line.dialout_strip_prefix):
             number = number[len(line.dialout_strip_prefix):]
@@ -212,24 +249,48 @@ class TalkClient:
         call_id = result["call_id"]
         with self._call_sessions_lock:
             self._call_sessions[call_id] = Call(sip_call_id=call_id, kind=DIALOUT,
-                                                number=number, roomid=roomid)
-        # Deliberately NOT joining the room here, however tempting: an
-        # internal client that is in a room is no longer eligible for
-        # dialout requests (see docs/CONCEPT.md point 3), so joining
-        # while a call rings costs this bridge every later dialout -
-        # measured, Nextcloud then refused every attempt with "the phone
-        # number could not be called". Seeing a hangup during ringing
-        # has to be solved without staying in the room.
+                                                number=number, roomid=roomid, actor=actor)
+        # No name plate while it only rings. A virtual session is
+        # announced as being in the call, and Talk then stops the
+        # ringback the caller is waiting to hear - they sit in front of
+        # a line that looks connected and carries nothing. It also makes
+        # the room count as occupied (`hasActiveSessionsInCall`), which
+        # stops Nextcloud noticing when the call empties.
+        #
+        # It would buy nothing either: the one gesture that ends a
+        # ringing dialout in Talk is "end meeting for everyone", and
+        # that reaches a room as `PublishUsersInCallChangedAll`, which
+        # notifies `*ClientSession` only (room.go) - never the owner of
+        # a virtual session. Hearing it needs a connection that is in
+        # the room, which this one cannot be.
 
         # The signaling server expects an "accepted" status synchronously
         # (within a fixed timeout) - actual ring/connect progress is
         # reported later via separate, unsolicited status updates.
         await self._send_dialout_response(request_id, roomid, call_id=call_id, status="accepted")
 
+        # The room connection goes in now, while the phone rings, not
+        # when the call connects: ending the call in Talk reaches only
+        # the sessions in the room (room.go notifies `*ClientSession`
+        # and nothing else), and a caller who gives up during the
+        # ringing is otherwise left listening to a phone that rings on
+        # until this side's own timeout - measured at twelve seconds of
+        # ringing past the moment Talk ended the call. This connection
+        # never takes a dialout, so being in a room costs it nothing.
+        # Alongside the reply, not before it: waiting for the join
+        # confirmation would hold up an answer the server times out on.
+        asyncio.ensure_future(self._join_room_for_publishing(roomid))
+
     async def _send_dialout_response(self, request_id: str, roomid: str, *, call_id: str = None, status: str = None, error: str = None):
+        """Always on the dialout connection: the server matches a reply
+        against the request it is pending on, and that bookkeeping is
+        per session (hub.go's ProcessResponse)."""
         message = (talk_messages.dialout_error(roomid, error, request_id) if error is not None
                    else talk_messages.dialout_status(roomid, call_id, status, request_id))
-        await self.ws.send(json.dumps(message))
+        if self.dialout_ws is None:
+            print(f"[talk] No dialout connection to answer {request_id or 'a status update'} on")
+            return
+        await self.dialout_ws.send(json.dumps(message))
 
     async def _send_dialout_status(self, call_id: str, roomid: str, status: str):
         """Unsolicited status update (ringing/connected/rejected/cleared) -
@@ -468,21 +529,42 @@ class TalkClient:
             return
         await self.ws.send(json.dumps(talk_messages.remove_session(virtual_sessionid, roomid)))
 
-    # -- publishing SIP call audio into the room --------------------------
+    # -- the room this bridge is in --------------------------------------
     async def _join_room_for_publishing(self, roomid: str) -> None:
-        """Publishing needs the bridge in the room: that is what makes the
-        signaling server route its self-addressed offer to the room's Janus
-        and answer it. addsession alone does not.
+        """Puts the room connection in the room. Two things need it, and
+        they happen at different moments: publishing the call's audio -
+        being in the room is what makes the server route this session's
+        self-addressed offer to the room's Janus, which addsession alone
+        does not - and hearing what the room does, which has to start
+        while the phone is still ringing.
 
-        It costs this connection its dialout eligibility for as long as it
-        lives (see docs/CONCEPT.md point 3), which is why _teardown_call
-        reconnects afterwards."""
+        Only ever the room connection: this costs a connection its
+        dialout eligibility for good (see docs/CONCEPT.md point 3)."""
+        if self.ws is None:
+            print(f"[talk] No room connection to join {roomid} with")
+            return
         self._room_joined_event.clear()
         await self.ws.send(json.dumps(talk_messages.join_room(roomid)))
         try:
             await asyncio.wait_for(self._room_joined_event.wait(), timeout=5)
         except asyncio.TimeoutError:
-            print(f"[talk] Warning: no room-join confirmation for {roomid} within 5s, publishing anyway")
+            print(f"[talk] Warning: no room-join confirmation for {roomid} within 5s, carrying on")
+
+    async def _leave_room(self) -> None:
+        """Leaves whatever room the room connection is in, once the call
+        it was there for is over. Staying would leave the bridge counted
+        among the room's sessions long after the call - and a room that
+        still holds a session is a room Nextcloud thinks somebody is
+        in."""
+        if self.ws is None:
+            return
+        try:
+            await self.ws.send(json.dumps(talk_messages.leave_room()))
+        except Exception as e:
+            print(f"[talk] Could not leave the room: {e!r}")
+            return
+        self._room_call = RoomCallState()
+        self._room_roster = {}
 
     async def _send_publish_offer(self, sip_call_id: str, sdp: str, display_name: str) -> None:
         await self.ws.send(json.dumps(talk_messages.publish_offer(
@@ -497,7 +579,7 @@ class TalkClient:
         display_name = caller_display_name(number)
         with self._call_sessions_lock:
             waiting = self._call_sessions.get(sip_call_id)
-            actor = waiting.dialin_actor if waiting else None
+            actor = waiting.actor if waiting else None
         virtual_sessionid = await self._add_virtual_session(
             sip_call_id, roomid=roomid, number=caller_number(number),
             displayname=display_name, caller=True, actor=actor)
@@ -756,16 +838,7 @@ class TalkClient:
             line = self.call_manager.line
             await asyncio.to_thread(talk_ocs.end_room_call, roomid,
                                     line.notify_user, line.notify_app_password)
-        if was_publishing or entry.waiting_for_accept:
-            # The signaling server permanently drops a "start-dialout"
-            # session from its dialout candidates the moment it joins any
-            # room (confirmed in its own source - there is no code path
-            # that re-adds it, including on leaving the room again) - and
-            # _handle_incoming_ring joins the room too, just to watch for an
-            # accept. The only way to become dialout-eligible again is a
-            # fresh connection with a new hello, so force a reconnect -
-            # handled by the retry loop in _connect_and_serve.
-            await self.ws.close()
+        await self._leave_room()
 
     def _entry_roomid(self, call_id: str) -> str:
         # Dialout calls carry their own room id, learned from the request
@@ -809,8 +882,22 @@ class TalkClient:
         _run_coro_logged(self._teardown_call(call_id, roomid), self.loop, f"on_call_ended({call_id})")
 
     def on_call_failed(self, *, call_id, reason):
+        """An outbound call that never got as far as being answered -
+        refused, unanswered, or ended while it still rang.
+
+        Telling Talk is only half of it: whatever the ringing put up has
+        to come down again, the name plate above all. Nothing else does
+        it for such a call, because on_call_ended belongs to calls that
+        were established. Measured when it was missing: a refused call
+        left its phone participant in the room for good, and the next
+        call added a second one beside it."""
         roomid = self._entry_roomid(call_id)
-        _run_coro_logged(self._send_dialout_status(call_id, roomid, "rejected"), self.loop, f"on_call_failed({call_id})")
+
+        async def _failed():
+            await self._send_dialout_status(call_id, roomid, "rejected")
+            await self._teardown_call(call_id, roomid)
+
+        _run_coro_logged(_failed(), self.loop, f"on_call_failed({call_id})")
 
     def on_incoming_call(self, *, call_id, caller, dialled=""):
         # The signaling protocol has no ringing/accept-decline exchange for
@@ -918,7 +1005,7 @@ class TalkClient:
                 return ""
             entry.roomid = room["token"]
             if actor["actorType"] and actor["actorId"]:
-                entry.dialin_actor = actor
+                entry.actor = actor
         print(f"[talk] {call_id} dialled into conversation {room['token']} "
               f"as {actor['actorType']}/{str(actor['actorId'])[:12]}")
         return room["token"]
@@ -951,7 +1038,7 @@ class TalkClient:
                 entry = self._call_sessions.get(call_id)
                 if entry is not None:
                     entry.roomid = roomid
-                    entry.dialin_actor = dialin
+                    entry.actor = dialin
         if dialin:
             # Nextcloud made this conversation for this one call and owns
             # it; the bridge's notify account is not in it and cannot ring

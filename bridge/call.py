@@ -27,10 +27,14 @@ class Call:
     sip_call_id: str
     kind: str          # INBOUND or DIALOUT - a dialout reports status back
     roomid: str = ""   # dialout learns it from the request; inbound uses the line's default
-    # Who the caller is to Nextcloud, when direct dial-in made them a real
-    # participant. Without it they exist only in the signaling server, and
-    # the virtual session can name no actor.
-    dialin_actor: dict = None
+    # Who the far end is to Nextcloud: a dial-in caller that reached a
+    # conversation directly, or the phone attendee a dialout was placed
+    # for. Without it the phone exists in the signaling server alone -
+    # Nextcloud's backend understands only "auth", "room" and "ping", so
+    # a virtual session that names no actor is never announced to it at
+    # all, and can therefore never be disinvited (which is what ends a
+    # call from Talk's side).
+    actor: dict = None
     number: str = ""   # the far end, as it should appear in the room
     # Which of this line's numbers was called. One registration carries
     # several, and what a call may do depends on which was dialled.

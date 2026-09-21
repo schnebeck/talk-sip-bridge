@@ -36,10 +36,11 @@ BRIDGE_CODE=/opt/talk-sip-bridge \
 | `test_room_state.py` | Who is in a room's call, replayed from recorded signaling traffic |
 | `test_talk_messages.py` | The shape of every signaling message this bridge sends |
 | `test_talk_ocs.py` | The OCS call sequence, against a recording opener |
-| `test_dialout.py` | Reading a dialout request, the dial plan, and the reply Talk gets |
+| `test_dialout.py` | Reading a dialout request, the dial plan, the reply Talk gets, and which of the two connections each message goes out on |
 | `test_registrar.py` | Registered versus meant-to-be-registered, and recovery from a failed refresh |
 | `test_call.py` | The per-call state the Talk side accumulates |
 | `test_call_media.py` | Which connection a media message belongs to, and teardown of both |
+| `test_ws_dump.py` | Reading signaling messages back out of a capture - masked frames, split frames, two in one packet |
 | `test_media.py` | Resampling between the call's rate and Talk's 48kHz |
 
 Tests that need the media stack (numpy, av, aiortc) skip themselves where it
@@ -95,6 +96,19 @@ its docstring.
 | `test_dialin_ivr.py` | The same, plus a SIP-enabled conversation whose token is all digits: dials its meeting id, with a PIN if it wants one, and checks that wrong ids end the call |
 | `test_talk_to_phone.py` | The other direction, with nobody human in it: `talk_participant.py` publishes a tone into the conversation and the tone is measured in the RTP the caller receives |
 | `relay_probe.py` | The media relay on its own, two ends on two hosts: a paced stream in on the overlay side, arrival times and losses out on the LAN side |
+| `ws_dump.py` | Nothing running: reads signaling messages back out of a `tcpdump` capture, unmasking what the browser sent |
+| `send_control.py` | A signaling server: sends a phone one of the control messages Talk's UI sends it - hang up, mute - without a browser |
+| `room_listener.py` | The same: a second internal connection that joins a room and prints what the room tells it |
+
+The last three exist for questions no log on one side can answer. Both ends
+of every signaling conversation cross one loopback port on the Nextcloud host
+in plain text - the reverse proxy decrypts the browser's WSS before it gets
+there - so `tcpdump -i lo -s 0 -w cap.pcap port <signaling port>` plus
+`ws_dump.py` shows what one participant sent *and* what another was handed.
+`send_control.py` and `room_listener.py` then play the other side: they act as
+Talk's UI and as this bridge's room connection, so a failure can be pinned to
+one of them rather than argued about. A capture contains the internal secret
+in the `hello` - delete it when the question is answered.
 
 `test_dialin_answer.py` is the one test here that needs no telephony at
 all. A dial-in number has to arrive as a *different* number than the one a

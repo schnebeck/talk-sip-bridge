@@ -175,7 +175,7 @@ async def right_number(gateway, client, line, session):
     record_result("the caller is let into the conversation they named",
                   bool(entry) and entry.roomid == MEETING_ID,
                   (entry.roomid if entry else "none") + " wanted " + MEETING_ID)
-    actor = (entry.dialin_actor or {}) if entry else {}
+    actor = (entry.actor or {}) if entry else {}
     record_result("and is a participant of it", bool(actor.get("actorId")),
                   f"{actor.get('actorType')}/{str(actor.get('actorId'))[:12]}")
 

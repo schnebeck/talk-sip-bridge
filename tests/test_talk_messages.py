@@ -43,15 +43,22 @@ class HelloTest(unittest.TestCase):
         without it the hello is rejected."""
         self.assertEqual(self.hello["hello"]["auth"]["params"]["backend"], BACKEND)
 
-    def test_both_features_are_declared(self):
-        """start-dialout to receive dialout requests at all, and
-        internal-incall so audio is announced when the publisher exists
-        rather than the moment the connection opens."""
-        self.assertEqual(set(self.hello["hello"]["features"]), {"start-dialout", "internal-incall"})
+    def test_each_connection_declares_only_its_own_role(self):
+        """The two cannot be combined: a "start-dialout" session that
+        joins a room is dropped from the server's dialout candidates for
+        good, and only a fresh hello puts it back. So one connection
+        takes dialout requests and never enters a room, and the other
+        owns its in-call flags because it publishes the call's audio."""
+        dialout = m.hello(SECRET, BACKEND, m.DIALOUT_FEATURES)
+        room = m.hello(SECRET, BACKEND, m.ROOM_FEATURES)
+        self.assertEqual(dialout["hello"]["features"], ["start-dialout"])
+        self.assertEqual(room["hello"]["features"], ["internal-incall"])
+        self.assertNotIn("start-dialout", room["hello"]["features"],
+                         "the room connection would lose this on its first join anyway")
 
     def test_the_declared_features_cannot_be_mutated_through_the_message(self):
-        self.hello["hello"]["features"].append("nonsense")
-        self.assertNotIn("nonsense", m.FEATURES)
+        m.hello(SECRET, BACKEND, m.ROOM_FEATURES)["hello"]["features"].append("nonsense")
+        self.assertNotIn("nonsense", m.ROOM_FEATURES)
 
 
 class SessionTest(unittest.TestCase):
@@ -141,6 +148,12 @@ class RoomAndFlagsTest(unittest.TestCase):
         already_joined error that means the same thing."""
         self.assertEqual(m.join_room("room-token")["id"], m.ROOM_REQUEST_ID)
         self.assertEqual(m.join_room("room-token")["room"], {"roomid": "room-token"})
+
+    def test_an_empty_room_id_leaves_the_room(self):
+        """There is no separate leave message; a session is in one room
+        at a time and an empty id means none."""
+        self.assertEqual(m.leave_room()["room"], {"roomid": ""})
+        self.assertEqual(m.leave_room()["id"], m.ROOM_REQUEST_ID)
 
     def test_in_call_flags_are_sent_as_given(self):
         message = m.set_incall(m.FLAG_IN_CALL | m.FLAG_WITH_AUDIO)
