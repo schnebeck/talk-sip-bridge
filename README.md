@@ -23,10 +23,11 @@ contradicts the specification.
 |---|---|
 | [`docs/SIGNALING-API.md`](./docs/SIGNALING-API.md) | The Talk side: the signaling server's internal-client protocol and Talk's OCS call API |
 | [`docs/SIP-API.md`](./docs/SIP-API.md) | The phone side: registration, calls in both directions, SDP, RTP, key presses |
+| [`docs/ADMIN.md`](./docs/ADMIN.md) | Installing, checking, operating and fixing it - the path through the rest |
 | [`docs/CONCEPT.md`](./docs/CONCEPT.md) | What this bridge does with them, and why each decision went the way it did |
 | [`docs/CONFIG.md`](./docs/CONFIG.md) | Every setting, what it costs either way |
 | [`docs/REFERENCE-CALL.md`](./docs/REFERENCE-CALL.md) | What a working call logs, so a broken one can be held against it |
-| [`deploy/README.md`](./deploy/README.md) | Installation |
+| [`deploy/README.md`](./deploy/README.md) | The installation artifacts themselves |
 | [`relay/README.md`](./relay/README.md) | For a gateway the bridge cannot reach directly |
 | [`tests/README.md`](./tests/README.md) | What is covered offline, and what needs real calls |
 

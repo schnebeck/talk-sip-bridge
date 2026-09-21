@@ -1,8 +1,13 @@
 # Configuration
 
 All configuration is via environment variables (`bridge/config.py`), loaded
-by `deploy/bridge.env` in a real deployment (see `deploy/bridge.service`).
-No IPs, ports, or secrets are hardcoded in code.
+by `/etc/talk-sip-bridge/env` in a real deployment (see
+`deploy/talk-sip-bridge.service`). No IPs, ports, or secrets are hardcoded
+in code.
+
+This is the reference, one variable at a time. Which of them to set in what
+order, and which have consequences beyond themselves, is in
+[`ADMIN.md`](./ADMIN.md).
 
 ## Single line vs. multiple lines
 

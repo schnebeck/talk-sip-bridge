@@ -3,6 +3,10 @@
 Plain configuration artifacts (file contents and target paths), consumed by
 systemd - no ad-hoc scripts.
 
+The steps below install them. For what has to exist first, how to tell
+whether it works afterwards, and what the failures look like, see
+[`../docs/ADMIN.md`](../docs/ADMIN.md).
+
 ## Bridge daemon
 
 1. Create a dedicated system user: `useradd --system --no-create-home talk-sip-bridge`.
