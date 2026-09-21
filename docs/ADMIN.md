@@ -102,7 +102,9 @@ its own pair of signaling connections.
    While evaluating, restrict who sees the call button with
    `sip_bridge_groups`.
 
-5. **The admin app**, optionally: copy
+5. **The admin app**, optionally — see
+   [`nextcloud-app/README.md`](../nextcloud-app/README.md) for what it is
+   and is not: copy
    [`nextcloud-app/talk_sip_bridge`](../nextcloud-app/talk_sip_bridge) into
    `custom_apps/` and `occ app:enable talk_sip_bridge`. It shows the line's
    status and lets registration be switched on and off. If the daemon's
@@ -154,6 +156,82 @@ Add `?line=<id>` for a specific line; without it the first configured one
 is used. **None of this is authenticated.** `BRIDGE_CONTROL_BIND` must
 name an address that Nextcloud can reach and nobody else can — loopback,
 or a container bridge address. Never a public interface.
+
+### The control API in full
+
+Three endpoints, no authentication, no versioning, JSON in both
+directions (`bridge/control_api.py`). The admin app is one client of it;
+anything that can reach the address is another.
+
+**Every response is a status document**, including the answer to a
+`POST`, so nothing has to ask again to see what changed:
+
+```json
+{
+  "line": "default",
+  "registered": true,
+  "username": "sip-phone",
+  "proxy": "192.0.2.1:5060",
+  "last_error": null,
+  "active_call": null,
+  "lines": [ { … the same fields, once per configured line … } ]
+}
+```
+
+| Field | |
+|---|---|
+| `line` | the line's id — `default` unless `BRIDGE_LINES` names others |
+| `registered` | whether the gateway currently holds a registration for it |
+| `username` | the SIP user it registers as |
+| `proxy` | `host:port` it registers with — the relay's address where one is used, not the gateway's |
+| `last_error` | why the last registration attempt failed, as a string, or `null`. Cleared by the next attempt that succeeds, so `registered: true` always comes with `last_error: null` |
+| `active_call` | `null`, or an object |
+| `lines` | always present: one entry per configured line, each the fields above |
+
+**`active_call`**, when there is one:
+
+```json
+{"direction": "inbound", "status": "connected", "number": "**622"}
+```
+
+`direction` is `inbound` or `outbound`; `status` is `ringing`, `dialing`
+or `connected`; `number` is the other party as the gateway wrote it, or
+`null`.
+
+**The single-line shape is the flat one.** With one line configured — the
+common case — that line's fields sit at the top level *and* in `lines`.
+With several, only `lines` carries them and the top level has just that
+array. A client that reads `lines[0]` works in both cases; one that reads
+`registered` at the top level silently reads the first line's state once
+a second is added.
+
+| Request | Answers |
+|---|---|
+| `GET /status` | `200` with the document above |
+| `POST /toggle` | `200` when the gateway agreed, `502` when the attempt did not get through — `last_error` then says why. Both carry the full status |
+| `POST /hangup` | `200` and the status. Ending nothing is not an error |
+| any other path | `404` `{"error": "not found"}` |
+| `?line=<id>` naming a line that is not configured | `404` `{"error": "unknown line 'x'"}` |
+
+`?line=<id>` selects the line for `POST`; `GET /status` ignores it and
+always reports everything.
+
+Three things a client must not assume.
+
+**`POST /toggle` has no direction.** It registers a line that is off and
+deregisters one that is on, so two clients racing each other end up
+wherever the second one left it. Read `registered` back rather than
+tracking it.
+
+**A `502` is not final.** Switching a line on marks it as wanted and
+starts the keepalive, which keeps retrying every few seconds whatever
+the first REGISTER did. `502` says the gateway had not agreed *yet*, not
+that the line is off — a client that treats it as a failure and offers
+to try again is offering something already happening. Poll `/status`.
+
+**The server holds no state of its own.** It reports what the registrar
+and the call manager say at that instant, so polling it during a call is
+cheap and safe.
 
 ### Updating without cutting a call
 
