@@ -1,3 +1,20 @@
+<!--
+talk-sip-bridge - tests/README.md
+What the tests are, which of them need hardware, and how to run them.
+
+  Copyright (C) 2026 Thorsten Schnebeck <thorsten.schnebeck@gmx.net>
+  Produced by Thorsten Schnebeck - the idea, the decisions, the testing.
+  Written by Anthropic Claude Opus 5 - AI generated content.
+
+  Free software under the GNU General Public License, version 3 or later.
+  There is no warranty, to the extent permitted by law. The full text is
+  in LICENSES/GPL-3.0-or-later.txt.
+
+SPDX-FileCopyrightText: (C) 2026 Thorsten Schnebeck <thorsten.schnebeck@gmx.net>
+SPDX-FileContributor: Anthropic Claude Opus 5 (AI generated content)
+SPDX-License-Identifier: GPL-3.0-or-later
+-->
+
 # Tests
 
 Installed and removed separately from the daemon. Nothing here is needed to
@@ -15,14 +32,20 @@ independent of each other.
 
 No phone gateway, no signaling server, no network, no sockets.
 
-`test_static.py` needs one thing the others do not - `ruff`, from
-`tests/requirements.txt` - and skips itself without it. It is the only
-check that sees a name missing *inside* a function, which is a module
-that imports perfectly and fails the moment that line runs; the rules
-it applies are in `ruff.toml` at the top of the repository. It also
-covers `tests/hardware/`, which the suite never runs, so it is what
-notices when a refactor leaves one of those scripts calling a method
-that moved.
+Two of them read the source rather than run it, and each needs one tool
+the rest do not - `ruff` and `reuse`, both in `tests/requirements.txt`.
+Each skips itself when its own tool is absent.
+
+`test_static.py` is the only check that sees a name missing *inside* a
+function, which is a module that imports perfectly and fails the moment
+that line runs; the rules it applies are in `ruff.toml` at the top of the
+repository. It also covers `tests/hardware/`, which the suite never runs,
+so it is what notices when a refactor leaves one of those scripts calling
+a method that moved.
+
+`test_headers.py` is the only check that reads what the files say about
+themselves: that each one names its own path, states a licence, and - for
+Python - still describes itself the way its module docstring does.
 
 ```
 python3 -m unittest discover -s tests -t .                       # in a checkout
@@ -64,6 +87,7 @@ BRIDGE_CODE=/opt/talk-sip-bridge \
 | `test_empty_room.py` | A room that looks empty for a moment - saving a microphone setting is a leave and a join, not the end of a conversation |
 | `test_late_joiner.py` | Somebody joining after the phone is already publishing - the dial-in case, where the caller reaches an empty room |
 | `test_static.py` | What the suite cannot see: names used but never defined, imports never used, and the layout rules in `ruff.toml` |
+| `test_headers.py` | Every file states its licence: a header naming the file it sits in, or an entry in `REUSE.toml` for the ones that cannot carry one. A Python header also has to still say what its module docstring says |
 
 Tests that need the media stack (numpy, av, aiortc) skip themselves where it
 is absent, so the suite is meaningful on a bare interpreter and complete in

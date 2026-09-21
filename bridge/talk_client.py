@@ -1,8 +1,26 @@
-"""Connects to the Nextcloud Talk standalone signaling server as an
-"internal client" with the "start-dialout" feature flag, so Talk's own
-native call UI (not a custom chat-bot command, see docs/CONCEPT.md) can
-trigger outbound calls and receive real, named "phone" participants for
-inbound ones.
+# talk-sip-bridge - bridge/talk_client.py
+# The bridge's two connections to Talk's signaling server, and what arrives
+# on them.
+#
+#   Copyright (C) 2026 Thorsten Schnebeck <thorsten.schnebeck@gmx.net>
+#   Produced by Thorsten Schnebeck - the idea, the decisions, the testing.
+#   Written by Anthropic Claude Opus 5 - AI generated content.
+#
+#   Free software under the GNU General Public License, version 3 or later.
+#   There is no warranty, to the extent permitted by law. The full text is
+#   in LICENSES/GPL-3.0-or-later.txt.
+#
+# SPDX-FileCopyrightText: (C) 2026 Thorsten Schnebeck <thorsten.schnebeck@gmx.net>
+# SPDX-FileContributor: Anthropic Claude Opus 5 (AI generated content)
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+"""The bridge's two connections to Talk's signaling server, and what arrives
+on them.
+
+Both are "internal clients"; the one carrying the "start-dialout" feature
+flag is what lets Talk's own native call UI (not a custom chat-bot command,
+see docs/CONCEPT.md) trigger outbound calls and receive real, named "phone"
+participants for inbound ones.
 
 Protocol reference (public, no reference implementation found anywhere -
 built directly against this documentation, see docs/CONCEPT.md):

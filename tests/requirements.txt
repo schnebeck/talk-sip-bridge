@@ -1,5 +1,21 @@
-# Only for the static check in test_static.py, which skips itself when
-# this is absent. Deliberately not in bridge/requirements.txt: nothing
-# the daemon runs needs it, and a deployment venv should carry nothing
-# it does not run.
-ruff
+# talk-sip-bridge - tests/requirements.txt
+# What the static check needs - the daemon needs none of it.
+#
+#   Copyright (C) 2026 Thorsten Schnebeck <thorsten.schnebeck@gmx.net>
+#   Produced by Thorsten Schnebeck - the idea, the decisions, the testing.
+#   Written by Anthropic Claude Opus 5 - AI generated content.
+#
+#   Free software under the GNU General Public License, version 3 or later.
+#   There is no warranty, to the extent permitted by law. The full text is
+#   in LICENSES/GPL-3.0-or-later.txt.
+#
+# SPDX-FileCopyrightText: (C) 2026 Thorsten Schnebeck <thorsten.schnebeck@gmx.net>
+# SPDX-FileContributor: Anthropic Claude Opus 5 (AI generated content)
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Only for the two checks that read the source rather than run it, each
+# of which skips itself when its tool is absent. Deliberately not in
+# bridge/requirements.txt: nothing the daemon runs needs either, and a
+# deployment venv should carry nothing it does not run.
+ruff        # test_static.py  - style, and names that do not exist
+reuse       # test_headers.py - the licence headers, against the spec

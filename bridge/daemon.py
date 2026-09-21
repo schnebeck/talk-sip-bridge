@@ -1,8 +1,27 @@
 #!/usr/bin/env python3
-"""Production daemon: for each configured line (see config.py's Config.lines
-- one by default, more if BRIDGE_LINES is set), connects to Talk's signaling
-server as a dedicated dialout-capable internal client and registers with
-that line's own gateway. Exposes a local HTTP control API (GET /status,
+# talk-sip-bridge - bridge/daemon.py
+# The production daemon: one signaling client and one gateway registration
+# per configured line.
+#
+#   Copyright (C) 2026 Thorsten Schnebeck <thorsten.schnebeck@gmx.net>
+#   Produced by Thorsten Schnebeck - the idea, the decisions, the testing.
+#   Written by Anthropic Claude Opus 5 - AI generated content.
+#
+#   Free software under the GNU General Public License, version 3 or later.
+#   There is no warranty, to the extent permitted by law. The full text is
+#   in LICENSES/GPL-3.0-or-later.txt.
+#
+# SPDX-FileCopyrightText: (C) 2026 Thorsten Schnebeck <thorsten.schnebeck@gmx.net>
+# SPDX-FileContributor: Anthropic Claude Opus 5 (AI generated content)
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+"""The production daemon: one signaling client and one gateway registration
+per configured line.
+
+Lines come from config.py's Config.lines - one by default, more if
+BRIDGE_LINES is set. Each connects to Talk's signaling server as a
+dedicated dialout-capable internal client and registers with that line's
+own gateway. It exposes a local HTTP control API (GET /status,
 POST /toggle) for the Nextcloud app to enable/disable registration. A
 brand new deployment starts with registration off, nothing calls a gateway
 until toggled on; a line that was on when the process last stopped resumes

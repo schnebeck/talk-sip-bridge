@@ -1,7 +1,24 @@
-"""G.722 codec via PyAV/libavcodec (already a dependency of aiortc) - unlike
-G.711, G.722's sub-band ADPCM coding is stateful across frames, so unlike
-g711.py this needs a persistent encoder/decoder object per call rather than
-a stateless function.
+# talk-sip-bridge - bridge/g722.py
+# G.722 via PyAV/libavcodec - stateful across frames, unlike G.711.
+#
+#   Copyright (C) 2026 Thorsten Schnebeck <thorsten.schnebeck@gmx.net>
+#   Produced by Thorsten Schnebeck - the idea, the decisions, the testing.
+#   Written by Anthropic Claude Opus 5 - AI generated content.
+#
+#   Free software under the GNU General Public License, version 3 or later.
+#   There is no warranty, to the extent permitted by law. The full text is
+#   in LICENSES/GPL-3.0-or-later.txt.
+#
+# SPDX-FileCopyrightText: (C) 2026 Thorsten Schnebeck <thorsten.schnebeck@gmx.net>
+# SPDX-FileContributor: Anthropic Claude Opus 5 (AI generated content)
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+"""G.722 via PyAV/libavcodec - stateful across frames, unlike G.711.
+
+libavcodec is already a dependency of aiortc, so this costs nothing. The
+state is the point: G.722's sub-band ADPCM coding carries across frames,
+so unlike g711.py this needs a persistent encoder/decoder object per call
+rather than a stateless function.
 
 Audio is 16kHz despite the RTP payload advertising "G722/8000" in SDP - a
 historical quirk of RFC 3551, where the clock rate in the codec's rtpmap

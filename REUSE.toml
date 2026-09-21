@@ -1,0 +1,57 @@
+# talk-sip-bridge - REUSE.toml
+# Licensing for the files that cannot carry a header of their own.
+#
+#   Copyright (C) 2026 Thorsten Schnebeck <thorsten.schnebeck@gmx.net>
+#   Produced by Thorsten Schnebeck - the idea, the decisions, the testing.
+#   Written by Anthropic Claude Opus 5 - AI generated content.
+#
+#   Free software under the GNU General Public License, version 3 or later.
+#   There is no warranty, to the extent permitted by law. The full text is
+#   in LICENSES/GPL-3.0-or-later.txt.
+#
+# SPDX-FileCopyrightText: (C) 2026 Thorsten Schnebeck <thorsten.schnebeck@gmx.net>
+# SPDX-FileContributor: Anthropic Claude Opus 5 (AI generated content)
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Every other file states its licence in its own header. The ones listed
+# here cannot: JSON has no comment syntax, and the recordings under
+# tests/fixtures are read back byte for byte - a header in a captured SIP
+# message would change what is being tested.
+
+version = 1
+SPDX-PackageName = "talk-sip-bridge"
+SPDX-PackageSupplier = "Thorsten Schnebeck <thorsten.schnebeck@gmx.net>"
+
+# Recorded traffic and audio from real calls, and the JSON captures the
+# tests replay. Kept exactly as they came off the wire.
+[[annotations]]
+path = [
+    "tests/fixtures/app_joins_room_only.json",
+    "tests/fixtures/ring_then_cancel.json",
+    "tests/fixtures/success.json",
+    "tests/fixtures/fritzbox/401_challenge.txt",
+    "tests/fixtures/fritzbox/cancel.txt",
+    "tests/fixtures/fritzbox/inbound_invite.txt",
+    "tests/fixtures/fritzbox/dtmf-keypad.wav",
+    "tests/fixtures/fritzbox/dtmf-keypad-app.wav",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "(C) 2026 Thorsten Schnebeck <thorsten.schnebeck@gmx.net>"
+SPDX-FileContributor = "Anthropic Claude Opus 5 (AI generated content)"
+SPDX-License-Identifier = "GPL-3.0-or-later"
+
+# Part of the Nextcloud app, which is AGPL like Nextcloud itself.
+[[annotations]]
+path = ["nextcloud-app/talk_sip_bridge/l10n/de.json"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "(C) 2026 Thorsten Schnebeck <thorsten.schnebeck@gmx.net>"
+SPDX-FileContributor = "Anthropic Claude Opus 5 (AI generated content)"
+SPDX-License-Identifier = "AGPL-3.0-or-later"
+
+# The project's own licence text, kept at the top level as well so that a
+# forge shows it without being told where to look.
+[[annotations]]
+path = ["LICENSE"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "Free Software Foundation, Inc. <https://fsf.org/>"
+SPDX-License-Identifier = "GPL-3.0-or-later"

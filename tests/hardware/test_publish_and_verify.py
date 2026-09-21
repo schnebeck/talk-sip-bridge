@@ -1,8 +1,24 @@
 #!/usr/bin/env python3
-"""Verifies TalkClient's audio-publish path (room join, self-addressed
-WebRTC offer, addsession) without any SIP call or gateway involved: a local
-RTP loopback feeds a test tone into CallAudio.publish(), and a second
-internal client in the same process subscribes and checks it via FFT. Both
+# talk-sip-bridge - tests/hardware/test_publish_and_verify.py
+# Checks the audio-publish path with no SIP call and no gateway involved.
+#
+#   Copyright (C) 2026 Thorsten Schnebeck <thorsten.schnebeck@gmx.net>
+#   Produced by Thorsten Schnebeck - the idea, the decisions, the testing.
+#   Written by Anthropic Claude Opus 5 - AI generated content.
+#
+#   Free software under the GNU General Public License, version 3 or later.
+#   There is no warranty, to the extent permitted by law. The full text is
+#   in LICENSES/GPL-3.0-or-later.txt.
+#
+# SPDX-FileCopyrightText: (C) 2026 Thorsten Schnebeck <thorsten.schnebeck@gmx.net>
+# SPDX-FileContributor: Anthropic Claude Opus 5 (AI generated content)
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+"""Checks the audio-publish path with no SIP call and no gateway involved.
+
+Room join, self-addressed WebRTC offer, addsession: a local RTP loopback
+feeds a test tone into CallAudio.publish(), and a second internal client in
+the same process subscribes and checks it via FFT. Both
 run in the same process with no gap between publish and subscribe - Janus
 closes an unsubscribed publisher's connection after a short idle period, so
 driving this as two separately started scripts gives a false negative.

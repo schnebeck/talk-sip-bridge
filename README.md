@@ -1,3 +1,20 @@
+<!--
+talk-sip-bridge - README.md
+What this bridge is, what it does, and where to read on.
+
+  Copyright (C) 2026 Thorsten Schnebeck <thorsten.schnebeck@gmx.net>
+  Produced by Thorsten Schnebeck - the idea, the decisions, the testing.
+  Written by Anthropic Claude Opus 5 - AI generated content.
+
+  Free software under the GNU General Public License, version 3 or later.
+  There is no warranty, to the extent permitted by law. The full text is
+  in LICENSES/GPL-3.0-or-later.txt.
+
+SPDX-FileCopyrightText: (C) 2026 Thorsten Schnebeck <thorsten.schnebeck@gmx.net>
+SPDX-FileContributor: Anthropic Claude Opus 5 (AI generated content)
+SPDX-License-Identifier: GPL-3.0-or-later
+-->
+
 # Talk SIP Bridge
 
 Connects a SIP phone line to Nextcloud Talk using Talk's native SIP bridge
@@ -107,3 +124,35 @@ should stay below the cost of the change it guards.
   needed for that case; a directly reachable gateway needs neither.
 - Deployed as the primary bridge (`deploy/`), running as the
   `talk-sip-bridge` systemd service.
+
+## Licence
+
+Produced by Thorsten Schnebeck - the idea, the decisions, the testing.
+Written by Anthropic Claude Opus 5: every line of code and documentation
+here is AI generated content, directed and reviewed by the copyright
+holder. Copyright (C) 2026 Thorsten Schnebeck.
+
+| | |
+|---|---|
+| `nextcloud-app/talk_sip_bridge/` | **AGPL-3.0-or-later** |
+| everything else | **GPL-3.0-or-later** |
+
+The app is the one part with no free choice: it builds on Nextcloud's
+`OCP` interfaces, and Nextcloud is AGPL-3.0-or-later. The two halves only
+ever talk over HTTP, so nothing else is affected by it. Everything else
+depends on nothing that constrains the choice - `aiortc`, `av`, `numpy`
+and `websockets` are BSD-licensed, the relay is pure standard library, and
+`test-peer/` ships configuration rather than any part of Asterisk.
+
+Both licence texts are in [`LICENSES/`](./LICENSES) verbatim, and every
+file carries its own header. Files that cannot - JSON, and the recordings
+under `tests/fixtures/` that are read back byte for byte - are covered by
+[`REUSE.toml`](./REUSE.toml). The project follows the
+[REUSE](https://reuse.software) specification, which is also what
+Nextcloud itself uses; `tests/test_headers.py` checks that every file is
+covered, that each header names the file it sits in, and that a Python
+header still says what its module docstring says.
+
+This program is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+or FITNESS FOR A PARTICULAR PURPOSE.
