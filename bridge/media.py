@@ -100,6 +100,9 @@ class SipAudioTrack(AudioStreamTrack):
         self._pts = 0
         self._next_frame_at = None
         self._stats = {"from_phone": 0, "silence": 0, "dropped": 0, "peak": 0, "since": None}
+        # The same numbers added up across several of those seconds, so
+        # the journal carries one line a quarter-minute instead of sixty.
+        self._reported = {"packets": 0, "silence": 0, "dropped": 0, "peak": 0, "since": 0.0}
         self._silence = np.zeros(rtp_session.samples_per_packet, dtype=np.int16)
         self._agc = Agc(target_peak=config.agc_target_peak, max_gain=config.agc_max_gain,
                         silence_threshold=config.agc_silence_threshold) if config.agc_enabled else None
@@ -154,17 +157,28 @@ class SipAudioTrack(AudioStreamTrack):
         elif loop.time() - self._stats["since"] >= 1.0:
             s = self._stats
             gain = f", agc gain {self._agc.gain:.1f}x" if self._agc is not None else ""
+            self._report_talking(s["peak"] >= config.agc_silence_threshold)
+            self._reported["packets"] += s["from_phone"]
+            self._reported["silence"] += s["silence"]
+            self._reported["dropped"] += s["dropped"]
+            self._reported["peak"] = max(self._reported["peak"], s["peak"])
             # Dropped packets are the ones that arrived faster than real
             # time and had to go to keep latency down. They are not
             # missing audio the way silence-filled is - they are audio
             # thrown away - and they sound like chopping, so they are
             # worth their own number rather than being invisible.
-            print(f"[talk] Phone audio: {s['from_phone']} packets, {s['silence']} silence-filled, "
-                  f"{s['dropped']} dropped, peak {s['peak']} (before agc){gain}")
-            # Whether the caller is speaking, to whoever wants to show it.
-            # The same threshold the gain control uses to tell speech from
-            # the line's own noise floor, measured on this deployment.
-            self._report_talking(s["peak"] >= config.agc_silence_threshold)
+            # Speaking is answered every second - it is what the room
+            # renders - while the numbers are added up and said less
+            # often. Per second they were four fifths of the journal.
+            since = self._reported["since"]
+            interval = config.audio_report_interval
+            if interval and loop.time() - since >= interval:
+                r = self._reported
+                print(f"[talk] Phone audio over {loop.time() - since:.0f}s: {r['packets']} packets, "
+                      f"{r['silence']} silence-filled, {r['dropped']} dropped, "
+                      f"peak {r['peak']} (before agc){gain}")
+                self._reported = {"packets": 0, "silence": 0, "dropped": 0, "peak": 0,
+                                  "since": loop.time()}
             self._stats = {"from_phone": 0, "silence": 0, "dropped": 0, "peak": 0, "since": loop.time()}
 
         now = loop.time()

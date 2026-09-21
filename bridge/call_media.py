@@ -16,6 +16,7 @@ from aiortc import RTCConfiguration, RTCIceCandidate, RTCPeerConnection, RTCSess
 
 import numpy as np
 
+from config import config
 from media import SipAudioTrack, StreamResampler, frame_to_mono_pcm
 
 # aiortc defaults to a public STUN server, which costs a measured 5 seconds
@@ -209,8 +210,10 @@ class CallMedia:
                 stats["peak"] = max(stats["peak"], int(np.abs(pcm).max()) if len(pcm) else 0)
                 if stats["since"] is None:
                     stats["since"] = loop.time()
-                elif loop.time() - stats["since"] >= 1.0:
-                    print(f"[talk] Talk audio for {self.sip_call_id}: {stats['frames']} frames, "
+                elif config.audio_report_interval and (
+                        loop.time() - stats["since"] >= config.audio_report_interval):
+                    print(f"[talk] Talk audio for {self.sip_call_id} over "
+                          f"{loop.time() - stats['since']:.0f}s: {stats['frames']} frames, "
                           f"peak {stats['peak']}")
                     stats = {"frames": 0, "peak": 0, "since": loop.time()}
                 if resampler is None or resampler.in_rate != frame.sample_rate:

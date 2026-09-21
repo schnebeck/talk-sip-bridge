@@ -296,6 +296,12 @@ class Config:
         # longer. Waiting too long costs a caller some silence on a line
         # that is busy anyway; waiting too little costs the call.
         self.empty_room_grace = _seconds("BRIDGE_EMPTY_ROOM_GRACE", 30)
+        # How often a call's audio is summarised in the journal. Per
+        # second it is four fifths of everything the daemon ever logs
+        # and buries the lines that say what happened; the numbers still
+        # answer "is anything arriving, and is it being thrown away", so
+        # they are added up rather than dropped. 0 turns them off.
+        self.audio_report_interval = _seconds("BRIDGE_AUDIO_REPORT_INTERVAL", 15)
 
         # A recording played to a caller on a conference number instead of
         # the beeps that otherwise ask for a meeting id - 16-bit WAV, any
