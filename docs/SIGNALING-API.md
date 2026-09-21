@@ -434,9 +434,45 @@ normally; `candidate` messages flow both ways.
 - **A single `requestoffer` is not enough.** If the target's publisher does not
   exist yet the server replies `client_not_found` and **does not queue** the
   request. Talk's own client re-requests every 10 seconds for this reason.
-- Both sides must be in the call before either may subscribe to the other.
 - A late duplicate `offer` for an already-negotiated subscription must be
   ignored, or answering it resets the working connection.
+
+### What the server requires, and what it does not
+
+```go
+// A user is only allowed to subscribe a stream if she is in the same room
+// as the other user and both have their "inCall" flag set.
+if !h.allowSubscribeAnyStream && !h.isInSameCall(ctx, session, message.Recipient.SessionId) {
+```
+
+That is the whole check (`hub.go`). Same room, both in the call — **no
+moderator rights, no permission, and no difference between a signed-in user
+and a guest**. Anyone allowed to join the call is allowed to be listened to.
+
+### Choosing whom to listen to
+
+A bridge carries one direction of the call by publishing and the other by
+subscribing to exactly one participant, and picking the wrong one is silent:
+the negotiation completes, the connection reports `connected`, and no audio
+ever arrives.
+
+| Rule | Why |
+|---|---|
+| Never a virtual session | It can carry no media at all |
+| Never one of the bridge's own connections | Subscribing to yourself negotiates and connects and carries nothing — see [Telling the roster apart](#telling-the-roster-apart) |
+| Prefer one whose flags carry `WITH_AUDIO` | A participant whose permissions do not let them speak joins without it (Talk sets it from `PERMISSIONS.PUBLISH_AUDIO`), and there is nothing to take from them |
+| Fall back to any person rather than to nobody | The flags are the server's word, and a muted microphone is a stream that exists and is merely silent |
+| Resolve several arrivals in a fixed order | They come in one event as a set; a retry that picks a different peer than the attempt before it is not a retry |
+
+**Look again when somebody joins.** Looking once, at the moment the call
+connects, is enough only when the other party is already there — which is the
+case for a dialout, since they placed the call. A caller who dials in reaches
+an empty room, so that one look finds nobody, and without a second look the
+phone is heard in Talk and hears nothing back for the whole call. Whoever
+enters the call afterwards is the first person there is to listen to.
+
+Replacing a subscription that already works is the opposite mistake, and a
+worse one: it tears down a connection that was carrying audio.
 
 ## Events
 
@@ -491,6 +527,36 @@ session as in-call long after its client is gone, which reading state makes
 indistinguishable from somebody answering. Tracking transitions also makes
 several sessions of one person (Talk in a browser and on a phone) unremarkable:
 only the one that moves counts.
+
+The flags are worth keeping whole rather than reduced to in-call yes/no: the
+remaining bits say which media a session publishes, and that decides whom
+there is any point subscribing to (see [Choosing whom to listen to](#choosing-whom-to-listen-to)).
+
+#### A stale in-call list, in every released server
+
+Up to and including **v2.1.1**, `Room.PublishUsersInCallChangedAll` does not
+update the cached user list it then sends to clients, so the next
+`participants`/`update` carries in-call entries for people who have left. What
+a browser shows for it: a phone conversation that drops back to "calling …"
+after the call ended, a participant count that is one too high, and a ring for
+somebody who is no longer there.
+
+None of that is visible from a bridge, and nothing a bridge does causes or
+cures it. The fix is two lines:
+
+```go
+ func (r *Room) PublishUsersInCallChangedAll(inCall int) {
++	for _, user := range r.users {
++		user["inCall"] = inCall
++	}
+```
+
+merged 2026-06-02 as `strukturag/nextcloud-spreed-signaling#1256`, after the
+v2.1.1 release of 2026-03-12 — so **no released version contains it**. Talk
+tracks the same symptom as `nextcloud/spreed#18185`, where its maintainer
+attributes it to the signaling server. Until a release carries the fix, treat
+a participant count that disagrees with `oc_talk_sessions` as the client's
+own bookkeeping, not as a call that failed to tear down.
 
 ## Control messages
 
@@ -582,6 +648,7 @@ Teardown, in this order:
 | 3 | R | `room` join | As step 5 above. |
 | 4 | R | `addsession` (+ actor if there is one), then `updatesession` | As steps 7–8 above. |
 | 5 | R | publish, then `incall` with audio, then subscribe | As steps 9–11 above. |
+| 6 | R | on `participants`/`update`, subscribe to whoever enters the call, if nobody is subscribed yet | **The step a dialout never needs.** A caller who dials in reaches an empty room, so step 5 finds nobody to listen to; without this the phone is heard in Talk and hears nothing back for the whole call. |
 
 Teardown is the same as for an outbound call, minus the dialout status.
 

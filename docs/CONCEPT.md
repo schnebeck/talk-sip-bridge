@@ -119,6 +119,12 @@ the daemon side is verified.
    call. The room roster (`_room_roster`) is only the fallback for dialout
    calls: it can hold sessions that dropped without the server ever announcing
    it, and asking one of those for audio fails.
+
+   Looked for again whenever somebody enters the call, and not only when the
+   call connects. Looking once is enough only where the other party is
+   already there, which is every dialout and no dial-in: a caller who dials
+   in reaches an empty room. A subscription that already works is never
+   replaced - that tears down a connection that was carrying audio.
 10. **Automatic gain control.** Phone-side audio only (`agc.py`, applied in
     `media.py`'s `SipAudioTrack`) - some handsets (e.g. a DECT cordless) have a much
     quieter microphone than a laptop/headset, with no way to adjust that
