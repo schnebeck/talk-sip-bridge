@@ -68,9 +68,12 @@ to whichever line the server picked, and only that line's own
 handed to a line that is already on a call is refused rather than passed
 to a free one. Inbound has neither problem - a call lands on the line
 whose registered number was actually dialled. The dialout request does
-carry its `roomid`, so routing by conversation is reachable; routing by
-the Nextcloud user who started the call is not, because that is not in
-the request at all.
+carry its `roomid`, but that is less useful than it looks: Talk's UI
+dials a number without asking for a conversation and creates one for
+that number itself, so the room identifies the callee rather than the
+caller. Routing on it would only be meaningful for a dialout started
+inside an existing conversation. The Nextcloud user who pressed the
+button is not in the request at all.
 
 Each line gets its own registration, its own `CallManager` (one call at a
 time, per line), and its own dedicated connection to the Talk signaling

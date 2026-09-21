@@ -229,9 +229,13 @@ And you cannot give a Nextcloud user their **own outgoing number**. Talk
 tells the bridge which conversation a call is for, but not who started
 it, and the number the other side sees is the account's own.
 
-Per conversation would be possible, since the conversation is in the
-request: "the sales conversation always calls out as the sales number".
-That is work in this bridge. Per user needs a change in Talk.
+Routing by conversation is only half an answer. The request does carry
+the conversation, so it could pick the account. But Talk's GUI lets you
+dial a number without choosing a conversation, and then makes one for
+that number behind the scenes. Routing on it would follow **who you
+called**, not who is calling. It would only mean something for the other
+path, where somebody presses *Call a phone number* inside an existing
+team conversation.
 
 **Two optional parts.** Install [`nextcloud-app/`](./nextcloud-app) for
 the admin page that switches the line on and off. Use
