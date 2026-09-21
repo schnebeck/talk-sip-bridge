@@ -37,11 +37,11 @@ def in_call(**flags):
     return state
 
 
-def client_with_call(*, publishing=True, listening_to=None, roster=None, room=None):
+def client_with_call(*, publishing=True, subscribed=False, roster=None, room=None):
     client = talk_client.TalkClient.__new__(talk_client.TalkClient)
     client._call_sessions_lock = threading.Lock()
     entry = Call(sip_call_id=CALL, kind=INBOUND, number="**620", roomid="room-token")
-    entry.media = mock.Mock(is_publishing=publishing, human_sessionid=listening_to)
+    entry.media = mock.Mock(is_publishing=publishing, subscriber_alive=subscribed)
     type(entry).is_publishing = property(lambda self: publishing)
     client._call_sessions = {CALL: entry}
     client._room_roster = roster if roster is not None else {HUMAN: {"is_human": True}}
@@ -68,11 +68,17 @@ class LateJoinerTest(unittest.TestCase):
     def test_the_person_who_joins_is_asked_for_their_audio(self):
         self.assertEqual(catch_up(client_with_call(), {HUMAN}), [(CALL, HUMAN)])
 
-    def test_nobody_is_asked_twice(self):
-        """A subscription already running must not be replaced - that is
-        how a working connection gets torn down and rebuilt."""
-        client = client_with_call(listening_to="somebody-else")
-        self.assertEqual(catch_up(client, {HUMAN}), [])
+    def test_a_living_subscription_is_never_replaced(self):
+        """Replacing one that works tears down a connection carrying
+        audio."""
+        self.assertEqual(catch_up(client_with_call(subscribed=True), {HUMAN}), [])
+
+    def test_a_dead_subscription_is_rebuilt(self):
+        """A client that changes its microphone tears its publisher
+        down and comes back a second later; the subscription to it does
+        not survive that, and nothing else would ever rebuild it."""
+        self.assertEqual(catch_up(client_with_call(subscribed=False), {HUMAN}),
+                         [(CALL, HUMAN)])
 
     def test_a_call_that_is_not_publishing_is_left_alone(self):
         """There is nothing to carry the audio into yet."""

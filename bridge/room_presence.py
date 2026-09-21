@@ -21,6 +21,11 @@ import talk_messages
 from call import DIALOUT
 from room_state import RoomCallState, is_room_wide_call_end
 
+# How long an empty room is given to fill up again before the phone call
+# is ended. A client that changes its microphone is back well inside a
+# second; a room that is really over stays empty.
+EMPTY_ROOM_GRACE = 5.0
+
 
 class RoomPresence:
     """One TalkClient's view of its room, working on its state."""
@@ -137,14 +142,43 @@ class RoomPresence:
             return
 
         if ringing_dialout_id is not None and left and not self.client._room_call.anyone_in_call_besides(ours):
-            # The last person left while the phone was still ringing.
-            self.client._hangup_sip("Nobody is left in the call - withdrawing the outbound call")
+            self.hang_up_if_still_empty("Nobody is left in the call - withdrawing the outbound call")
             return
 
         if not left:
             return
         if not self.client._room_call.anyone_in_call_besides(ours):
-            self.client._hangup_sip(f"Everyone but this bridge left the call ({len(left)} session(s)) - ending SIP side")
+            self.hang_up_if_still_empty(
+                f"Everyone but this bridge left the call ({len(left)} session(s)) - ending SIP side")
+
+    def hang_up_if_still_empty(self, reason: str):
+        """Waits before believing the room emptied.
+
+        A client that saves a new microphone leaves the call and comes
+        back a moment later, and so does one that reloads the page or
+        loses its network for a breath. Believing the first empty room
+        costs the call: measured, the media settings were saved and the
+        phone was hung up 900 ms later, mid-conversation.
+
+        An explicit end - "end meeting for everyone", or the phone
+        participant being hung up - does not come through here and is
+        acted on at once."""
+        asyncio.ensure_future(self._confirm_empty(reason))
+
+    async def _confirm_empty(self, reason: str):
+        await asyncio.sleep(EMPTY_ROOM_GRACE)
+        with self.client._call_sessions_lock:
+            ours = {self.client.own_sessionid}
+            for entry in self.client._call_sessions.values():
+                ours |= entry.own_session_ids()
+            still_a_call = bool(self.client._call_sessions)
+        if not still_a_call:
+            return  # it ended on its own meanwhile
+        if self.client._room_call.anyone_in_call_besides(ours):
+            print(f"[talk] The call filled up again within {EMPTY_ROOM_GRACE:.0f}s "
+                  f"- not ending the SIP side")
+            return
+        self.client._hangup_sip(reason)
 
     async def join(self, roomid: str) -> None:
         """Puts the room connection in the room. Two things need it, and

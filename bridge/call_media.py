@@ -95,6 +95,16 @@ class CallMedia:
     async def accept_publisher_answer(self, sdp: str):
         await self.publisher.setRemoteDescription(RTCSessionDescription(sdp=sdp, type="answer"))
 
+    @property
+    def subscriber_alive(self) -> bool:
+        """Whether the subscription is still a connection that could
+        carry audio. One that closed or failed is not, and the bridge
+        has to be free to ask somebody for their audio again - a client
+        that changes its microphone tears its publisher down and builds
+        a new one, and the old subscription dies with it."""
+        return (self.subscriber is not None
+                and self.subscriber.connectionState not in ("closed", "failed"))
+
     # -- subscriber: Talk -> phone ---------------------------------------
     def open_subscriber(self, human_sessionid: str, on_receiving=None):
         """Builds the subscribing connection. Audio only starts flowing when

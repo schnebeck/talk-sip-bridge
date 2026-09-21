@@ -57,6 +57,7 @@ BRIDGE_CODE=/opt/talk-sip-bridge \
 | `test_signaling_loop.py` | The two connections staying up: a message that cannot be handled costs only itself, a loop that ends is started again |
 | `test_resilience.py` | The same promise for the media receiver and the registration keepalive, where a dead thread is invisible from everywhere else |
 | `test_sip_bridge_api.py` | Talk's SIP endpoints as this bridge calls them, and which number reaches which conversation |
+| `test_empty_room.py` | A room that looks empty for a moment - saving a microphone setting is a leave and a join, not the end of a conversation |
 | `test_late_joiner.py` | Somebody joining after the phone is already publishing - the dial-in case, where the caller reaches an empty room |
 | `test_static.py` | Names used but never defined, and imports never used - what an importable module still gets wrong inside a function |
 

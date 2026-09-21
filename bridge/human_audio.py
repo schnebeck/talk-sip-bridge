@@ -65,7 +65,7 @@ class HumanAudio:
         with self.client._call_sessions_lock:
             entry = self.client._call_sessions.get(sip_call_id)
             media = entry.media if entry else None
-            if media is None or not entry.is_publishing or media.human_sessionid:
+            if media is None or not entry.is_publishing or media.subscriber_alive:
                 return  # nothing to publish into, or already listening to somebody
             people = [sessionid for sessionid in sorted(entered)
                       if self.client._room_roster.get(sessionid, {}).get("is_human")]
