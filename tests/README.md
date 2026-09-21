@@ -83,6 +83,7 @@ BRIDGE_CODE=/opt/talk-sip-bridge \
 | `test_call_media.py` | Which connection a media message belongs to, and teardown of both |
 | `test_ws_dump.py` | Reading signaling messages back out of a capture - masked frames, split frames, two in one packet |
 | `test_media.py` | Resampling between the call's rate and Talk's 48kHz |
+| `test_mixer.py` | Summing several participants into the one stream a phone can carry: the ring buffer's wrap, underrun and overrun; the gate; the limiter's look-ahead; and the two properties the module promises - the same calls give the same samples, and writers racing a reader corrupt nothing |
 | `test_answer.py` | Answering an inbound call: the codec chosen, and where the caller's audio is actually sent |
 | `test_hangup.py` | Every way a call can end, in both directions - and which SIP message each of them is |
 | `test_subscription.py` | The negotiation for another participant's audio, transition by transition |
