@@ -62,19 +62,22 @@ signaling server chooses. Setting `DIALOUT_NUMBER_ALLOWLIST` to
 something that matches nothing does not redirect the request to another
 line - it makes that request fail.
 
+Beyond that, a dialout is not routable by number either: the request goes
+to whichever line the server picked, and only that line's own
+`DIALOUT_NUMBER_ALLOWLIST` decides whether it is accepted. A request
+handed to a line that is already on a call is refused rather than passed
+to a free one. Inbound has neither problem - a call lands on the line
+whose registered number was actually dialled. The dialout request does
+carry its `roomid`, so routing by conversation is reachable; routing by
+the Nextcloud user who started the call is not, because that is not in
+the request at all.
+
 Each line gets its own registration, its own `CallManager` (one call at a
 time, per line), and its own dedicated connection to the Talk signaling
 server - see `docs/CONCEPT.md` point 3 for why a shared connection across
 lines wouldn't work (joining a room to publish one line's call audio makes
 that connection ineligible for new dial-out requests on any other line for
 as long as the connection stays open).
-
-Dial-out routing across multiple lines is not yet deterministic by number:
-a Talk-initiated "call a phone number" request is placed with whichever
-line's connection the signaling server currently considers available, and
-only that line's own `DIALOUT_NUMBER_ALLOWLIST` decides whether it's
-accepted. This is not a concern for inbound calls, which always land on
-whichever line's own registered number was actually dialed.
 
 ## Ring notification (a human "wins" an inbound call in Talk)
 
