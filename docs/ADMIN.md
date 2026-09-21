@@ -68,8 +68,16 @@ its own pair of signaling connections.
    ```
 
    `sip_bridge_dialin_info` only has to be non-empty — Talk treats an
-   empty one as "SIP is not configured". While evaluating, restrict who
-   sees the call button with `sip_bridge_groups`.
+   empty one as "SIP is not configured" — but it is not a placeholder:
+   it goes into the **invitation e-mail** a guest receives, under
+   "Dial-in information", beside the meeting id and their PIN
+   (`GuestManager::sendEmailInvitation`). It has to say which number to
+   call, and it is worth saying so when the answer is "none you can
+   reach": a recipient outside the phone system otherwise looks for a
+   number that is not there.
+
+   While evaluating, restrict who sees the call button with
+   `sip_bridge_groups`.
 
 5. **The admin app**, optionally: copy
    [`nextcloud-app/talk_sip_bridge`](../nextcloud-app/talk_sip_bridge) into
