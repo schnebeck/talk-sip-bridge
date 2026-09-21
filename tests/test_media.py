@@ -309,3 +309,38 @@ class BindTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@needs_media_stack
+class AudioReportTest(unittest.TestCase):
+    """The periodic "Phone audio over Ns" line, which is what says a call
+    is carrying sound at all.
+
+    Both windows are measured against `loop.time()`, whose zero is an
+    arbitrary point - roughly when the host booted. A window that starts
+    at 0.0 rather than unset is therefore not "the call began" but "the
+    host booted", so the very first report of every call fired after one
+    second, with almost nothing counted yet and the uptime printed as its
+    duration. Found by running tests/hardware/test_audio_quality.py
+    against a deployment, where the line read "over 109330s: 0 packets"
+    beside a measurement that had just recovered the tone at 99.2%.
+    """
+
+    def track(self):
+        from media import SipAudioTrack
+
+        class Session:
+            sample_rate = 8000
+            samples_per_packet = 160
+        return SipAudioTrack.__new__(SipAudioTrack), Session()
+
+    def test_neither_window_starts_at_an_absolute_zero(self):
+        """Both are lazily set on the first packet, so both measure the
+        call rather than the machine."""
+        from media import SipAudioTrack
+
+        track, session = self.track()
+        SipAudioTrack.__init__(track, session)
+        self.assertIsNone(track._stats["since"])
+        self.assertIsNone(track._reported["since"], "the reported window starts at a real zero")
+

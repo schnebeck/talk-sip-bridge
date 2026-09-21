@@ -244,8 +244,9 @@ them.
   rules in [`ruff.toml`](../ruff.toml). It is the only thing that sees a
   name missing *inside* a function - a module that imports perfectly and
   fails the moment that line runs. It also covers `tests/hardware/`,
-  which the suite never executes, so it is what notices when a refactor
-  leaves one of those scripts calling a method that moved.
+  which the suite never executes - though only for names: a method that
+  moved off a class is an attribute access no static check of that file
+  can judge, and `test_api.py` is what covers those.
 - **`test_headers.py`** checks that every tracked file states a licence,
   that each header names the file it is in, and that a Python header
   still says what its module docstring says. `reuse lint` runs as part

@@ -51,6 +51,7 @@ from aiortc import RTCIceCandidate, RTCPeerConnection, RTCSessionDescription
 from config import config
 from rtp import RtpSession
 import talk_messages
+import signaling
 from talk_client import TalkClient
 
 LOOPBACK_IP = "127.0.0.1"
@@ -228,9 +229,9 @@ async def main():
     async with websockets.connect(config.ws_url) as ws:
         client.ws = ws
         client.loop = asyncio.get_event_loop()
-        client.own_sessionid = await client._hello(ws, "room", talk_messages.ROOM_FEATURES)
+        client.own_sessionid = await signaling.hello(ws, "room", talk_messages.ROOM_FEATURES)
         message_loop_task = asyncio.ensure_future(
-            client._read("room", ws, client._handle_room_message))
+            signaling.read("room", ws, client._handle_room_message))
 
         # Register the call the way on_incoming_call does: publishing stops
         # as soon as this entry is gone, which is how a torn-down call

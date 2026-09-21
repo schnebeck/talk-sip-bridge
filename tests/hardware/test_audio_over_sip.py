@@ -48,6 +48,8 @@ from sip_registrar import SipRegistrar
 from sip_transport import SipTransport
 from test_audio_quality import build_signal, report, subscribe_and_record
 from test_call_lifecycle import SignalingClient, bridge_status
+import signaling
+import talk_messages
 from talk_client import TalkClient
 import websockets
 
@@ -146,7 +148,8 @@ async def main():
         async with websockets.connect(config.ws_url) as ws:
             client.ws = ws
             client.loop = asyncio.get_event_loop()
-            await client._hello()
+            client.own_sessionid = await signaling.hello(
+                ws, "room", talk_messages.ROOM_FEATURES)
             publisher = None
             deadline = asyncio.get_event_loop().time() + 20
             while asyncio.get_event_loop().time() < deadline and publisher is None:

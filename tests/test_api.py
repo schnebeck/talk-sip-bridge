@@ -297,6 +297,55 @@ class StubLineTest(unittest.TestCase):
         self.assertEqual(real - stub, set(), "StubLine is missing fields LineConfig sets")
 
 
+class HardwareScriptApiTest(unittest.TestCase):
+    """The same question asked of tests/hardware/, which nothing runs.
+
+    Those scripts drive the daemon's own objects, so a refactor breaks
+    them exactly the way it breaks a module - except that nothing
+    notices. `ruff` cannot: `client._hello()` is a perfectly good
+    attribute access on a name that exists, and only the real object
+    knows it does not have it. It was a real one: `_hello` and `_read`
+    moved off TalkClient into signaling.py, and three scripts kept
+    calling them as methods until one was run against a deployment.
+    """
+
+    # The names a script binds to a TalkClient, so an attribute access on
+    # one of them is a claim about that class rather than about anything.
+    CLIENT_NAMES = {"client", "talk"}
+
+    def bridge_attributes(self) -> set:
+        """Every method and annotated field of every class in bridge/,
+        read from the source so the media stack is not needed."""
+        names = set()
+        for file in sorted(CODE_DIR.glob("*.py")):
+            for node in ast.walk(ast.parse(file.read_text())):
+                if not isinstance(node, ast.ClassDef):
+                    continue
+                for item in node.body:
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        names.add(item.name)
+                    elif isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+                        names.add(item.target.id)
+                    elif isinstance(item, ast.Assign):
+                        names.update(t.id for t in item.targets if isinstance(t, ast.Name))
+        return names
+
+    def test_no_script_calls_a_method_that_moved(self):
+        scripts = pathlib.Path(__file__).resolve().parent / "hardware"
+        known = self.bridge_attributes()
+        gone = []
+        for file in sorted(scripts.glob("*.py")):
+            for node in ast.walk(ast.parse(file.read_text())):
+                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                        and isinstance(node.func.value, ast.Name)
+                        and node.func.value.id in self.CLIENT_NAMES
+                        and node.func.attr not in known):
+                    gone.append(f"{file.name}:{node.lineno}: "
+                                f"{node.func.value.id}.{node.func.attr}() "
+                                f"is on no class in bridge/")
+        self.assertEqual(gone, [], "\n" + "\n".join(gone))
+
+
 class ImportableApiTest(unittest.TestCase):
     """The same contracts, confirmed against the real objects where the
     media stack allows them to be imported.

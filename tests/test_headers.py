@@ -53,8 +53,19 @@ LICENCE_FILE = {"GPL-3.0-or-later": "LICENSES/GPL-3.0-or-later.txt",
 
 
 def tracked():
-    out = subprocess.run(["git", "ls-files"], cwd=ROOT,
-                         capture_output=True, text=True, timeout=60)
+    """Every file the repository tracks, or None where there is no
+    repository to ask - an installed copy of these tests, which is a
+    directory of files next to a deployment and has no git, no
+    REUSE.toml and no LICENSES/. There is nothing here for it to check,
+    and erroring out would fail the suite on the one machine where
+    running it proves the most."""
+    try:
+        out = subprocess.run(["git", "ls-files"], cwd=ROOT,
+                             capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0 or not out.stdout.strip():
+        return None
     return sorted(out.stdout.split())
 
 
@@ -114,6 +125,8 @@ class HeaderTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.files = tracked()
+        if cls.files is None:
+            raise unittest.SkipTest("not a checkout - nothing to check here")
         cls.covered = set(re.findall(r'"([^"]+)"',
                                      (ROOT / "REUSE.toml").read_text()))
         # LICENSES/ holds the licence texts themselves. They are what the

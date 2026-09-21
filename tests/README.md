@@ -44,9 +44,12 @@ Each skips itself when its own tool is absent.
 `test_static.py` is the only check that sees a name missing *inside* a
 function, which is a module that imports perfectly and fails the moment
 that line runs; the rules it applies are in `ruff.toml` at the top of the
-repository. It also covers `tests/hardware/`, which the suite never runs,
-so it is what notices when a refactor leaves one of those scripts calling
-a method that moved.
+repository. It also covers `tests/hardware/`, which the suite never runs
+- but only for names. A method that *moved* is `client._hello()`, a
+perfectly good attribute access on a name that exists, and no static
+check of the file it is written in can know better. That one is
+`test_api.py`'s `HardwareScriptApiTest`, which asks every class in
+`bridge/` whether it has the attribute.
 
 `test_headers.py` is the only check that reads what the files say about
 themselves: that each one names its own path, states a licence, and - for

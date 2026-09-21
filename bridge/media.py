@@ -117,7 +117,11 @@ class SipAudioTrack(AudioStreamTrack):
         self._stats = {"from_phone": 0, "silence": 0, "dropped": 0, "peak": 0, "since": None}
         # The same numbers added up across several of those seconds, so
         # the journal carries one line a quarter-minute instead of sixty.
-        self._reported = {"packets": 0, "silence": 0, "dropped": 0, "peak": 0, "since": 0.0}
+        # `since` starts unset, like the one above: loop.time() counts
+        # from an arbitrary point, so a zero here is not "the call began"
+        # but "the host booted" - the first report would fire after one
+        # second, with nothing counted yet and the uptime as its window.
+        self._reported = {"packets": 0, "silence": 0, "dropped": 0, "peak": 0, "since": None}
         self._silence = np.zeros(rtp_session.samples_per_packet, dtype=np.int16)
         self._agc = Agc(target_peak=config.agc_target_peak, max_gain=config.agc_max_gain,
                         silence_threshold=config.agc_silence_threshold) if config.agc_enabled else None
@@ -185,6 +189,8 @@ class SipAudioTrack(AudioStreamTrack):
             # Speaking is answered every second - it is what the room
             # renders - while the numbers are added up and said less
             # often. Per second they were four fifths of the journal.
+            if self._reported["since"] is None:
+                self._reported["since"] = loop.time()
             since = self._reported["since"]
             interval = config.audio_report_interval
             if interval and loop.time() - since >= interval:
