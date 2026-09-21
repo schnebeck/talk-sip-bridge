@@ -87,9 +87,9 @@ class GuardTest(unittest.TestCase):
         self.assertFalse(self.guard.accepts("5", 10.05))
 
     def test_a_different_key_is_never_collapsed(self):
-        """The one that cost a caller their meeting id: typed 7052318694,
-        the bridge read 7052318, because anything within the window was
-        taken for a repeat whatever key it was."""
+        """The one that cost a caller their meeting id: ten digits were
+        keyed in and seven arrived, because anything within the window
+        was taken for a repeat whatever key it was."""
         typed = "7052318694"
         heard = "".join(d for i, d in enumerate(typed)
                         if self.guard.accepts(d, 10.0 + i * 0.05))

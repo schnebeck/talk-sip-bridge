@@ -168,8 +168,8 @@ class RealGatewayTest(unittest.TestCase):
         the keys - and much shorter tones: 60-80ms, arriving as three or
         four 20ms blocks of which one is routinely unreadable. Against
         this recording the detector read six keys of twelve and got two
-        of them wrong, which is what "7052318694" turning into "7052318"
-        was.
+        of them wrong, which is what a ten-digit meeting id arriving as
+        seven digits was.
 
         dtmf-keypad-app.wav is FRITZ!App Fon's keypad through G.722, off
         the wire, trimmed to the stretches that read as tones - the
