@@ -9,9 +9,13 @@ protocol.
 
 ## Reference
 
-[`SIGNALING-API.md`](./SIGNALING-API.md) defines the interface this builds on -
-message shapes, flags, events, the OCS endpoints, and which parts are
-undocumented upstream. This document does not repeat those definitions; it
+Two documents define the interfaces this builds on, and between them they
+are meant to be enough to write an equivalent bridge from:
+[`SIGNALING-API.md`](./SIGNALING-API.md) for the Talk side - message
+shapes, flags, events, the OCS endpoints, and which parts are
+undocumented upstream - and [`SIP-API.md`](./SIP-API.md) for the phone
+side, including the gateway behaviours that contradict the
+specification. This document does not repeat those definitions; it
 records what this bridge does with them and why. Configuration is in
 [`CONFIG.md`](./CONFIG.md).
 
@@ -177,7 +181,9 @@ the daemon side is verified.
 
 ## Known gaps in the SIP implementation
 
-What this bridge does not implement, and what depends on that:
+What this bridge does not implement, and what depends on that. The same
+list, with what each limit costs a deployment, closes
+[`SIP-API.md`](./SIP-API.md).
 
 - **Digest authentication is the RFC 2069 form**: `MD5(HA1:nonce:HA2)`, with
   no `qop`, `cnonce`, nonce count or `opaque` echo. Asterisk 20 challenges
@@ -189,7 +195,7 @@ What this bridge does not implement, and what depends on that:
 - **`;rport` is sent but the answer is never read.** A registrar that reports
   back the source address it actually saw is telling us something this
   bridge discards - which matters the moment it sits behind NAT.
-- **Two codecs**, G.722 and PCMU (`sip_sdp.py`). Anything else a peer offers
-  is answered with PCMU.
+- **Three codecs**, G.722, PCMA and PCMU (`sip_sdp.py`), G.722 preferred.
+  Anything else a peer offers is answered with PCMU.
 
 `test-peer/` exists to keep this list honest.

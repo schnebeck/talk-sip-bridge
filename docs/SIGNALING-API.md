@@ -420,6 +420,33 @@ WebRTC publishers only. `rtp_forward` forwards media *out* of a room, and the
 Streaming plugin re-streams external RTP outside the participant list. A bridge
 must therefore be a complete WebRTC endpoint (ICE, DTLS-SRTP, a media engine).
 
+### The answer, and what carries it
+
+The answer comes back as a `message` **from the same session id it was
+addressed to** - the client's own - and its SDP is applied to the publishing
+peer connection:
+
+```json
+{"type": "message", "message": {
+  "sender": {"sessionid": "<own session id>"},
+  "data": {"type": "answer", "payload": {"type": "answer", "sdp": "..."}}}}
+```
+
+Because an offer is self-addressed, every message about the publisher arrives
+with the client's own session as the sender. That is the only thing
+distinguishing it from a subscriber's traffic, and it is how an incoming
+message is routed to the right peer connection.
+
+ICE candidates flow both ways as `message` with `data.type: "candidate"` and
+the candidate in `data.payload`. Trickle is expected; a bridge that waits for
+gathering to complete before sending its offer works but adds seconds to every
+call, and a caller who gives up in the meantime leaves a publisher running for
+a call that is gone - check the call is still alive after gathering.
+
+Media the room must be able to use: **Opus**, which is what `audiocodec`
+declares. A phone line's G.711 or G.722 has to be transcoded and resampled;
+48 kHz is what Talk's clients expect.
+
 ## Subscribing to another participant
 
 ```json
@@ -429,7 +456,22 @@ must therefore be a complete WebRTC endpoint (ICE, DTLS-SRTP, a media engine).
 ```
 
 The server answers with an `offer` from that publisher, which is answered
-normally; `candidate` messages flow both ways.
+with the shape below; `candidate` messages flow both ways.
+
+```json
+{"id": "bridge-subanswer-<call id>", "type": "message", "message": {
+  "recipient": {"type": "session", "sessionid": "<the publisher>"},
+  "data": {"to": "<the publisher>", "type": "answer",
+           "sid": "<the sid from their offer>", "roomType": "video",
+           "payload": {"type": "answer", "sdp": "..."}}}}
+```
+
+**`sid` identifies the negotiation, and it must be the one from the offer
+being answered.** The server re-attaches its own end when a publisher is not
+sending yet, and an answer carrying the handle from before is refused with
+`answer message sid does not match subscriber sid`. That refusal arrives as
+an `error` correlated to the request `id` — which is why the id names the
+call: without it there is no way to tell which call has to try again.
 
 - **A single `requestoffer` is not enough.** If the target's publisher does not
   exist yet the server replies `client_not_found` and **does not queue** the
@@ -531,6 +573,37 @@ only the one that moves counts.
 The flags are worth keeping whole rather than reduced to in-call yes/no: the
 remaining bits say which media a session publishes, and that decides whom
 there is any point subscribing to (see [Choosing whom to listen to](#choosing-whom-to-listen-to)).
+
+#### A client that leaves and comes back
+
+Saving a new microphone in Talk is a **leave and a rejoin**, and the
+conversation records it in as many words. So is reloading the page, and so
+is a network blip. Measured on one deployment, mid-call:
+
+| | |
+|---|---|
+| `inCall` drops from 3 to 1 | the audio flag goes first, while the dialog is open |
+| twelve seconds later, 1 to 0 | the client actually leaves the call |
+| 5-7 seconds after that | it is back, with a **new session id** |
+
+Three separate mistakes follow from taking any of that at face value, and
+each of them was made here before it was found:
+
+- **"Everyone left" is not the end of the call.** Acting on the first empty
+  room ends a live conversation. Wait long enough for a rejoin - measured
+  between 4.8 and 7.1 seconds, so the wait wants a generous multiple - and
+  check again. An *explicit* end is different and needs no wait: the
+  room-wide broadcast, or the phone participant being hung up.
+- **The subscription does not survive it.** The publisher it was attached
+  to is gone, so the peer connection closes and the audio in that direction
+  stops for good unless something rebuilds it. "Am I subscribed to
+  somebody" is the wrong question, because the answer stays yes; ask
+  whether that connection is still alive.
+- **A rebuilt subscription is a new negotiation.** Anything that tracks the
+  state of one - and something has to, or two repairs run at once - must
+  start from nothing. A state machine carried over from the last
+  subscription has already reached "audio is flowing" and will refuse to
+  ask for any, correctly and uselessly.
 
 #### A stale in-call list, in every released server
 

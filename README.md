@@ -13,7 +13,7 @@ on it today is digest authentication in its simple form, without `qop` -
 see the known gaps in `docs/CONCEPT.md`.
 
 See `docs/SIGNALING-API.md` for the Talk signaling and OCS interface this
-builds on, `docs/CONCEPT.md` for the architecture, `docs/CONFIG.md` for
+builds on and `docs/SIP-API.md` for the phone side, `docs/CONCEPT.md` for the architecture, `docs/CONFIG.md` for
 configuration, `docs/REFERENCE-CALL.md` for what a healthy call logs and
 measures, and `deploy/README.md` for installation.
 
