@@ -217,7 +217,13 @@ class TalkClient:
                 continue
             user = item.get("user") or {}
             is_phone = user.get("type") == "phone"
-            is_internal = "start-dialout" in (item.get("features") or [])
+            # Any internal feature, not one particular one: this bridge
+            # keeps two connections declaring different features, and
+            # asking for the wrong one made it subscribe to its own room
+            # connection - the caller then heard nothing from Talk.
+            is_internal = (sessionid == self.own_sessionid
+                           or bool(talk_messages.INTERNAL_FEATURES
+                                   .intersection(item.get("features") or [])))
             with self._call_sessions_lock:
                 self._room_roster[sessionid] = {"is_human": not is_phone and not is_internal}
             if is_phone:

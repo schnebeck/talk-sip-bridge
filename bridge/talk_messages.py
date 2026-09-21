@@ -32,6 +32,10 @@ FLAG_WITH_PHONE = 8
 # and every Talk client asks for a stream that does not exist yet.
 DIALOUT_FEATURES = ["start-dialout"]
 ROOM_FEATURES = ["internal-incall"]
+# Neither is a feature any Talk client declares, which is what makes them
+# usable the other way round: a room roster entry carrying one of them is
+# a bridge, not somebody to subscribe to.
+INTERNAL_FEATURES = frozenset(DIALOUT_FEATURES) | frozenset(ROOM_FEATURES)
 
 ROOM_REQUEST_ID = "bridge-room"
 

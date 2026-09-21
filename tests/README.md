@@ -34,6 +34,7 @@ BRIDGE_CODE=/opt/talk-sip-bridge \
 | `test_transport.py` | Which connection a SIP message is written to, including when the one it should use is gone |
 | `test_gateway_messages.py` | The same parsers against messages a real gateway sent, not ones written to be parsed |
 | `test_room_state.py` | Who is in a room's call, replayed from recorded signaling traffic |
+| `test_room_roster.py` | Who in a room is a person to take audio from, and who is a phone or one of this bridge's own connections |
 | `test_talk_messages.py` | The shape of every signaling message this bridge sends |
 | `test_talk_ocs.py` | The OCS call sequence, against a recording opener |
 | `test_dialout.py` | Reading a dialout request, the dial plan, the reply Talk gets, and which of the two connections each message goes out on |

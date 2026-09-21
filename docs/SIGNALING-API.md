@@ -56,7 +56,7 @@ a Nextcloud user. It may join **any** room without an invitation.
   "type": "hello",
   "hello": {
     "version": "1.0",
-    "features": ["start-dialout", "internal-incall"],
+    "features": ["start-dialout"],
     "auth": {
       "type": "internal",
       "params": {
@@ -75,6 +75,9 @@ a Nextcloud user. It may join **any** room without an invitation.
   without it (`ClientTypeInternalAuthParams.CheckValid()` in the Go source).
 - The server sends a **welcome banner first**, then the hello response. The
   session id is `hello.sessionid` of the second message.
+- `features` is per connection and says what this one is for — the example
+  above is the dialout role. The two features cannot be combined; see
+  [Two connections, one per role](#two-connections-one-per-role).
 
 ### Client features
 
@@ -175,6 +178,7 @@ into getting this right, so it is worth stating flatly.
 | Created by | Nextcloud (adding a participant) | a `hello` | `addsession` |
 | Carries media | — | yes | **never** |
 | Receives room events | — | **yes** | **no** |
+| Worth subscribing to | — | only if it is a person | never |
 | Receives messages addressed to it | — | yes | yes, relayed to its owner |
 | Shown in Talk's call grid | — | yes, unless `internal` | yes |
 
@@ -436,10 +440,34 @@ normally; `candidate` messages flow both ways.
 ### `room` / `join`, `room` / `leave`
 
 Room roster changes. A `join` entry carries `sessionid`, `userid`, `features`
-and, for virtual sessions, `user`. Note that `leave` is **not reliable**: a
-client that drops silently (a backgrounded mobile app, for instance) can stay in
-the roster indefinitely, and requesting its audio then fails with
-`client_not_found`.
+and, for virtual sessions, `user`. Joining a room in progress delivers the
+sessions already there as `join` events too, so this is the whole roster, not
+only the changes.
+
+Note that `leave` is **not reliable**: a client that drops silently (a
+backgrounded mobile app, for instance) can stay in the roster indefinitely, and
+requesting its audio then fails with `client_not_found`.
+
+#### Telling the roster apart
+
+Only a real person is worth subscribing to, and a roster holds three kinds of
+entry. Getting this wrong is **silent**: a subscription to one's own session
+negotiates, connects and carries no audio, so the call is up, the phone is
+heard in Talk, and nobody in Talk is heard on the phone.
+
+| Kind | How it is recognised |
+|---|---|
+| A phone | `user.type == "phone"` |
+| A bridge's own connection | `features` contains `start-dialout` **or** `internal-incall` |
+| A person | everything else |
+
+- **`features` is what that session declared in its `hello`**, so a bridge with
+  two connections announces *different* features on each. Testing for one
+  particular feature misses the other connection. Test for any internal
+  feature, and for one's own session id as well.
+- **An empty `userid` is not the test.** A guest has none either.
+- For a phone, this event is also the **only** place the server-assigned room
+  session id appears. Match it back through `user.callid`.
 
 ### `participants` / `update`
 
@@ -516,7 +544,7 @@ moment at which the thing it does still works; the "why" column says which.
 | 8 | R | `updatesession` with the full flags | A *change* is what puts the session into the room's in-call set; a value equal to step 7's is not a change. |
 | 9 | R | publish: offer addressed to R's own session id | Needs the room join from step 5. |
 | 10 | R | `incall` = `IN_CALL \| WITH_AUDIO` for R's own session | Only once the publisher exists, or clients chase a stream that is not there. |
-| 11 | R | `requestoffer` to a human, answer the offer that comes back | Both sides must be in the call first, which step 10 completes. |
+| 11 | R | `requestoffer` to a **person** in the room, answer the offer that comes back | Both sides must be in the call first, which step 10 completes. Picking the wrong roster entry - a phone, or one of the bridge's own connections - connects and carries silence; see [Telling the roster apart](#telling-the-roster-apart). |
 
 ### Outbound: the call ends
 
