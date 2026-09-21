@@ -23,6 +23,7 @@ try:
     import talk_client
     from call import INBOUND, Call
     from room_state import FLAG_IN_CALL, FLAG_WITH_AUDIO, RoomCallState
+    from subscription import Action
 except ImportError:  # no media stack; every test here is skipped
     talk_client = None
 
@@ -143,6 +144,57 @@ class WhoIsWorthListeningToTest(unittest.TestCase):
     def test_a_room_that_knows_nothing_yet_still_yields_somebody(self):
         client = client_with_call(room=RoomCallState())
         self.assertEqual(catch_up(client, {HUMAN}), [(CALL, HUMAN)])
+
+
+@needs_media_stack
+class SecondSubscriptionTest(unittest.TestCase):
+    """A rebuilt subscription is a new negotiation.
+
+    The state machine is what decides whether anything is sent at all,
+    and the one from the last subscription has already reached FLOWING.
+    Handing it back means the rebuild asks the machine what to do, is
+    told "nothing", and goes quiet - measured: a client came back from
+    changing its microphone, the bridge said it was asking for their
+    audio, and not one message went out."""
+
+    def call(self):
+        client = client_with_call()
+        entry = client._call_sessions[CALL]
+        return client, entry
+
+    def test_the_first_subscription_starts_from_nothing(self):
+        client, entry = self.call()
+        state = human_audio.HumanAudio(client).restart_state_for(CALL)
+        self.assertEqual(state.start().action, Action.REQUEST)
+
+    def test_a_rebuild_does_not_inherit_a_flowing_machine(self):
+        client, entry = self.call()
+        audio = human_audio.HumanAudio(client)
+        first = audio.restart_state_for(CALL)
+        first.start()
+        first.offer("sid-1")
+        first.media_arrived()
+        self.assertTrue(first.working, "the first subscription never got going")
+
+        second = audio.restart_state_for(CALL)
+        self.assertIsNot(second, first)
+        self.assertEqual(second.start().action, Action.REQUEST,
+                         "the rebuilt subscription asked for nothing")
+
+    def test_the_call_keeps_the_new_machine(self):
+        """Everything else - the retries, the refusals - looks the
+        subscription up on the call, and has to find the current one."""
+        client, entry = self.call()
+        audio = human_audio.HumanAudio(client)
+        audio.restart_state_for(CALL)
+        second = audio.restart_state_for(CALL)
+        self.assertIs(audio.state_for(CALL), second)
+        self.assertIs(entry.subscription, second)
+
+    def test_a_call_that_has_ended_gets_no_machine(self):
+        client, _ = self.call()
+        client._call_sessions.clear()
+        self.assertIsNone(human_audio.HumanAudio(client).restart_state_for(CALL))
 
 
 if __name__ == "__main__":

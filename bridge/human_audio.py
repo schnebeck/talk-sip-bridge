@@ -97,7 +97,7 @@ class HumanAudio:
             print(f"[talk] Receiving audio from {human_sessionid} for {sip_call_id}")
 
         media.open_subscriber(human_sessionid, on_receiving=on_receiving)
-        state = self.state_for(sip_call_id)
+        state = self.restart_state_for(sip_call_id)
         if state is None:
             return
 
@@ -107,6 +107,25 @@ class HumanAudio:
 
         media.on_media_flowing = flowing
         await self.pursue(sip_call_id, media, human_sessionid, state.start())
+
+    def restart_state_for(self, sip_call_id: str):
+        """A new subscription is a new negotiation, and gets a machine
+        that has not been anywhere.
+
+        Keeping the last one hands back a state that already reached
+        FLOWING, and a machine that believes audio is flowing refuses to
+        ask for any - measured: after a client came back from changing
+        its microphone, the subscription was rebuilt and not one message
+        went out."""
+        with self.client._call_sessions_lock:
+            entry = self.client._call_sessions.get(sip_call_id)
+            if entry is None:
+                return None
+            entry.subscription = Subscription(
+                max_attempts=MAX_ATTEMPTS,
+                request_delay=RETRY_INTERVAL,
+                rebuild_delay=REBUILD_DELAY)
+            return entry.subscription
 
     def state_for(self, sip_call_id: str):
         with self.client._call_sessions_lock:
