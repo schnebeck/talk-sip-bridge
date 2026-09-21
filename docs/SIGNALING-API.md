@@ -615,12 +615,19 @@ belong together.
 
 A participant leaving never ends anyone else's call, and that includes the
 phone: when a call is hung up on the phone, the person in Talk stays in the
-call, alone, until they leave it themselves. Two things override that, and a
-bridge can reach only one of them.
+call, alone, until they leave it themselves. **That is Talk's behaviour, not a
+defect, and this bridge does not work around it.** The model is consistent —
+a person leaving a call ends nobody else's either — and Talk's own SIP dialout
+tests walk exactly this sequence with the user hanging up in Talk
+(`nextcloud/spreed#18185`). Nothing here should be re-litigated by sending a
+status that means something else; see the table below for why `rejected` is
+the only lever and what it costs.
+
+Two things override the rule, and a bridge can reach only one of them.
 
 | Trigger | Effect on a Talk client | Reachable by a bridge |
 |---|---|---|
-| Dialout status `rejected` | Leaves the call (`all: true`) and says "Call rejected" — **only** in a phone conversation | yes: it is a dialout status update |
+| Dialout status `rejected` | Leaves the call (`all: true`) and says "Call rejected" — **only** in a phone conversation | yes, but it means the call never came about; sending it for a call that was answered and then hung up puts "Call rejected" in front of the user every time |
 | Chat system message `call_ended_everyone` | Leaves the call — unless the conversation is `TYPE_ONE_TO_ONE` or the client itself caused it | no |
 
 The second one is a control channel that is invisible from the signaling
