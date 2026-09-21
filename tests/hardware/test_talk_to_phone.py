@@ -169,6 +169,11 @@ async def main() -> int:
                       f"{rtp.sample_rate if rtp else '-'} Hz")
         if status != 200 or rtp is None:
             return 1
+        # Let the announcement start before typing. A press that
+        # arrives before the dialogue exists to receive it is dropped,
+        # and a meeting id one digit short is refused - which reads as
+        # a bridge fault and is a test that was too quick.
+        await asyncio.to_thread(gateway.heard, 3.0)
         await asyncio.to_thread(gateway.keypad, MEETING_ID + "#")
         entry = scenario.wait_for(lambda: (e := scenario.call_entry(client)) and e.roomid and e, 25)
         record_result("the caller is in the conversation", bool(entry) and entry.roomid == MEETING_ID,
@@ -181,7 +186,7 @@ async def main() -> int:
         # normally starts a negotiation with one of those before this
         # test gets a word in. What is under test is the negotiation, so
         # the publisher is named here and the machine started over.
-        entry.subscription = None
+        entry.subscriptions.pop(published, None)
         entry.media.subscriber_receiving = False
         asyncio.ensure_future(client.human_audio.start(
             entry.sip_call_id, entry.media, published))
@@ -206,7 +211,7 @@ async def main() -> int:
         arrivals = []
         heard = await asyncio.to_thread(gateway.heard, LISTEN_SECONDS, arrivals)
         pcm = np.concatenate(heard) if heard else np.array([], dtype=np.int16)
-        state = entry.subscription
+        state = entry.subscriptions.get(published)
         record_result("the negotiation ends in audio flowing",
                       state is not None and state.state is State.FLOWING,
                       f"{state.state.value}, {state.attempts} attempt(s)" if state else "none")

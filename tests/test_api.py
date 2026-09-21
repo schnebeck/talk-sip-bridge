@@ -256,7 +256,7 @@ class SubscriptionWiringTest(unittest.TestCase):
     def test_the_client_asks_the_machine_before_repairing(self):
         source = (BRIDGE / "human_audio.py").read_text()
         for decision in ("state.start()", "state.offer(", "state.refused()",
-                         "state.no_publisher()", "state.media_arrived()"):
+                         "state.no_publisher()", ".media_arrived()"):
             with self.subTest(decision=decision):
                 self.assertIn(decision, source)
 

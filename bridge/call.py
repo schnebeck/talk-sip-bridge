@@ -81,7 +81,7 @@ class Call:
     # The negotiation for the other side's audio, as a state machine -
     # see subscription.py. One per call, because every repair has to know
     # what the others are doing.
-    subscription: object = None
+    subscriptions: dict = dataclasses.field(default_factory=dict)
 
     @property
     def is_publishing(self) -> bool:

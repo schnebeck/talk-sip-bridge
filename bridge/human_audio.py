@@ -30,6 +30,7 @@ import asyncio
 import json
 
 import talk_messages
+from config import config
 from subscription import Action, Subscription
 
 # A single requestoffer is not enough: the other side's publisher may not
@@ -52,17 +53,46 @@ class HumanAudio:
     def __init__(self, client):
         self.client = client
 
+    def people(self) -> list:
+        """Everybody in the room this call could take audio from, best
+        first: those who say they are carrying audio before those who do
+        not, and sorted within each group so two runs agree.
+
+        A participant whose permissions do not let them speak joins
+        without the audio flag, and subscribing to them spends attempts
+        on a stream that will never exist. But the flags are only the
+        server's word, and this bridge has been wrong about them before,
+        so the others stay on the list behind them rather than off it."""
+        with self.client._call_sessions_lock:
+            everybody = [sessionid for sessionid, info in self.client._room_roster.items()
+                         if info.get("is_human")]
+        speaking = [s for s in sorted(everybody) if self.client._room_call.carries_audio(s)]
+        return speaking + [s for s in sorted(everybody) if s not in set(speaking)]
+
+    def targets(self) -> list:
+        """Whose audio to ask for. One, or the room.
+
+        A telephone call carries one stream, so hearing more than one
+        person means summing them (mixer.py). That is off by default:
+        one subscription is what every call this bridge has carried so
+        far, and the summing path has never run against a telephone."""
+        people = self.people()
+        if not config.mix_participants:
+            return people[:1]
+        return people[:max(1, config.max_mixed_sources)]
+
     async def find_human(self, retries: int = 5, delay: float = 0.3) -> str | None:
-        """The room roster (see _handle_room_join) is populated from events
-        that normally arrive before we even start publishing (the human is
-        the one who triggered this call by already being in the room) - the
-        retry loop only covers the rare case where our own room-join
-        confirmation raced ahead of the "room"/"join" broadcast for them."""
+        """The first participant worth listening to, waiting briefly for
+        the roster if it is not there yet.
+
+        The roster (see room_presence) is normally populated before we
+        publish at all - for a dialout the person placing the call is
+        already in the room - so the retry loop only covers our own
+        room-join confirmation racing ahead of the broadcast for them."""
         for _ in range(retries):
-            with self.client._call_sessions_lock:
-                for sessionid, info in self.client._room_roster.items():
-                    if info.get("is_human"):
-                        return sessionid
+            people = self.people()
+            if people:
+                return people[0]
             await asyncio.sleep(delay)
         return None
 
@@ -112,18 +142,39 @@ class HumanAudio:
             print(f"[talk] Receiving audio from {human_sessionid} for {sip_call_id}")
 
         media.open_subscriber(human_sessionid, on_receiving=on_receiving)
-        state = self.restart_state_for(sip_call_id)
+        state = self.restart_state_for(sip_call_id, human_sessionid)
         if state is None:
             return
 
-        def flowing():
-            state.media_arrived()
-            print(f"[talk] Talk's audio reaches the phone for {sip_call_id}")
+        def flowing(sessionid):
+            arrived = self.state_for(sip_call_id, sessionid)
+            if arrived is not None:
+                arrived.media_arrived()
+            print(f"[talk] {sessionid[:8]}'s audio reaches the phone for {sip_call_id} "
+                  f"({len(media.receiving_from)} of {len(media.subscribers)} sources)")
 
         media.on_media_flowing = flowing
         await self.pursue(sip_call_id, media, human_sessionid, state.start())
 
-    def restart_state_for(self, sip_call_id: str):
+    async def start_all(self, sip_call_id: str, media):
+        """Subscribes to everybody worth listening to, one negotiation
+        each, all at once. With mixing off that is a list of one and
+        this is what has always happened."""
+        started = []
+        for sessionid in self.targets():
+            if media.alive_for(sessionid):
+                continue
+            started.append(sessionid)
+            asyncio.ensure_future(self.start(sip_call_id, media, sessionid))
+        return started
+
+    @staticmethod
+    def _fresh():
+        return Subscription(max_attempts=MAX_ATTEMPTS,
+                            request_delay=RETRY_INTERVAL,
+                            rebuild_delay=REBUILD_DELAY)
+
+    def restart_state_for(self, sip_call_id: str, sessionid: str):
         """A new subscription is a new negotiation, and gets a machine
         that has not been anywhere.
 
@@ -131,28 +182,26 @@ class HumanAudio:
         FLOWING, and a machine that believes audio is flowing refuses to
         ask for any - measured: after a client came back from changing
         its microphone, the subscription was rebuilt and not one message
-        went out."""
-        with self.client._call_sessions_lock:
-            entry = self.client._call_sessions.get(sip_call_id)
-            if entry is None:
-                return None
-            entry.subscription = Subscription(
-                max_attempts=MAX_ATTEMPTS,
-                request_delay=RETRY_INTERVAL,
-                rebuild_delay=REBUILD_DELAY)
-            return entry.subscription
+        went out.
 
-    def state_for(self, sip_call_id: str):
+        One machine per participant. Sharing one across several would
+        let a repair for somebody whose stream never came tear down the
+        connection to somebody whose did."""
         with self.client._call_sessions_lock:
             entry = self.client._call_sessions.get(sip_call_id)
             if entry is None:
                 return None
-            if entry.subscription is None:
-                entry.subscription = Subscription(
-                    max_attempts=MAX_ATTEMPTS,
-                    request_delay=RETRY_INTERVAL,
-                    rebuild_delay=REBUILD_DELAY)
-            return entry.subscription
+            entry.subscriptions[sessionid] = self._fresh()
+            return entry.subscriptions[sessionid]
+
+    def state_for(self, sip_call_id: str, sessionid: str):
+        with self.client._call_sessions_lock:
+            entry = self.client._call_sessions.get(sip_call_id)
+            if entry is None:
+                return None
+            if entry.subscriptions.get(sessionid) is None:
+                entry.subscriptions[sessionid] = self._fresh()
+            return entry.subscriptions[sessionid]
 
     async def pursue(self, sip_call_id: str, media, human_sessionid: str, step):
         """Carries out one step of the negotiation, and the waiting it
@@ -164,13 +213,13 @@ class HumanAudio:
         with self.client._call_sessions_lock:
             entry = self.client._call_sessions.get(sip_call_id)
             still_the_call = entry is not None and entry.media is media
-            state = entry.subscription if entry else None
+            state = entry.subscriptions.get(human_sessionid) if entry else None
         if not still_the_call or state is None:
             return  # the call ended, or a newer subscription replaced this one
-        if media.human_sessionid != human_sessionid:
-            # The call is now listening to somebody else. A step decided
-            # for the previous one would ask the server about a session
-            # this call has nothing to do with any more.
+        if media.source(human_sessionid) is None:
+            # This call has stopped listening to them. A step decided
+            # beforehand would ask the server about a session the call
+            # has nothing to do with any more.
             return
         if not state.still_current(step):
             # Decided before the wait, overtaken during it: an offer
@@ -184,7 +233,7 @@ class HumanAudio:
                   f"{state.attempts} attempts - the phone side stays silent for this call")
             return
         if step.action is Action.REBUILD:
-            if not await media.prepare_for_new_offer():
+            if not await media.prepare_for_new_offer(human_sessionid):
                 return
             print(f"[talk] Subscribing to {human_sessionid} again for {sip_call_id}")
         if step.action in (Action.REQUEST, Action.REBUILD):
@@ -207,13 +256,14 @@ class HumanAudio:
         await asyncio.sleep(RETRY_INTERVAL)
         with self.client._call_sessions_lock:
             entry = self.client._call_sessions.get(sip_call_id)
-            state = entry.subscription if entry and entry.media is media else None
+            state = (entry.subscriptions.get(human_sessionid)
+                     if entry and entry.media is media else None)
         if (state is None or state.working or state.generation != generation
-                or media.human_sessionid != human_sessionid):
+                or media.source(human_sessionid) is None):
             return  # something else happened in the meantime; not our turn
         await self.pursue(sip_call_id, media, human_sessionid, state.no_publisher())
 
-    async def answer_refused(self, sip_call_id: str, error: dict):
+    async def answer_refused(self, sip_call_id: str, sessionid: str, error: dict):
         """The server would not take our answer for the other side's
         audio: it re-attaches its own end while the publisher is not
         sending yet, without offering again, and an answer naming the
@@ -227,16 +277,15 @@ class HumanAudio:
         with self.client._call_sessions_lock:
             entry = self.client._call_sessions.get(sip_call_id)
             media = entry.media if entry else None
-            human = media.human_sessionid if media else None
-            state = entry.subscription if entry else None
-        if media is None or not human or state is None:
+            state = entry.subscriptions.get(sessionid) if entry else None
+        if media is None or not sessionid or state is None:
             return
         step = state.refused()
         if not step:
             return
-        print(f"[talk] The server refused our answer for {human}'s audio "
+        print(f"[talk] The server refused our answer for {sessionid[:8]}'s audio "
               f"({error.get('code')})")
-        await self.pursue(sip_call_id, media, human, step)
+        await self.pursue(sip_call_id, media, sessionid, step)
 
     async def answer_offer(self, media, peer: str, data: dict):
         """Answers an offer for a subscription, if it is still the one
@@ -246,13 +295,13 @@ class HumanAudio:
         naming a handle it has dropped are refused. The call's
         Subscription decides which offer counts; a second answer for an
         offer it has moved past is not sent at all."""
-        state = self.state_for(media.sip_call_id)
+        state = self.state_for(media.sip_call_id, peer)
         if state is None:
             return
         step = state.offer(data.get("sid"))
         if step.action is not Action.ANSWER:
             return   # audio already flows, or this negotiation is history
-        answer_sdp = await media.answer_subscriber_offer(data["payload"]["sdp"])
+        answer_sdp = await media.answer_subscriber_offer(peer, data["payload"]["sdp"])
         if answer_sdp is None or state.generation != step.generation:
             return
         await self.client.ws.send(json.dumps(talk_messages.subscribe_answer(

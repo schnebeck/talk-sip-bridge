@@ -231,6 +231,17 @@ class Config:
         # calls automatically.
         self.auto_answer_calls = os.environ.get("BRIDGE_AUTO_ANSWER", "false").strip().lower() == "true"
 
+        # Whether a caller hears everybody in the room or one person.
+        # Off by default, and deliberately: one subscription is what
+        # every call this bridge has ever carried used, and the mixing
+        # path has never run against a telephone. Measured with
+        # tests/hardware/test_two_publishers.py - see docs/CONFIG.md.
+        self.mix_participants = os.environ.get(
+            "BRIDGE_MIX_PARTICIPANTS", "false").strip().lower() == "true"
+        # How many at once. Each is its own subscription and its own
+        # decoder; a room larger than this is carried by its loudest.
+        self.max_mixed_sources = int(os.environ.get("BRIDGE_MAX_MIXED_SOURCES", "6"))
+
         # Automatic gain control for audio coming from the phone side before
         # it is published into Talk - see agc.py. On by default: some
         # handsets (e.g. a DECT cordless) have a much quieter microphone

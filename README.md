@@ -239,15 +239,20 @@ almost not at all.
 | A different caller ID per call | **No.** One SIP account is one identity |
 | Restrict who may call which numbers | **Per account only**, with `BRIDGE_DIALOUT_NUMBER_ALLOWLIST`. Since you cannot choose the account, that is in practice per installation |
 
-**A caller hears one participant, not the room.** Measured: two people
-played different tones in the same conversation, and the caller's audio
-carried one of them at full level and the other 57 dB down, which is
-silence (`tests/hardware/test_two_publishers.py`). Following whoever is
-speaking is not a way out either - the signaling server never says who
-that is, and does not even report muting
+**A caller hears one participant by default, or the room if you ask.**
+A telephone call carries one audio stream, so hearing several people
+means summing them. `BRIDGE_MIX_PARTICIPANTS=true` does that: one
+subscription per participant, mixed into the single stream the phone
+gets. It is off by default because it has only ever run against test
+tones, not a telephone. Measured both ways with two people playing
+different tones in one conversation: off, the second is 57 dB down;
+on, both arrive at full level
+(`tests/hardware/test_two_publishers.py`).
+
+Following whoever is speaking would have been the cheap alternative,
+and it is not available: the signaling server never says who that is,
+and does not even report muting
 ([measured](./docs/SIGNALING-API.md#the-server-does-not-say-who-is-speaking)).
-Carrying more than one would mean subscribing to each and mixing, which
-is not built.
 
 **Why the dialog does not help.** In Talk you dial a number without
 picking a conversation. That dialog creates a **call room** at that

@@ -239,13 +239,19 @@ def request_offer(sip_call_id: str, human_sessionid: str) -> dict:
 def subscribe_answer(peer_sessionid: str, sid, sdp: str, sip_call_id: str = "") -> dict:
     """The answer to an offer the server relayed.
 
-    The request id names the call, because the answer can be refused -
-    the server re-attaches a subscriber whose publisher is not sending
-    yet, and an answer carrying the old handle's id is then rejected.
-    Without the call in the id there is no way to tell which call has to
-    ask again."""
+    The request id names the source and the call, because the answer can
+    be refused - the server re-attaches a subscriber whose publisher is
+    not sending yet, and an answer carrying the old handle's id is then
+    rejected. The refusal carries nothing but this id back, so both have
+    to be in it: with several participants subscribed at once, the call
+    alone would not say which subscription has to ask again.
+
+    Separated by "@@" and split on the first one. A session id has no
+    "@" in it and a SIP call id has several, so the source is
+    unambiguously the part before."""
     return {
-        "id": f"bridge-subanswer-{sip_call_id or secrets.token_hex(4)}", "type": "message",
+        "id": f"bridge-subanswer-{peer_sessionid}@@{sip_call_id or secrets.token_hex(4)}",
+        "type": "message",
         "message": {
             "recipient": {"type": "session", "sessionid": peer_sessionid},
             "data": {"to": peer_sessionid, "type": "answer", "sid": sid, "roomType": "video",

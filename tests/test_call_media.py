@@ -26,7 +26,7 @@ import unittest
 from tests.support import needs_media_stack
 
 try:
-    from call_media import CallMedia, parse_ice_candidate
+    from call_media import CallMedia, Source, parse_ice_candidate
 except ImportError:  # no media stack; every test here is skipped
     CallMedia = None
 
@@ -75,7 +75,8 @@ class FakeTask:
 def media_with(publisher=None, subscriber=None, peer=None, human=None):
     media = CallMedia("call-1", rtp_session=None)
     media.publisher, media.publisher_peer_sessionid = publisher, peer
-    media.subscriber, media.human_sessionid = subscriber, human
+    if human:
+        media.subscribers[human] = Source(human, subscriber)
     return media
 
 
@@ -112,16 +113,21 @@ class RoutingTest(unittest.TestCase):
 
 @needs_media_stack
 class SubscriberOfferTest(unittest.TestCase):
+    PERSON = "person"
+
     def media(self):
         media = CallMedia("call-1", rtp_session=None)
-        media.subscriber = FakePeerConnection()
-        media.offer_arrived = asyncio.Event()
+        media.subscribers[self.PERSON] = Source(self.PERSON, FakePeerConnection())
         return media
+
+    def source(self, media):
+        return media.source(self.PERSON)
 
     def test_the_first_offer_is_answered(self):
         media = self.media()
-        self.assertEqual(run(media.answer_subscriber_offer("v=0 offer")), "v=0 answer")
-        self.assertTrue(media.offer_arrived.is_set())
+        self.assertEqual(run(media.answer_subscriber_offer(self.PERSON, "v=0 offer")),
+                         "v=0 answer")
+        self.assertTrue(self.source(media).offer_arrived.is_set())
 
     def test_a_later_offer_is_ignored_once_audio_is_flowing(self):
         """Answering one resets a connection that already works - observed
@@ -130,9 +136,9 @@ class SubscriberOfferTest(unittest.TestCase):
         offer is applied, and a connection that never completes has one
         too."""
         media = self.media()
-        run(media.answer_subscriber_offer("v=0 offer"))
-        media.subscriber_receiving = True          # a track arrived
-        self.assertIsNone(run(media.answer_subscriber_offer("v=0 offer again")))
+        run(media.answer_subscriber_offer(self.PERSON, "v=0 offer"))
+        self.source(media).receiving = True        # a track arrived
+        self.assertIsNone(run(media.answer_subscriber_offer(self.PERSON, "v=0 offer again")))
 
     def test_a_later_offer_rebuilds_the_subscription_while_nothing_flows(self):
         """The opposite case, and the one that cost a call its return
@@ -143,21 +149,32 @@ class SubscriberOfferTest(unittest.TestCase):
         from unittest import mock
 
         media = self.media()
-        media.human_sessionid = "person"
-        run(media.answer_subscriber_offer("v=0 offer"))
-        first = media.subscriber
+        run(media.answer_subscriber_offer(self.PERSON, "v=0 offer"))
+        first = self.source(media).pc
         with mock.patch("call_media.RTCPeerConnection", FakePeerConnection):
-            answer = run(media.answer_subscriber_offer("v=0 second offer"))
+            answer = run(media.answer_subscriber_offer(self.PERSON, "v=0 second offer"))
         self.assertEqual(answer, "v=0 answer")
-        self.assertIsNot(media.subscriber, first, "the dead connection was kept")
+        self.assertIsNot(self.source(media).pc, first, "the dead connection was kept")
         self.assertTrue(first.closed, "the dead connection was left open")
-        self.assertEqual(media.subscriber.remote.sdp, "v=0 second offer")
+        self.assertEqual(self.source(media).pc.remote.sdp, "v=0 second offer")
 
     def test_the_arrival_is_what_stops_the_retries(self):
         media = self.media()
-        self.assertFalse(media.offer_arrived.is_set())
-        run(media.answer_subscriber_offer("v=0 offer"))
-        self.assertTrue(media.offer_arrived.is_set())
+        self.assertFalse(self.source(media).offer_arrived.is_set())
+        run(media.answer_subscriber_offer(self.PERSON, "v=0 offer"))
+        self.assertTrue(self.source(media).offer_arrived.is_set())
+
+    def test_one_participants_offer_leaves_the_others_alone(self):
+        """The reason each subscription is its own bundle: an answer
+        for one must not touch a connection carrying somebody else."""
+        media = self.media()
+        other = Source("other", FakePeerConnection())
+        media.subscribers["other"] = other
+        other.receiving = True
+        run(media.answer_subscriber_offer(self.PERSON, "v=0 offer"))
+        self.assertIs(media.source("other"), other)
+        self.assertFalse(other.pc.closed)
+        self.assertFalse(other.offer_arrived.is_set())
 
 
 @needs_media_stack
@@ -195,15 +212,24 @@ class CandidateTest(unittest.TestCase):
 
 @needs_media_stack
 class TeardownTest(unittest.TestCase):
-    def test_closing_stops_both_directions_and_the_relay(self):
-        media = media_with(publisher=FakePeerConnection(), subscriber=FakePeerConnection())
-        relay = FakeTask()
-        media.relay_task = relay
-        publisher, subscriber = media.publisher, media.subscriber
+    def test_closing_stops_every_direction_and_every_relay(self):
+        """Every subscription, not the first: a call carrying three
+        participants that closed one of them would leave two decoders
+        and two connections running for a call that is over."""
+        media = media_with(publisher=FakePeerConnection())
+        relays = []
+        for name in ("a", "b", "c"):
+            source = Source(name, FakePeerConnection())
+            source.relay_task = FakeTask()
+            relays.append(source.relay_task)
+            media.subscribers[name] = source
+        publisher = media.publisher
+        connections = [s.pc for s in media.subscribers.values()]
         run(media.close())
         self.assertTrue(publisher.closed)
-        self.assertTrue(subscriber.closed)
-        self.assertTrue(relay.cancelled)
+        self.assertTrue(all(c.closed for c in connections), "a subscription was left open")
+        self.assertTrue(all(r.cancelled for r in relays), "a relay was left running")
+        self.assertEqual(media.subscribers, {})
 
     def test_closing_twice_is_harmless(self):
         """Teardown can be reached from a BYE and from the connection dying

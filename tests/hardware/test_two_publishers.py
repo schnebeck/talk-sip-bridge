@@ -140,13 +140,15 @@ async def main() -> int:
         if not entry:
             return 1
 
-        # Listen to the first one, by name. Without this the bridge looks
-        # for a participant that is not an internal client, finds none of
-        # ours, and the call carries nothing at all.
-        entry.subscription = None
-        entry.media.subscriber_receiving = False
-        asyncio.ensure_future(client.human_audio.start(
-            entry.sip_call_id, entry.media, session_a))
+        # Both, by name. The bridge would find neither on its own:
+        # talk_participant.py connects as an internal client, and the
+        # roster deliberately never offers one of those as somebody to
+        # listen to. Naming them is what puts the question to the
+        # mixing path rather than to the roster.
+        for named in (session_a, session_b) if config.mix_participants else (session_a,):
+            entry.subscriptions.pop(named, None)
+            asyncio.ensure_future(client.human_audio.start(
+                entry.sip_call_id, entry.media, named))
 
         # The dialogue's accepted chime is still queued and its second
         # note is 1320 Hz, which would read as a tone nobody published.
@@ -160,11 +162,20 @@ async def main() -> int:
             record_result("the caller receives audio at all", False, "nothing arrived")
             return 1
 
-        chosen = entry.media.human_sessionid
         record_result("the caller receives audio at all", True,
                       f"{len(pcm) / rtp.sample_rate:.1f}s, peak {int(np.abs(pcm).max())}")
-        record_result("the bridge is listening to the first participant",
-                      chosen == session_a, f"{str(chosen)[:8]}")
+        carrying = set(entry.media.receiving_from)
+        wanted = {session_a, session_b} if config.mix_participants else {session_a}
+        # Not an exact count: a real room can hold sessions this test
+        # did not put there - a browser left open from an earlier run
+        # is a participant like any other, and the bridge subscribes to
+        # it too. What matters is that the ones under test are carried.
+        record_result("both participants are carried at once"
+                      if config.mix_participants else
+                      "the one participant is carried",
+                      wanted <= carrying,
+                      f"{len(carrying)} of {len(entry.media.subscribers)} "
+                      f"subscription(s) delivering")
 
         level_a = energy_at(pcm, rtp.sample_rate, TONE_A)
         level_b = energy_at(pcm, rtp.sample_rate, TONE_B)
@@ -175,25 +186,31 @@ async def main() -> int:
         # was not is down in the noise. Anything between the two is the
         # interesting answer and is reported rather than judged.
         both = level_a > -20 and level_b > -20
+        print(f"  mixing: {'on' if config.mix_participants else 'off'}, "
+              f"{len(entry.media.subscribers)} subscription(s), "
+              f"carrying {len(entry.media.receiving_from)}", flush=True)
         # Phrased so that today's behaviour passes and a change fails:
         # this is a measurement of a known limit, not a defect hunt. The
         # day a call can carry two participants, the second line here is
         # what says so.
         record_result(f"the subscribed participant is carried ({TONE_A:.0f} Hz)",
                       level_a > -20, f"{level_a:.1f} dB")
-        record_result(f"the other one is not, as expected ({TONE_B:.0f} Hz)",
-                      level_b <= -20,
-                      f"{level_b:.1f} dB - a call carries one participant"
-                      if level_b <= -20 else
-                      f"{level_b:.1f} dB - it carries both now, update the docs")
-        if level_a > -20 and level_b <= -20:
-            print("\n  Measured: a caller hears the ONE participant the bridge "
-                  "subscribed to,\n  and not the other one in the same room. "
-                  "That matches the code - a call\n  holds a single subscriber "
-                  "(call_media.py).", flush=True)
-        elif both:
-            print("\n  Measured: a caller hears BOTH. The single-subscriber "
-                  "reading is wrong.", flush=True)
+        if config.mix_participants:
+            record_result(f"the second one is carried too ({TONE_B:.0f} Hz)",
+                          level_b > -20, f"{level_b:.1f} dB")
+        else:
+            record_result(f"the other one is not, as expected ({TONE_B:.0f} Hz)",
+                          level_b <= -20,
+                          f"{level_b:.1f} dB - a call carries one participant")
+        if config.mix_participants and both:
+            print("\n  Measured: with BRIDGE_MIX_PARTICIPANTS the caller hears "
+                  "both participants.", flush=True)
+        elif not config.mix_participants and level_a > -20 and level_b <= -20:
+            print("\n  Measured: without it, a caller hears the one participant "
+                  "the bridge\n  subscribed to and nothing of the other - "
+                  "which is the default.", flush=True)
+        else:
+            print("\n  Measured: neither shape. Look at the levels above.", flush=True)
 
         if OUT_WAV:
             import wave

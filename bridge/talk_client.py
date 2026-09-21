@@ -144,8 +144,15 @@ class TalkClient:
             # we are in the room already, which is just as good.
             self._room_joined_event.set()
         elif msg_type == "error" and str(msg.get("id", "")).startswith("bridge-subanswer-"):
+            # "<session>@@<sip call id>" - both, because with several
+            # participants subscribed the call alone would not say which
+            # subscription was refused. Split on the first "@@": a
+            # session id contains no "@" and a SIP call id contains
+            # several.
+            named = str(msg.get("id"))[len("bridge-subanswer-"):]
+            sessionid, _, refused_call = named.partition("@@")
             await self.human_audio.answer_refused(
-                str(msg.get("id"))[len("bridge-subanswer-"):], msg.get("error", {}))
+                refused_call, sessionid, msg.get("error", {}))
         elif msg_type == "control" and msg.get("control", {}).get("data", {}).get("type") == "hangup":
             # Sent when the call's virtual phone session is disinvited
             # (the room participant hung up in Talk, or the room's call

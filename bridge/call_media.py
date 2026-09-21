@@ -64,6 +64,24 @@ def parse_ice_candidate(cand_str: str, sdp_mid=None, sdp_mline_index=0) -> RTCIc
     )
 
 
+class Source:
+    """One participant this call listens to: the connection, whether it
+    has ever delivered a frame, and the offer it is waiting for."""
+
+    def __init__(self, sessionid: str, pc, on_receiving=None):
+        self.sessionid = sessionid
+        self.pc = pc
+        self.receiving = False             # a frame arrived: this one really works
+        self.offer_arrived = asyncio.Event()
+        self.answered_an_offer = False
+        self.on_receiving = on_receiving
+        self.relay_task = None
+
+    @property
+    def alive(self) -> bool:
+        return self.pc is not None and self.pc.connectionState not in ("closed", "failed")
+
+
 class CallMedia:
     """The two peer connections of one call, and what runs between them."""
 
@@ -76,16 +94,16 @@ class CallMedia:
 
         self.publisher = None
         self.publisher_peer_sessionid = None   # the session the publish offer is addressed to
-        self.subscriber = None
-        self.human_sessionid = None            # whose audio the subscriber asked for
-        self.offer_arrived = None              # set once the server's offer for it came in
-        self.subscriber_receiving = False      # a frame arrived: this one really works
-        self._answered_an_offer = False
-        self._on_receiving = None
-        # Called once, on the first frame that actually arrives - the
-        # only evidence that Talk's audio reaches the phone.
+        # One Source per participant whose audio this call carries,
+        # keyed by their session. A call used to hold exactly one of
+        # these as five loose attributes; they are a bundle now because
+        # there can be several, and losing track of which belongs to
+        # whom is how an answer reaches the wrong negotiation.
+        self.subscribers = {}
+        # Called with a session id on the first frame that actually
+        # arrives from them - the only evidence that their audio reaches
+        # the phone.
         self.on_media_flowing = None
-        self.relay_task = None
         self._poll_task = None
         self._lost = False
         # Everything a subscription receives goes in here, and one pump
@@ -122,45 +140,80 @@ class CallMedia:
     async def accept_publisher_answer(self, sdp: str):
         await self.publisher.setRemoteDescription(RTCSessionDescription(sdp=sdp, type="answer"))
 
+    def source(self, sessionid: str):
+        return self.subscribers.get(sessionid)
+
+    def listening_to(self) -> list:
+        """Whose audio this call is carrying, sorted so that two runs
+        with the same participants line up."""
+        return sorted(self.subscribers)
+
+    def alive_for(self, sessionid: str) -> bool:
+        """Whether that participant's subscription is still a connection
+        that could carry audio. One that closed or failed is not, and
+        the bridge has to be free to ask again - a client that changes
+        its microphone tears its publisher down and builds a new one,
+        and the subscription dies with it."""
+        source = self.subscribers.get(sessionid)
+        return source is not None and source.alive
+
     @property
     def subscriber_alive(self) -> bool:
-        """Whether the subscription is still a connection that could
-        carry audio. One that closed or failed is not, and the bridge
-        has to be free to ask somebody for their audio again - a client
-        that changes its microphone tears its publisher down and builds
-        a new one, and the old subscription dies with it."""
-        return (self.subscriber is not None
-                and self.subscriber.connectionState not in ("closed", "failed"))
+        """Whether this call is listening to anybody at all."""
+        return any(source.alive for source in self.subscribers.values())
+
+    @property
+    def receiving_from(self) -> list:
+        """The participants who have actually delivered a frame. Not the
+        same as the ones subscribed: a negotiation that completes and
+        carries nothing is the failure this project kept meeting."""
+        return sorted(s.sessionid for s in self.subscribers.values() if s.receiving)
 
     # -- subscriber: Talk -> phone ---------------------------------------
-    def open_subscriber(self, human_sessionid: str, on_receiving=None):
-        """Builds the subscribing connection. Audio only starts flowing when
-        a track arrives, which is the first positive evidence that anything
-        reaches the phone at all - everything before it is negotiation."""
-        subscriber = RTCPeerConnection(NO_ICE_SERVERS)
-        self.subscriber = subscriber
-        self.human_sessionid = human_sessionid
-        self.offer_arrived = self.offer_arrived or asyncio.Event()
-        self.subscriber_receiving = False
-        self._answered_an_offer = False
-        self._on_receiving = on_receiving
+    def open_subscriber(self, sessionid: str, on_receiving=None):
+        """Builds a subscribing connection for one participant. Audio
+        only starts flowing when a track arrives, which is the first
+        positive evidence that anything reaches the phone at all -
+        everything before it is negotiation."""
+        pc = RTCPeerConnection(NO_ICE_SERVERS)
+        previous = self.subscribers.get(sessionid)
+        source = Source(sessionid, pc, on_receiving=on_receiving)
+        if previous is not None and previous.offer_arrived.is_set():
+            # A rebuild waits for its own offer, not the one the
+            # connection it replaces already had.
+            source.offer_arrived.clear()
+        self.subscribers[sessionid] = source
 
-        @subscriber.on("connectionstatechange")
+        @pc.on("connectionstatechange")
         async def on_subscriber_state():
             # The connection this handler belongs to, not whichever one
             # is current: a subscription that is replaced or closed still
             # reports its last states, and reading them off the call
             # would ask a connection that is already gone.
-            print(f"[talk] Subscriber connection state: {subscriber.connectionState}")
+            print(f"[talk] Subscriber connection state for {sessionid[:8]}: "
+                  f"{pc.connectionState}")
 
-        @self.subscriber.on("track")
+        @pc.on("track")
         def on_track(track):
             if track.kind != "audio":
                 return
             if on_receiving:
                 on_receiving(track)
             self.start_pump()
-            self.relay_task = asyncio.ensure_future(self._relay(track, human_sessionid))
+            source.relay_task = asyncio.ensure_future(self._relay(track, source))
+        return source
+
+    async def drop_subscriber(self, sessionid: str):
+        """Stops listening to one participant. The others are untouched,
+        which is the point of holding them separately."""
+        source = self.subscribers.pop(sessionid, None)
+        if source is None:
+            return
+        self.mixer.remove(sessionid)
+        if source.relay_task:
+            source.relay_task.cancel()
+        if source.pc is not None:
+            await source.pc.close()
 
     def start_pump(self):
         """One clock per call, started by the first track to arrive and
@@ -174,11 +227,13 @@ class CallMedia:
             on_error=lambda e: print(
                 f"[talk] The audio pump for {self.sip_call_id} stopped: {e!r}")))
 
-    async def answer_subscriber_offer(self, sdp: str):
-        """Answers the offer the server relays for the stream we asked for.
+    async def answer_subscriber_offer(self, sessionid: str, sdp: str):
+        """Answers the offer the server relays for one participant's
+        stream.
 
-        A second offer means one of two opposite things, and which one is
-        decided by whether audio is already arriving:
+        A second offer for the same one means one of two opposite
+        things, and which is decided by whether audio is already
+        arriving from them:
 
         - audio is flowing: the offer is a late duplicate, and answering
           it resets a connection that works - observed as audio dropping
@@ -191,41 +246,42 @@ class CallMedia:
           the live one, so the connection is rebuilt for it.
 
         Returns the answer SDP, or None if there is nothing to answer."""
-        if self.subscriber_receiving:
+        source = self.subscribers.get(sessionid)
+        if source is None or source.receiving:
             return None
-        if self._answered_an_offer and self.subscriber is not None:
-            replaced = self.subscriber
-            self.open_subscriber(self.human_sessionid, on_receiving=self._on_receiving)
+        if source.answered_an_offer and source.pc is not None:
+            replaced = source.pc
+            source = self.open_subscriber(sessionid, on_receiving=source.on_receiving)
             await replaced.close()
-            print(f"[talk] The server re-offered {self.human_sessionid}'s audio for "
+            print(f"[talk] The server re-offered {sessionid[:8]}'s audio for "
                   f"{self.sip_call_id} - subscribing again")
-        self._answered_an_offer = True
-        if self.offer_arrived is not None:
-            self.offer_arrived.set()
-        await self.subscriber.setRemoteDescription(RTCSessionDescription(sdp=sdp, type="offer"))
-        await self.subscriber.setLocalDescription(await self.subscriber.createAnswer())
-        return self.subscriber.localDescription.sdp
+        source.answered_an_offer = True
+        source.offer_arrived.set()
+        await source.pc.setRemoteDescription(RTCSessionDescription(sdp=sdp, type="offer"))
+        await source.pc.setLocalDescription(await source.pc.createAnswer())
+        return source.pc.localDescription.sdp
 
-    async def prepare_for_new_offer(self):
-        """Throws away a subscription the server no longer knows and
+    async def prepare_for_new_offer(self, sessionid: str):
+        """Throws away one subscription the server no longer knows and
         builds a fresh one, ready to be offered to again.
 
         Needed because the server can re-attach its side without
         offering again: it does that while the publisher is not sending
         yet, and every answer after that names a handle that is gone."""
-        if self.subscriber_receiving or self.subscriber is None:
+        source = self.subscribers.get(sessionid)
+        if source is None or source.receiving:
             return False
-        replaced = self.subscriber
-        self.open_subscriber(self.human_sessionid, on_receiving=self._on_receiving)
-        self.offer_arrived.clear()
+        replaced = source.pc
+        self.open_subscriber(sessionid, on_receiving=source.on_receiving)
         await replaced.close()
         return True
 
-    async def _relay(self, track, source: str):
+    async def _relay(self, track, source):
         """Reads one participant's audio (48kHz, from whatever their
         device captured) and puts it in the call's mixer under their own
         session id. Ends when the subscription is closed: track.recv()
         then raises."""
+        sessionid = source.sessionid
         resampler = None
         # The mirror of the phone-side counters. Without them a silent call
         # in this direction looks identical to a broken one: the track
@@ -239,10 +295,10 @@ class CallMedia:
                 # soon as the offer is applied, long before anything
                 # flows - and treating that as a working connection is
                 # what let a refused answer go unrepaired.
-                if not self.subscriber_receiving:
-                    self.subscriber_receiving = True
+                if not source.receiving:
+                    source.receiving = True
                     if self.on_media_flowing is not None:
-                        self.on_media_flowing()
+                        self.on_media_flowing(sessionid)
                 pcm = frame_to_mono_pcm(frame)
                 stats["frames"] += 1
                 stats["peak"] = max(stats["peak"], int(np.abs(pcm).max()) if len(pcm) else 0)
@@ -250,7 +306,7 @@ class CallMedia:
                     stats["since"] = loop.time()
                 elif config.audio_report_interval and (
                         loop.time() - stats["since"] >= config.audio_report_interval):
-                    print(f"[talk] Talk audio for {self.sip_call_id} over "
+                    print(f"[talk] Audio from {sessionid[:8]} for {self.sip_call_id} over "
                           f"{loop.time() - stats['since']:.0f}s: {stats['frames']} frames, "
                           f"peak {stats['peak']}")
                     stats = {"frames": 0, "peak": 0, "since": loop.time()}
@@ -263,7 +319,7 @@ class CallMedia:
                     if resampler is None or resampler.in_rate != frame.sample_rate:
                         resampler = StreamResampler(frame.sample_rate, MIX_RATE)
                     pcm = resampler.process(pcm)
-                self.mixer.write(source, pcm)
+                self.mixer.write(sessionid, pcm)
         except Exception as e:
             print(f"[talk] Human audio relay for {self.sip_call_id} ended ({e!r})")
 
@@ -279,8 +335,9 @@ class CallMedia:
             return None
         if self.publisher is not None and self.publisher_peer_sessionid == sender_sessionid:
             return self.publisher, False
-        if self.subscriber is not None and self.human_sessionid == sender_sessionid:
-            return self.subscriber, True
+        source = self.subscribers.get(sender_sessionid)
+        if source is not None and source.pc is not None:
+            return source.pc, True
         return None
 
     async def add_candidate(self, pc, payload: dict):
@@ -339,15 +396,16 @@ class CallMedia:
         if self._pump_task:
             self._pump_task.cancel()
             self._pump_task = None
-        if self.relay_task:
-            self.relay_task.cancel()
-            self.relay_task = None
+        for source in list(self.subscribers.values()):
+            if source.relay_task:
+                source.relay_task.cancel()
         if self._poll_task:
             self._poll_task.cancel()
             self._poll_task = None
-        if self.subscriber:
-            await self.subscriber.close()
-            self.subscriber = None
+        for sessionid in list(self.subscribers):
+            source = self.subscribers.pop(sessionid)
+            if source.pc is not None:
+                await source.pc.close()
         if self.publisher:
             await self.publisher.close()
             self.publisher = None

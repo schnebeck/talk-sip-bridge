@@ -161,9 +161,16 @@ class WhoIsWorthListeningToTest(unittest.TestCase):
         self.assertEqual(catch_up(client, {HUMAN}), [(CALL, HUMAN)])
 
 
+PERSON = "a-person-session"
+
+
 @needs_media_stack
 class SecondSubscriptionTest(unittest.TestCase):
     """A rebuilt subscription is a new negotiation.
+
+    One machine per participant: sharing one across several would let a
+    repair for somebody whose stream never came tear down the
+    connection to somebody whose did.
 
     The state machine is what decides whether anything is sent at all,
     and the one from the last subscription has already reached FLOWING.
@@ -179,19 +186,19 @@ class SecondSubscriptionTest(unittest.TestCase):
 
     def test_the_first_subscription_starts_from_nothing(self):
         client, entry = self.call()
-        state = human_audio.HumanAudio(client).restart_state_for(CALL)
+        state = human_audio.HumanAudio(client).restart_state_for(CALL, PERSON)
         self.assertEqual(state.start().action, Action.REQUEST)
 
     def test_a_rebuild_does_not_inherit_a_flowing_machine(self):
         client, entry = self.call()
         audio = human_audio.HumanAudio(client)
-        first = audio.restart_state_for(CALL)
+        first = audio.restart_state_for(CALL, PERSON)
         first.start()
         first.offer("sid-1")
         first.media_arrived()
         self.assertTrue(first.working, "the first subscription never got going")
 
-        second = audio.restart_state_for(CALL)
+        second = audio.restart_state_for(CALL, PERSON)
         self.assertIsNot(second, first)
         self.assertEqual(second.start().action, Action.REQUEST,
                          "the rebuilt subscription asked for nothing")
@@ -201,16 +208,93 @@ class SecondSubscriptionTest(unittest.TestCase):
         subscription up on the call, and has to find the current one."""
         client, entry = self.call()
         audio = human_audio.HumanAudio(client)
-        audio.restart_state_for(CALL)
-        second = audio.restart_state_for(CALL)
-        self.assertIs(audio.state_for(CALL), second)
-        self.assertIs(entry.subscription, second)
+        audio.restart_state_for(CALL, PERSON)
+        second = audio.restart_state_for(CALL, PERSON)
+        self.assertIs(audio.state_for(CALL, PERSON), second)
+        self.assertIs(entry.subscriptions[PERSON], second)
+
+    def test_each_participant_gets_their_own_machine(self):
+        """Sharing one would let a repair for somebody whose stream
+        never came tear down the connection to somebody whose did."""
+        client, entry = self.call()
+        audio = human_audio.HumanAudio(client)
+        first = audio.restart_state_for(CALL, PERSON)
+        other = audio.restart_state_for(CALL, "somebody-else")
+        self.assertIsNot(first, other)
+        self.assertIs(audio.state_for(CALL, PERSON), first)
+        self.assertEqual(set(entry.subscriptions), {PERSON, "somebody-else"})
 
     def test_a_call_that_has_ended_gets_no_machine(self):
         client, _ = self.call()
         client._call_sessions.clear()
-        self.assertIsNone(human_audio.HumanAudio(client).restart_state_for(CALL))
+        self.assertIsNone(human_audio.HumanAudio(client).restart_state_for(CALL, PERSON))
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@needs_media_stack
+class WhoToCarryTest(unittest.TestCase):
+    """How many participants a call listens to, and which.
+
+    One by default. A telephone call carries one stream, so hearing
+    more than one person means summing them, and that path has never
+    run against a telephone - see mixer.py and docs/CONFIG.md.
+    """
+
+    OTHER = "other-person-session"
+    THIRD = "third-person-session"
+
+    def audio(self, **flags):
+        client = client_with_call(
+            roster={s: {"is_human": True} for s in (HUMAN, self.OTHER, self.THIRD)},
+            room=in_call(**flags))
+        return human_audio.HumanAudio(client)
+
+    def everyone(self):
+        return self.audio(**{s: FLAG_IN_CALL | FLAG_WITH_AUDIO
+                             for s in (HUMAN, self.OTHER, self.THIRD)})
+
+    def test_one_participant_unless_mixing_is_switched_on(self):
+        with mock.patch.object(human_audio.config, "mix_participants", False):
+            self.assertEqual(len(self.everyone().targets()), 1)
+
+    def test_everybody_once_it_is(self):
+        with mock.patch.object(human_audio.config, "mix_participants", True), \
+                mock.patch.object(human_audio.config, "max_mixed_sources", 6):
+            self.assertEqual(set(self.everyone().targets()),
+                             {HUMAN, self.OTHER, self.THIRD})
+
+    def test_a_large_room_is_capped(self):
+        """Each source is its own subscription and its own decoder."""
+        with mock.patch.object(human_audio.config, "mix_participants", True), \
+                mock.patch.object(human_audio.config, "max_mixed_sources", 2):
+            self.assertEqual(len(self.everyone().targets()), 2)
+
+    def test_the_cap_is_never_nobody(self):
+        """A misconfigured zero would silence the call entirely."""
+        with mock.patch.object(human_audio.config, "mix_participants", True), \
+                mock.patch.object(human_audio.config, "max_mixed_sources", 0):
+            self.assertEqual(len(self.everyone().targets()), 1)
+
+    def test_those_carrying_audio_come_first(self):
+        """With a cap, who is dropped matters: somebody whose
+        permissions do not let them speak has nothing to contribute."""
+        audio = self.audio(**{HUMAN: FLAG_IN_CALL,
+                              self.OTHER: FLAG_IN_CALL | FLAG_WITH_AUDIO,
+                              self.THIRD: FLAG_IN_CALL})
+        with mock.patch.object(human_audio.config, "mix_participants", True), \
+                mock.patch.object(human_audio.config, "max_mixed_sources", 1):
+            self.assertEqual(audio.targets(), [self.OTHER])
+
+    def test_the_order_is_the_same_twice(self):
+        """A retry that picks a different peer than the attempt before
+        it is not a retry."""
+        with mock.patch.object(human_audio.config, "mix_participants", True):
+            self.assertEqual([self.everyone().targets() for _ in range(5)].count(
+                self.everyone().targets()), 5)
+
+    def test_nobody_in_the_room_is_nobody_to_carry(self):
+        client = client_with_call(roster={})
+        self.assertEqual(human_audio.HumanAudio(client).targets(), [])

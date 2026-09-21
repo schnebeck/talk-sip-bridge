@@ -146,6 +146,17 @@ class CallAudio:
         await self.client.phone.announce_state(sip_call_id)
 
         if human_sessionid:
+            # The one who answered, first and by name: for a dialout
+            # that is the person who placed the call, and asking them
+            # before anybody else is what makes the first second of
+            # audio theirs. The rest of the room follows, and is empty
+            # unless mixing is on.
             asyncio.ensure_future(self.client.human_audio.start(sip_call_id, media, human_sessionid))
+            others = [s for s in self.client.human_audio.targets() if s != human_sessionid]
+            for sessionid in others:
+                asyncio.ensure_future(
+                    self.client.human_audio.start(sip_call_id, media, sessionid))
+            if others:
+                print(f"[talk] Mixing {len(others) + 1} participants for {sip_call_id}")
         else:
             print(f"[talk] No other participant found in room {roomid} - phone side will not hear Talk's audio")
