@@ -173,10 +173,45 @@ You only need a second phone account if you want a second call at the
 same time. Numbers themselves are free: one account can serve many dial-in
 numbers, because either way only one call can use it at once.
 
-`BRIDGE_LINES` puts several accounts in one daemon, each with its own
-settings, ports and connections.
+The flat `BRIDGE_SIP_USER=...` block above is the short form for a single
+account. Set `BRIDGE_LINES` and each account gets its own prefix instead:
+
+```
+BRIDGE_LOCAL_IP=192.0.2.10                  # these four stay global
+BRIDGE_WS_URL=ws://127.0.0.1:8080/spreed
+BRIDGE_INTERNAL_SECRET=...
+BRIDGE_BACKEND_URL=https://cloud.example
+
+BRIDGE_LINES=office,support
+
+BRIDGE_LINE_office_SIP_USER=...
+BRIDGE_LINE_office_SIP_PASS=...
+BRIDGE_LINE_office_GATEWAY_HOST=192.168.1.1
+BRIDGE_LINE_office_LOCAL_SIP_PORT=5101
+BRIDGE_LINE_office_LOCAL_RTP_PORT=41000
+
+BRIDGE_LINE_support_SIP_USER=...
+BRIDGE_LINE_support_SIP_PASS=...
+BRIDGE_LINE_support_GATEWAY_HOST=sip.provider.example
+BRIDGE_LINE_support_LOCAL_SIP_PORT=5102
+BRIDGE_LINE_support_LOCAL_RTP_PORT=41010
+```
+
+An id is any word of letters, digits and underscores. **Every** per-line
+setting takes the same prefix, so `BRIDGE_CONFERENCE_NUMBERS` becomes
+`BRIDGE_LINE_office_CONFERENCE_NUMBERS`. The four shown above are the
+ones that stay flat, along with the AGC and control-API settings.
+
+Watch the ports. In this form `LOCAL_SIP_PORT` and `LOCAL_RTP_PORT` have
+no default, and each account needs its own. In the single-account form
+they default to 5060 and 40000.
+
+The accounts are independent, so they can point at entirely different
+gateways: a VoIP box in the building for internal extensions, and a
+provider's trunk for outside calls.
 [`deploy/test-multiline.env.example`](./deploy/test-multiline.env.example)
-shows ten of them.
+is a ten-account template, and [`CONFIG.md`](./docs/CONFIG.md#single-line-vs-multiple-lines)
+lists every setting that can be prefixed.
 
 Two things are missing here. You cannot pick the outgoing number per
 Nextcloud user, because Talk does not tell the bridge who started the
