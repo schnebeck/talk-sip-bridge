@@ -27,6 +27,8 @@ def request(opener, base: str, auth_header: str, method: str, path: str, body: d
     req = urllib.request.Request(f"{base}{path}", data=data, method=method, headers=headers)
     with opener.open(req, timeout=5) as resp:
         return resp.read()
+
+
 def start_ring(roomid: str, nc_user: str, nc_app_password: str):
     """Uses Talk's own OCS call-signaling API (POST .../call/{token}) to
     make the bridge's Nextcloud account one more device joining the room's
@@ -69,6 +71,8 @@ def start_ring(roomid: str, nc_user: str, nc_app_password: str):
     except (urllib.error.URLError, OSError, KeyError, ValueError) as e:
         print(f"[talk] Starting Talk call ring for room {roomid} failed: {e!r}")
         return None, None
+
+
 def _ring_attendees(opener, base: str, auth_header: str, roomid: str, nc_user: str):
     """Asks Talk to ring every real user in the room for the call that was
     just started. Joining the call alone does make Talk show an incoming
@@ -101,6 +105,8 @@ def _ring_attendees(opener, base: str, auth_header: str, roomid: str, nc_user: s
             print(f"[talk] Could not ring {participant.get('actorId')}: HTTP {e.code} {e.read()[:200]!r}")
         except (urllib.error.URLError, OSError) as e:
             print(f"[talk] Could not ring {participant.get('actorId')}: {e!r}")
+
+
 def end_room_call(roomid: str, nc_user: str, nc_app_password: str):
     """Ends the room's call once the phone call behind it is over.
 
@@ -151,6 +157,8 @@ def room_has_call(opener, base: str, auth_header: str, roomid: str):
         return room["ocs"]["data"].get("hasCall")
     except (urllib.error.URLError, OSError, ValueError, KeyError, TypeError):
         return None
+
+
 def stop_ring(opener, roomid: str, nc_user: str, nc_app_password: str):
     """Ends what start_ring started - leaves the call, then the
     room, using the same session (opener) so Talk attributes it to the
