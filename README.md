@@ -190,36 +190,43 @@ the admin page that switches the line on and off. Use
 
 ## The documents
 
-Two of them define the interfaces, and between them they are meant to be
-enough to write an equivalent bridge from - including the parts that are
-undocumented upstream and the ones where a real gateway or client
-contradicts the specification.
+Two of them describe the two interfaces. Together they should be enough
+to build a bridge like this one from scratch. They also cover the parts
+that upstream does not document, and the places where a real gateway or a
+real client does not match the specification.
 
 | | |
 |---|---|
 | [`docs/SIGNALING-API.md`](./docs/SIGNALING-API.md) | The Talk side: the signaling server's internal-client protocol and Talk's OCS call API |
 | [`docs/SIP-API.md`](./docs/SIP-API.md) | The phone side: registration, calls in both directions, SDP, RTP, key presses |
-| [`docs/ADMIN.md`](./docs/ADMIN.md) | Installing, checking, operating and fixing it - the path through the rest |
-| [`docs/CONCEPT.md`](./docs/CONCEPT.md) | What this bridge does with them, and why each decision went the way it did |
-| [`docs/CONFIG.md`](./docs/CONFIG.md) | Every setting, what it costs either way |
-| [`docs/REFERENCE-CALL.md`](./docs/REFERENCE-CALL.md) | What a working call logs, so a broken one can be held against it |
-| [`deploy/README.md`](./deploy/README.md) | The installation artifacts themselves |
+| [`docs/ADMIN.md`](./docs/ADMIN.md) | How to install it, check it, run it and fix it |
+| [`docs/CONCEPT.md`](./docs/CONCEPT.md) | How this bridge uses those interfaces, and why each choice was made |
+| [`docs/CONFIG.md`](./docs/CONFIG.md) | Every setting, and what it costs you either way |
+| [`docs/REFERENCE-CALL.md`](./docs/REFERENCE-CALL.md) | What a working call looks like in the log, so you can compare a broken one |
+| [`deploy/README.md`](./deploy/README.md) | The files you install, and where they go |
 | [`relay/README.md`](./relay/README.md) | For a gateway the bridge cannot reach directly |
-| [`docs/TESTING.md`](./docs/TESTING.md) | How the tests are built: the three tiers, the helpers, and what a new one has to do to fit |
-| [`nextcloud-app/README.md`](./nextcloud-app/README.md) | The admin app: what it is, why it proxies, and the one setting it has |
-| [`tests/README.md`](./tests/README.md) | What is covered offline, and what needs real calls |
+| [`docs/TESTING.md`](./docs/TESTING.md) | How the tests work, and how to write one that fits |
+| [`nextcloud-app/README.md`](./nextcloud-app/README.md) | The admin page: what it is, why it proxies, its one setting |
+| [`tests/README.md`](./tests/README.md) | Which tests run offline, and which need real calls |
 
 ## How it is put together
 
-Two connections to the signaling server, because one cannot do both jobs:
-a session that joins a room stops being a dialout candidate for good. One
-takes dialout requests and never enters a room; the other carries the
-call. Each half of a call is its own module - `inbound_call`, `dialout`,
-`call_audio` (the phone into the room), `human_audio` (the room to the
-phone), `phone_participant` (the name plate, which carries no sound),
-`room_presence` (who is there). `talk_client` is what routes between
-them, `sip_call` owns the one call a line can have, and `signaling` keeps
-the connections up.
+The bridge keeps **two** connections to the signaling server, because one
+cannot do both jobs. Once a session joins a room, the server stops
+offering it outgoing calls, permanently. So one connection only takes
+those requests and never joins a room. The other carries the call.
+
+Each part of a call is its own module:
+
+| | |
+|---|---|
+| `inbound_call`, `dialout` | a call arriving, and a call being placed |
+| `call_audio`, `human_audio` | the phone into the room, and the room back to the phone |
+| `phone_participant` | the name in the participant list, which carries no sound |
+| `room_presence` | who else is there |
+| `talk_client` | routes between all of them |
+| `sip_call` | owns the one call an account can have |
+| `signaling` | keeps both connections up |
 
 ## Tests
 
@@ -229,32 +236,35 @@ the connections up.
 python3 -m unittest discover -s tests -t .
 ```
 
-It covers that every module imports on its own (`test_build.py`), that the
-calls modules make into each other exist there (`test_api.py`, read from the
-source, so paths that only a hangup or a timeout reaches are covered too),
-and what the message, SDP and request-building functions compute. Tests
-needing the media stack (numpy, av, aiortc) skip themselves where it is not
-installed; run the suite in the deployment venv for the full set.
+They check that every module imports on its own (`test_build.py`). They
+check that the methods one module calls on another really exist there
+(`test_api.py`). That one reads the source instead of running it, so even
+code that only a hangup or a timeout reaches is covered. And they check what the SIP, SDP and
+signaling functions actually compute.
 
-`tests/hardware/` is the other kind: scripts that place real calls against a
-gateway, a signaling server, or the Asterisk test peer. They are run by hand
-and are not part of the suite above.
+Some tests need numpy, av and aiortc. Those skip themselves when the
+libraries are missing, so the suite still says something useful on a bare
+machine. Run it in the deployment venv to get all of it.
 
-Tests live outside `bridge/` and are installed - or removed - separately from
-the daemon; `bridge/` carries the runtime and nothing else. See
-[`tests/README.md`](./tests/README.md).
+`tests/hardware/` is the other kind: scripts that place real calls. They
+need a gateway, a signaling server or the Asterisk test peer, they are run
+by hand, and they are not part of the suite above.
 
-`test-peer/` is an Asterisk in a container to point the bridge at instead
-of whatever gateway a deployment happens to use, so that "works with my
-box" and "speaks SIP" stay distinguishable. The recordings in
-`tests/fixtures/fritzbox/` came off the wire from a FRITZ!Box because that
-is what the first deployment ran against; a second gateway's recordings
-belong beside them under its own name. It runs only while a test needs it.
+The tests live outside `bridge/` and are installed, or deleted, separately
+from the daemon. `bridge/` holds the running code and nothing else. See
+[`tests/README.md`](./tests/README.md) for what each test covers, and
+[`docs/TESTING.md`](./docs/TESTING.md) for how to write one.
+
+`test-peer/` is an Asterisk in a container. Pointing the bridge at it
+instead of a real gateway keeps "works with my box" apart from "speaks
+SIP". The recordings in `tests/fixtures/fritzbox/` came off the wire from
+a FRITZ!Box, because that is what the first deployment used. Recordings
+from another gateway belong beside them, under its own name.
 
 ### Which of these to run
 
-What a change can break, not everything every time - the cost of a check
-should stay below the cost of the change it guards.
+Run what the change can break, not everything every time. A check should
+cost less than the change it guards.
 
 | Changed | Worth running |
 |---|---|
@@ -272,24 +282,24 @@ should stay below the cost of the change it guards.
 
 ## Status
 
-Not a prototype: this runs a real telephone line. What has actually been
-confirmed, rather than what is implemented -
+This is not a prototype. It runs a real phone line. Below is what has
+actually been confirmed, not what has been written:
 
-- `bridge/` - verified against the production gateway and signaling
-  server: a dialout placed from Talk, an inbound call, a dial-in by
-  meeting id, a caller who reaches the room before anybody is there, and
-  a participant who leaves and comes back mid-call. Audio in both
-  directions, G.722 preferred with PCMA and PCMU behind it and automatic
-  gain control on the phone side; measured, not assumed, by an
-  FFT-verified check with no phone involved
-  (`tests/hardware/test_publish_and_verify.py`).
-- `nextcloud-app/talk_sip_bridge/` - admin settings page (status/toggle),
-  installed and verified on the production Nextcloud instance.
-- `relay/` - for a gateway the bridge cannot reach directly: `sip_pipe.py`
-  carries SIP between the two networks and `rtp_relay.py` the media. Only
-  needed for that case; a directly reachable gateway needs neither.
-- Deployed as the primary bridge (`deploy/`), running as the
-  `talk-sip-bridge` systemd service.
+- **`bridge/`** runs against a real gateway and a real signaling server.
+  Confirmed there: a call placed from Talk, a call coming in, a dial-in by
+  meeting ID, a caller who arrives before anyone else is in the room, and
+  a participant who leaves and comes back during the call.
+- **Audio works in both directions.** G.722 first, then PCMA and PCMU,
+  with automatic gain control on the phone side. This was measured, not
+  assumed: `tests/hardware/test_publish_and_verify.py` publishes a tone
+  and checks it by FFT, with no phone involved.
+- **`nextcloud-app/`** is installed on that Nextcloud and works. It shows
+  the line's status and switches it on and off.
+- **`relay/`** is only for a gateway the bridge cannot reach directly.
+  `sip_pipe.py` carries the SIP, `rtp_relay.py` the audio. If your gateway
+  is reachable, you need neither.
+- It runs as a systemd service from [`deploy/`](./deploy), as the primary
+  bridge on that installation.
 
 ## Licence
 
@@ -303,21 +313,23 @@ holder. Copyright (C) 2026 Thorsten Schnebeck.
 | `nextcloud-app/talk_sip_bridge/` | **AGPL-3.0-or-later** |
 | everything else | **GPL-3.0-or-later** |
 
-The app is the one part with no free choice: it builds on Nextcloud's
-`OCP` interfaces, and Nextcloud is AGPL-3.0-or-later. The two halves only
-ever talk over HTTP, so nothing else is affected by it. Everything else
-depends on nothing that constrains the choice - `aiortc`, `av`, `numpy`
-and `websockets` are BSD-licensed, the relay is pure standard library, and
-`test-peer/` ships configuration rather than any part of Asterisk.
+The app is the one part with no choice. It builds on Nextcloud's `OCP`
+interfaces, and Nextcloud is AGPL. The app and the daemon only ever talk
+over HTTP, so nothing else is affected.
 
-Both licence texts are in [`LICENSES/`](./LICENSES) verbatim, and every
-file carries its own header. Files that cannot - JSON, and the recordings
-under `tests/fixtures/` that are read back byte for byte - are covered by
-[`REUSE.toml`](./REUSE.toml). The project follows the
-[REUSE](https://reuse.software) specification, which is also what
-Nextcloud itself uses; `tests/test_headers.py` checks that every file is
-covered, that each header names the file it sits in, and that a Python
-header still says what its module docstring says.
+Everywhere else the choice was free, and nothing forced it either way.
+`aiortc`, `av`, `numpy` and `websockets` are BSD-licensed. The relay uses
+only the standard library. `test-peer/` ships configuration, not any part
+of Asterisk.
+
+Both licence texts sit in [`LICENSES/`](./LICENSES) word for word, and
+every file carries its own header. A few files cannot: JSON has no
+comments, and the recordings under `tests/fixtures/` are read back byte
+for byte. Those are listed in [`REUSE.toml`](./REUSE.toml) instead. The
+layout follows the [REUSE](https://reuse.software) specification, which
+is what Nextcloud uses too. `tests/test_headers.py` checks that no file
+is missed, that each header names the file it sits in, and that a Python
+header still says what its module says.
 
 This program is distributed in the hope that it will be useful, but
 WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
