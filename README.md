@@ -61,10 +61,10 @@ will never pick up a call meant for a person.
 **What it cannot do.** One phone account handles one call at a time. A
 second caller hears the busy tone. More accounts mean more calls at once. They
 are not a pool yet, though. If the account that gets the request is busy,
-the call fails, even when another one is free. You also cannot give each
-Nextcloud user their own outgoing number. Talk tells the bridge which
-conversation a call belongs to, but not who started it. Voice only, no
-video. The phone side of a call is not encrypted, so keep the gateway on a
+the call fails, even when another one is free. Outgoing calls cannot be
+assigned to a person or a team;
+[what can be assigned](#what-can-be-assigned-and-what-cannot) says how
+far that goes and why. Voice only, no video. The phone side of a call is not encrypted, so keep the gateway on a
 network you trust. The SIP dialect here is plain and a little
 old-fashioned. Most gateways and providers accept it. A strict one, or a
 chain of SIP proxies, may not.
@@ -213,30 +213,42 @@ provider's trunk for outside calls.
 is a ten-account template, and [`CONFIG.md`](./docs/CONFIG.md#single-line-vs-multiple-lines)
 lists every setting that can be prefixed.
 
-**You can keep an account off the incoming side.** A call only reaches
-Talk if that account has a dial-in number, a conference number, a default
-room or auto-answer. Leave all four empty and an incoming call just rings
-there, as it did before the bridge existed.
+Which account handles what is the subject of the next section.
 
-**You cannot keep one off the outgoing side.** Every account offers
-itself to the signaling server for outgoing calls, and the server picks
-which one gets a request. So "these two are for dial-in, those two for
-dial-out" is not something you can set today.
+## What can be assigned, and what cannot
 
-Two more limits follow from that. The accounts are **not a pool**: a
-request handed to a busy account fails instead of moving to a free one.
-And you cannot give a Nextcloud user their **own outgoing number**. Talk
-tells the bridge which conversation a call is for, but not who started
-it, and the number the other side sees is the account's own.
+The two directions are not symmetrical, and one sentence explains the
+whole of it:
 
-Routing by conversation is only half an answer. The request does name a
-conversation, so it could pick the account. But in Talk's UI you dial a
-number without choosing one: that dialog creates a **call room** on the
-spot, and from then on you re-dial from inside it, and can add further
-numbers to it. Nobody knows that room's id before it exists, so there is
-nothing to map it to. Routing on the conversation only means something
-for the other path, where somebody presses *Call a phone number* inside
-a conversation that was already there.
+> **An incoming call says which number was dialled. An outgoing call says
+> nothing about who is calling.**
+
+So the incoming side can be assigned in detail, and the outgoing side
+almost not at all.
+
+| What you may want | |
+|---|---|
+| This number always reaches that conversation | **Yes.** One entry per number in `BRIDGE_DIALIN_NUMBERS` |
+| This number asks the caller which meeting they want | **Yes.** `BRIDGE_CONFERENCE_NUMBERS` |
+| Only these callers may dial in | **Yes.** `BRIDGE_CONFERENCE_CALLERS`, per account |
+| Use an account for outgoing calls only | **Yes.** Leave its four inbound settings unset and calls arriving there just ring |
+| Keep an account *out* of outgoing calls | **No.** Every account offers itself for outgoing, and the signaling server picks |
+| Each user dials out with their own number | **No.** Talk does not say who started the call, and the number shown is the account's own |
+| Each team dials out with its own number | **Not from the dial-a-number dialog** — see below. From a conversation that already exists it would be possible, but it is not built |
+| Move to a free account when one is busy | **No.** The request is refused, not passed on |
+| A different caller ID per call | **No.** One SIP account is one identity |
+| Restrict who may call which numbers | **Per account only**, with `BRIDGE_DIALOUT_NUMBER_ALLOWLIST`. Since you cannot choose the account, that is in practice per installation |
+
+**Why the dialog does not help.** In Talk you dial a number without
+picking a conversation. That dialog creates a **call room** at that
+moment. From then on you re-dial from inside it, and you can add further
+numbers to it. So the room is neither the caller nor the callee, it is
+one dialling session, and its id does not exist until somebody dials.
+There is nothing for an administrator to map an account to.
+
+Two of the noes are ours to fix: moving to a free account, and routing
+from a conversation that already exists. The rest need Talk to name the
+person who started the call, and today it does not.
 
 **Two optional parts.** Install [`nextcloud-app/`](./nextcloud-app) for
 the admin page that switches the line on and off. Use
