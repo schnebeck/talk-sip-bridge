@@ -54,16 +54,32 @@ async def supervise(role: str, serve):
             traceback.print_exc()
         await asyncio.sleep(config.sip_response_timeout)
 
+# Longest pause between reconnect attempts while the signaling server
+# stays away (e.g. Nextcloud AIO stops its containers for the nightly
+# backup): long enough to keep the journal readable, short enough that
+# the bridge is back within seconds of Talk.
+RECONNECT_MAX_DELAY = 30.0
+
 async def serve(role: str, features: list, settled, handle):
+    failures = 0
     while True:
         try:
             async with websockets.connect(config.ws_url) as ws:
                 settled(ws, await hello(ws, role, features))
+                if failures > 1:
+                    print(f"[talk] {role} connection back after {failures} failed attempts")
+                failures = 0
                 await read(role, ws, handle)
         except Exception as e:
-            print(f"[talk] {role} connection lost ({e!r}), reconnecting ...")
+            failures += 1
+            # the first loss and then every 20th attempt, not every few seconds
+            if failures == 1 or failures % 20 == 0:
+                again = f" (attempt {failures})" if failures > 1 else ""
+                print(f"[talk] {role} connection lost ({e!r}), reconnecting{again} ...")
         settled(None, None)
-        await asyncio.sleep(config.sip_response_timeout)
+        # first retry as before, then doubling up to RECONNECT_MAX_DELAY
+        delay = config.sip_response_timeout * 2 ** max(failures - 1, 0)
+        await asyncio.sleep(min(delay, max(RECONNECT_MAX_DELAY, config.sip_response_timeout)))
 
 async def read(role: str, ws, handle):
     """One message at a time, each costing only itself.

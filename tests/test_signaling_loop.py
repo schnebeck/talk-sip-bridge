@@ -30,6 +30,7 @@ websocket, and asked what they do with it.
 import asyncio
 import json
 import unittest
+from unittest import mock
 
 from tests.support import needs_media_stack
 
@@ -143,6 +144,52 @@ class SupervisorTest(unittest.TestCase):
             return None
 
         self.assertEqual(len(self.run_supervisor(returns)), 3)
+
+
+@needs_media_stack
+class ReconnectBackoffTest(unittest.TestCase):
+    """When the signaling server stays away for a while - Nextcloud AIO
+    stops its containers every night for the backup - the retries slow
+    down and the journal gets a line now and then, not one every few
+    seconds per connection."""
+
+    def run_serve(self, attempts):
+        """Lets `serve` fail to connect `attempts` times and returns the
+        pauses it took and the lines it printed."""
+        pauses, printed = [], []
+
+        def unreachable(url):
+            raise OSError("Name or service not known")
+
+        async def pause(seconds):
+            pauses.append(seconds)
+            if len(pauses) >= attempts:
+                raise asyncio.CancelledError
+
+        loop = asyncio.new_event_loop()
+        try:
+            with mock.patch.object(signaling.websockets, "connect", unreachable), \
+                    mock.patch.object(signaling.asyncio, "sleep", pause), \
+                    mock.patch.object(signaling, "print", create=True,
+                                      side_effect=lambda *a, **k: printed.append(" ".join(map(str, a)))), \
+                    mock.patch.object(signaling.config, "sip_response_timeout", 6), \
+                    self.assertRaises(asyncio.CancelledError):
+                loop.run_until_complete(signaling.serve("room", [], lambda *a: None, None))
+        finally:
+            loop.close()
+        return pauses, printed
+
+    def test_the_first_retry_is_as_quick_as_before(self):
+        pauses, _ = self.run_serve(1)
+        self.assertEqual(pauses, [6])
+
+    def test_the_pause_doubles_up_to_the_ceiling(self):
+        pauses, _ = self.run_serve(6)
+        self.assertEqual(pauses, [6, 12, 24, 30, 30, 30])
+
+    def test_a_long_outage_prints_only_now_and_then(self):
+        _, printed = self.run_serve(45)
+        self.assertEqual(len(printed), 3, printed)  # attempt 1, 20 and 40
 
 
 if __name__ == "__main__":
